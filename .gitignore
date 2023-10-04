@@ -1,4 +1,4 @@
-lolpredictordjango/lolpredictor/api/CONSTANTS.py
+lolpredictordjango/lolpredictordjango/Constants.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
