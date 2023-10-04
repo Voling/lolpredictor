@@ -1,0 +1,4 @@
+{"id": "zGGplCuh7Gwai4I4IejtoAdD8aZ7Ksn_J0Z5lMpr7NLSXmI", "accountId": "LRzWwMdkinSEYbypsbwIAn4SDOcba4NIXBVjPRqaTvUt_us", "puuid": "yQaVzL7wkdCEFowoJa3bMINmu-jsqOVvhVgYhMfDiu2r0-m3AiN166s33t-6Q1DiOL62-Dfl4UAZGQ", "name": "btsnese", "profileIconId": 3855, "revisionDate": 1696278249332, "summonerLevel": 596}
+
+#RELEVANT
+id, accountID, puuid, name, revisionDate, summonerLevel
