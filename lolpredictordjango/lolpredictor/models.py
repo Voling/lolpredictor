@@ -13,3 +13,5 @@ class ParticipationInMatch(models.Model):
     deaths = models.IntegerField
     damage_dealt = models.IntegerField
     damage_taken = models.IntegerField
+    
+
