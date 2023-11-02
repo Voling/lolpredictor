@@ -24,20 +24,48 @@ const Input = styled.input`
   }
 `;
 
-function App() {
-  const [showInputs, setShowInputs] = useState(false);
+const ErrorMessage = styled.div`
+  color: red;
+  margin-top: 20px;
+`;
 
-  // Simulate the fade-in after the component is mounted
+function App() {
+  const [inputValues, setInputValues] = useState(Array(5).fill(''));
+  const [showInputs, setShowInputs] = useState(false);
+  const [error, setError] = useState(null);
+
   React.useEffect(() => {
     setTimeout(() => {
       setShowInputs(true);
     }, 500);
   }, []);
 
+  const handleInputChange = (index, value) => {
+    const newValues = [...inputValues];
+    newValues[index] = value;
+    setInputValues(newValues);
+  };
+
+  const handleKeyPress = async (e) => {
+    if (e.key === 'Enter' && inputValues.every(val => val.trim() !== '')) {
+      // Call the API (replace with your API endpoint)
+      const response = await fetch('http://localhost:8000/api/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ data: inputValues }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        setError('An error occurred. Please try again.');
+      }
+    }
+  };
+
   return (
     <Container>
-      <h1 style={{ color: '#ffffff' }}>lolpredictor</h1>
-      <p style={{color : "#ffffff"}}>Hi </p>
+      <h1 style={{ color: '#fff' }}>LoLPredictor</h1>
       {Array.from({ length: 5 }).map((_, index) => (
         <CSSTransition
           in={showInputs}
@@ -47,19 +75,14 @@ function App() {
           key={index}
         >
           <Input
-            placeholder={`Summoner ${index + 1}`}
-            onChange={(e) => {
-              fetch(`http://localhost:8000/api/presentData${index + 1}`, {
-                method: 'POST',
-                body: JSON.stringify({ data: e.target.value }),
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-              });
-            }}
+            placeholder={`Input ${index + 1}`}
+            value={inputValues[index]}
+            onChange={(e) => handleInputChange(index, e.target.value)}
+            onKeyPress={handleKeyPress}
           />
         </CSSTransition>
       ))}
+      {error && <ErrorMessage>{error}</ErrorMessage>}
     </Container>
   );
 }
