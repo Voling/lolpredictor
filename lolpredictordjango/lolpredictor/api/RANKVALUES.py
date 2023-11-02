@@ -10,7 +10,7 @@ rank_values = {
         "GRANDMASTER": 2800,
         "CHALLENGER": 2800
     }
-def rank_to_lp(tier: str, division: str, lp: int) -> int:
+def rankToLP(tier: str, division: str, lp: int) -> int:
     base_lp = rank_values.get(tier.upper(), 0)
     division_lp = (4 - romanToInt(division)) * 100
     return base_lp + division_lp + lp

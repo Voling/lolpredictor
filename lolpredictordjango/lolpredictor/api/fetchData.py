@@ -65,28 +65,3 @@ async def getPlayerRank(name: str, platform: str = "na1"):
                 return entry.tier, entry.rank, entry.league_points
     return None
 
-def rank_to_lp(tier: str, division: int, lp: int) -> int:
-    # Define the base LP for each rank
-    rank_values = {
-        "IRON": 0,
-        "BRONZE": 400,
-        "SILVER": 800,
-        "GOLD": 1200,
-        "PLATINUM": 1600,
-        "DIAMOND": 2000,
-        "MASTER": 2400,
-        "GRANDMASTER": 2600,
-        "CHALLENGER": 2800
-    }
-    
-    # Calculate the base LP for the given rank
-    base_lp = rank_values.get(tier.upper(), 0)
-    
-    # Subtract the division value (multiplied by 100) from the base LP
-    # Division 1 is higher than Division 4, so we subtract to get the correct value
-    division_lp = (4 - division) * 100
-    
-    # Return the total LP
-    return base_lp + division_lp + lp
-
-# Example usage
