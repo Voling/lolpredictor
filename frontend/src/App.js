@@ -65,7 +65,8 @@ function App() {
 
   return (
     <Container>
-      <h1 style={{ color: '#fff' }}>LoLPredictor</h1>
+      <h1 style={{ color: '#ffffff' }}>lolpredictor</h1>
+      <p style={{fontWeight: "normal", color: "#ffffff"}}>Analyze the compatibility, skills, and dynamics of 5-man teams based on their individual quirks and gameplay trends. NA only.</p>
       {Array.from({ length: 5 }).map((_, index) => (
         <CSSTransition
           in={showInputs}
@@ -75,10 +76,10 @@ function App() {
           key={index}
         >
           <Input
-            placeholder={`Input ${index + 1}`}
+            placeholder={`Summoner ${index + 1}`}
             value={inputValues[index]}
             onChange={(e) => handleInputChange(index, e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyPress}
           />
         </CSSTransition>
       ))}
