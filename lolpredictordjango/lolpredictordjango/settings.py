@@ -39,7 +39,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     "corsheaders",
-    'pyot',
 ]
 PYOT_CONFS = ['lolpredictordjango.pyotconf']
 MIDDLEWARE = [
