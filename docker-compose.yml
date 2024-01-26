@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: synergy
+      POSTGRES_PASSWORD: synergy
+      POSTGRES_DB: synergy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synergy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /app/data
+      DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+
+  web:
+    build: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "3000:80"
+
+  pipeline:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /app/data
+      DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "synergy"]
+    command: ["status"]
+    profiles: ["tools"]
+
+volumes:
+  postgres:

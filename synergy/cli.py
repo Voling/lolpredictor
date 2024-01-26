@@ -1,0 +1,227 @@
+import argparse
+import asyncio
+import json
+import logging
+import sys
+
+from .config import get_settings
+from .features.build import build_tables
+from .ingest.seeder import crawl
+from .ingest.store import Store
+from .ingest.synthetic import generate
+from .ml.score import SynergyService
+from .ml.train import train
+
+
+def _report(payload) -> None:
+    print(json.dumps(payload, indent=2, default=str))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="synergy")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    crawl_cmd = sub.add_parser("crawl", help="seeded crawl of ranked matches from the Riot API")
+    crawl_cmd.add_argument("--riot-id", default=None)
+    crawl_cmd.add_argument("--max-matches", type=int, default=None)
+    crawl_cmd.add_argument("--max-players", type=int, default=None)
+    crawl_cmd.add_argument("--leaderboard", action="store_true", help="seed from the apex ladders")
+    crawl_cmd.add_argument("--since-days", type=int, default=None)
+    crawl_cmd.add_argument("--min-lp", type=int, default=None)
+    crawl_cmd.add_argument("--max-tier", default=None)
+    crawl_cmd.add_argument("--max-requests", type=int, default=None)
+
+    synth_cmd = sub.add_parser("synthetic", help="generate a synthetic match corpus")
+    synth_cmd.add_argument("--matches", type=int, default=400)
+    synth_cmd.add_argument("--players", type=int, default=120)
+    synth_cmd.add_argument("--seed", type=int, default=7)
+
+    window_cmd = sub.add_parser("window", help="cut raw timelines down to the first 15 minutes")
+    window_cmd.add_argument("--minutes", type=int, default=15)
+
+    sub.add_parser("features", help="extract participation and pair tables from the 15 minute windows")
+
+    train_cmd = sub.add_parser("train", help="train the pair synergy model")
+    train_cmd.add_argument("--min-games", type=int, default=None)
+
+    sub.add_parser("sequences", help="encode timelines into per player game tensors")
+
+    deep_cmd = sub.add_parser("deep-train", help="train the timeline encoder on the GPU")
+    deep_cmd.add_argument("--epochs", type=int, default=400)
+    deep_cmd.add_argument("--dim", type=int, default=128)
+    deep_cmd.add_argument("--embed-dim", type=int, default=64)
+    deep_cmd.add_argument("--layers", type=int, default=3)
+    deep_cmd.add_argument("--players-per-batch", type=int, default=64)
+    deep_cmd.add_argument("--device", default=None)
+
+    sub.add_parser("deep-compare", help="score learned embeddings against the handwritten axes")
+
+    sub.add_parser("db-load", help="load the raw archive on disk into postgres")
+
+    sub.add_parser("status", help="show corpus and model status")
+
+    pair_cmd = sub.add_parser("pair", help="score one pairing")
+    pair_cmd.add_argument("left")
+    pair_cmd.add_argument("right")
+
+    partners_cmd = sub.add_parser("partners", help="best and worst partners for a player")
+    partners_cmd.add_argument("player")
+    partners_cmd.add_argument("--limit", type=int, default=10)
+
+    ranks_cmd = sub.add_parser("ranks", help="look up rank for players that have none")
+    ranks_cmd.add_argument("--min-games", type=int, default=1)
+    ranks_cmd.add_argument("--max-requests", type=int, default=None)
+
+    priors_cmd = sub.add_parser("priors", help="conditional base rates for a behaviour given the matchup")
+    priors_cmd.add_argument("--json", action="store_true")
+    priors_cmd.add_argument("--propensities", action="store_true")
+    priors_cmd.add_argument("--players", default=None)
+    priors_cmd.add_argument("--limit", type=int, default=10)
+
+    all_cmd = sub.add_parser("all", help="synthetic corpus, features and training in one go")
+    all_cmd.add_argument("--matches", type=int, default=400)
+    all_cmd.add_argument("--players", type=int, default=120)
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    settings = get_settings()
+    settings.ensure_dirs()
+
+    if args.command == "crawl":
+        if args.max_matches:
+            settings.max_matches = args.max_matches
+        if args.max_players:
+            settings.max_players = args.max_players
+        if args.since_days is not None:
+            settings.crawl_since_days = args.since_days
+        if args.min_lp is not None:
+            settings.apex_min_league_points = args.min_lp
+        if args.max_tier:
+            settings.max_tier = args.max_tier
+        if args.max_requests:
+            settings.max_requests = args.max_requests
+        if not settings.riot_api_key:
+            print("RIOT_API_KEY is not set", file=sys.stderr)
+            return 2
+        _report(asyncio.run(crawl(args.riot_id, settings, leaderboard=args.leaderboard)).as_dict())
+        return 0
+
+    if args.command == "synthetic":
+        _report(generate(matches=args.matches, players=args.players, seed=args.seed, settings=settings))
+        return 0
+
+    if args.command == "window":
+        from .ingest.window import build_windows
+
+        _report(build_windows(settings, minutes=args.minutes))
+        return 0
+
+    if args.command == "features":
+        tables = build_tables(settings)
+        _report({key: len(frame) for key, frame in tables.items()})
+        return 0
+
+    if args.command == "ranks":
+        from .ingest.seeder import refresh_ranks
+
+        if args.max_requests:
+            settings.max_requests = args.max_requests
+        if not settings.riot_api_key:
+            print("RIOT_API_KEY is not set", file=sys.stderr)
+            return 2
+        _report(asyncio.run(refresh_ranks(settings, min_games=args.min_games)))
+        return 0
+
+    if args.command == "priors":
+        from .features.priors import propensity_priors, push_priors, render, top_players
+
+        if args.propensities:
+            _report(propensity_priors(settings))
+            return 0
+        if args.players:
+            print(top_players(args.players, limit=args.limit, settings=settings).to_string())
+            return 0
+        payload = push_priors(settings)
+        _report(payload) if args.json else print(render(payload))
+        return 0
+
+    if args.command == "train":
+        _report(train(settings, min_games=args.min_games))
+        return 0
+
+    if args.command == "sequences":
+        from .deep.sequences import build_sequences
+
+        _report(build_sequences(settings))
+        return 0
+
+    if args.command == "deep-train":
+        from .deep.train import train_encoder
+
+        _report(
+            train_encoder(
+                settings,
+                epochs=args.epochs,
+                dim=args.dim,
+                embed_dim=args.embed_dim,
+                layers=args.layers,
+                players_per_batch=args.players_per_batch,
+                device=args.device,
+            )
+        )
+        return 0
+
+    if args.command == "deep-compare":
+        from .deep.evaluate import compare_representations
+
+        _report(compare_representations(settings))
+        return 0
+
+    if args.command == "db-load":
+        from .db.load import load_from_archive
+
+        _report(load_from_archive(settings))
+        return 0
+
+    if args.command == "status":
+        with Store(settings) as store:
+            corpus = store.counts()
+            corpus["frontier"] = store.frontier_counts()
+            corpus["unnamed_frequent_players"] = len(store.unnamed_players(settings.min_profile_games))
+        _report(
+            {
+                "corpus": corpus,
+                "crawl_budget": settings.max_requests,
+                "service": SynergyService(settings).load().status(),
+            }
+        )
+        return 0
+
+    if args.command == "pair":
+        service = SynergyService(settings).load()
+        _report(service.pair_score(args.left, args.right))
+        return 0
+
+    if args.command == "partners":
+        service = SynergyService(settings).load()
+        _report(service.best_partners(args.player, limit=args.limit))
+        return 0
+
+    if args.command == "all":
+        from .ingest.window import build_windows
+
+        generate(matches=args.matches, players=args.players, settings=settings)
+        build_windows(settings)
+        build_tables(settings)
+        _report(train(settings))
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
