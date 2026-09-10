@@ -2,7 +2,7 @@ import math
 
 from .regions import MAP_SPAN, REGIONS, region_of
 from .timeline import VISION_WARDS, ParsedTimeline
-from .wave import PUSH, DEFENSIVE, LANE_PREFIX, wave_states
+from .wave import LANE_PREFIX, wave_states
 
 FRAME_MS = 60000.0
 GANK_RADIUS = 2200.0

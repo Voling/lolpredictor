@@ -66,6 +66,7 @@ class Settings:
     apex_tiers: str = field(default_factory=lambda: _str("CRAWL_APEX_TIERS", "challenger,grandmaster,master"))
     min_average_lp: int = field(default_factory=lambda: _int("CORPUS_MIN_AVERAGE_LP", 2800))
     min_ranked_participants: int = field(default_factory=lambda: _int("CORPUS_MIN_RANKED", 2))
+    season_start: str = field(default_factory=lambda: _str("CORPUS_SEASON_START", "2026-01-01"))
 
     rate_short_requests: int = field(default_factory=lambda: _int("RIOT_RATE_SHORT_REQUESTS", 20))
     rate_short_seconds: float = field(default_factory=lambda: _float("RIOT_RATE_SHORT_SECONDS", 1.0))

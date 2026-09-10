@@ -32,6 +32,7 @@ AXIS_LABELS = {
     "fight_join": "shows up to fights",
 }
 STYLE_COLUMNS = [f"style_{name}" for name in STYLE_NAMES]
+STYLE_SUFFIXES = ("_pct", "_var")
 
 
 class UnknownPlayer(LookupError):
@@ -54,6 +55,7 @@ class SynergyService:
         self.history: pd.DataFrame | None = None
         self.report: dict = {}
         self.propensity_report: dict = {}
+        self.style_columns: list[str] = list(STYLE_COLUMNS)
 
     @property
     def ready(self) -> bool:
@@ -75,6 +77,13 @@ class SynergyService:
             return self
         self.model = SynergyModel.load(model_path)
         self.profiles = pd.read_parquet(profile_path).set_index("puuid", drop=False)
+        self.style_columns = [
+            column
+            for column in self.profiles.columns
+            if column.startswith("style_")
+            and not column.endswith(STYLE_SUFFIXES)
+            and column != "style_confidence"
+        ] or list(STYLE_COLUMNS)
         history_path = self.settings.processed_dir / "pair_history.parquet"
         if history_path.exists():
             self.history = pd.read_parquet(history_path).set_index("pair_key", drop=False)
@@ -159,8 +168,9 @@ class SynergyService:
         return frame
 
     def build_phi(self, anchor: pd.Series, others: pd.DataFrame) -> pd.DataFrame:
-        left = np.tile(anchor[STYLE_COLUMNS].to_numpy(dtype=float), (len(others), 1))
-        right = others[STYLE_COLUMNS].to_numpy(dtype=float)
+        columns = self.style_columns
+        left = np.tile(anchor[columns].to_numpy(dtype=float), (len(others), 1))
+        right = others[columns].to_numpy(dtype=float)
         history = self._history_rows(anchor["puuid"], others["puuid"].tolist())
         return phi_from_styles(left, right, history)
 

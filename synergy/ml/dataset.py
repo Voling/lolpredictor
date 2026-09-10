@@ -9,20 +9,31 @@ from ..features.dyad import DYAD_FEATURE_COLUMNS
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 
 OBSERVED_GAMES = 5
-STYLE_NAMES = list(STYLE_AXES)
-CROSS_TERMS = list(combinations_with_replacement(STYLE_NAMES, 2))
-CROSS_COLUMNS = [f"x_{left}_{right}" for left, right in CROSS_TERMS]
-DIFF_COLUMNS = [f"diff_{name}" for name in STYLE_NAMES]
+STYLE_NAMES: list[str] = []
+CROSS_TERMS: list[tuple[str, str]] = []
+CROSS_COLUMNS: list[str] = []
+DIFF_COLUMNS: list[str] = []
+
+
+def refresh_columns() -> None:
+    STYLE_NAMES[:] = list(STYLE_AXES)
+    CROSS_TERMS[:] = list(combinations_with_replacement(STYLE_NAMES, 2))
+    CROSS_COLUMNS[:] = [f"x_{left}_{right}" for left, right in CROSS_TERMS]
+    DIFF_COLUMNS[:] = [f"diff_{name}" for name in STYLE_NAMES]
+    HISTORY_COLUMNS[:] = [
+        "hist_present",
+        "hist_games_log",
+        "hist_winrate_centred",
+        *[f"hist_{column}" for column in PAIR_HISTORY_SOURCE],
+    ]
+    PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + HISTORY_COLUMNS
+    STYLE_SUM_COLUMNS[:] = [f"team_style_{name}" for name in STYLE_NAMES]
+    CONTROL_COLUMNS[:] = STYLE_SUM_COLUMNS + _TEAM_CONTROLS
 PAIR_HISTORY_SOURCE = PAIR_TIMELINE_COLUMNS + DYAD_FEATURE_COLUMNS
-HISTORY_COLUMNS = [
-    "hist_present",
-    "hist_games_log",
-    "hist_winrate_centred",
-    *[f"hist_{column}" for column in PAIR_HISTORY_SOURCE],
-]
-PHI_COLUMNS = CROSS_COLUMNS + DIFF_COLUMNS + HISTORY_COLUMNS
-STYLE_SUM_COLUMNS = [f"team_style_{name}" for name in STYLE_NAMES]
-CONTROL_COLUMNS = STYLE_SUM_COLUMNS + [
+HISTORY_COLUMNS: list[str] = []
+PHI_COLUMNS: list[str] = []
+STYLE_SUM_COLUMNS: list[str] = []
+_TEAM_CONTROLS = [
     "team_skill",
     "team_lp",
     "team_lp_coverage",
@@ -30,6 +41,7 @@ CONTROL_COLUMNS = STYLE_SUM_COLUMNS + [
     "team_season_winrate",
     "team_season_coverage",
 ]
+CONTROL_COLUMNS: list[str] = []
 
 
 def canonical_pairs(pairs: pd.DataFrame) -> pd.DataFrame:
@@ -196,3 +208,6 @@ def build_team_dataset(
     columns = PHI_COLUMNS + CONTROL_COLUMNS
     observed = (blue["team_observed"] + red["team_observed"]).to_numpy()
     return blue[columns] - red[columns], blue["win"].to_numpy().astype(int), observed
+
+
+refresh_columns()

@@ -25,7 +25,7 @@ from .dataset import (
 RIDGE_ALPHAS = np.logspace(1, 6, 24)
 MIN_SYNERGY_SPREAD = 1e-3
 MIN_SYNERGY_GAIN_SIGMA = 2.0
-SCORE_SPAN = 2.0
+SCORE_SPAN = 6.0
 OBSERVED_LINEUP = 3
 PROBABILITY_FLOOR = 1e-4
 
@@ -42,6 +42,7 @@ class TrainingReport:
     brier: float = 0.0
     ridge_alpha: float = 0.0
     synergy_std: float = 0.0
+    synergy_mean: float = 0.0
     synergy_gain: float = 0.0
     synergy_gain_sigma: float = 0.0
     style_only_auc: float = 0.0
@@ -68,6 +69,7 @@ class TrainingReport:
             "observed_style_only_auc": round(self.observed_style_only_auc, 4),
             "ridge_alpha": round(float(self.ridge_alpha), 3),
             "synergy_std": round(self.synergy_std, 4),
+            "synergy_mean": round(self.synergy_mean, 5),
             "synergy_gain": round(self.synergy_gain, 4),
             "synergy_gain_sigma": round(self.synergy_gain_sigma, 2),
             "top_terms": self.top_terms,
@@ -144,6 +146,7 @@ class SynergyModel:
 
         synergy = self.synergy(features)
         report.synergy_std = float(np.std(synergy))
+        report.synergy_mean = float(np.mean(synergy))
         self.quantiles = np.quantile(synergy, np.linspace(0, 1, 1001))
         ordered = self.weights.reindex(self.weights.abs().sort_values(ascending=False).index)
         report.top_terms = [
@@ -167,7 +170,8 @@ class SynergyModel:
     def score(self, synergy: np.ndarray | float) -> np.ndarray:
         values = np.atleast_1d(np.asarray(synergy, dtype=float))
         spread = max(float(self.report.synergy_std), MIN_SYNERGY_SPREAD)
-        return np.clip(50.0 + 50.0 * np.tanh(values / (SCORE_SPAN * spread)), 0.0, 100.0)
+        centred = values - float(self.report.synergy_mean)
+        return np.clip(50.0 + 50.0 * np.tanh(centred / (SCORE_SPAN * spread)), 0.0, 100.0)
 
     def contributions(self, phi: pd.DataFrame) -> pd.Series:
         row = phi.reindex(columns=PHI_COLUMNS).fillna(0.0).iloc[0]

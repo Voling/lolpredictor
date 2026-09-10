@@ -50,7 +50,7 @@ def test_pair_features_are_symmetric(tables):
     features, _, _ = build_pair_dataset(tables["participations"], tables["pairs"])
     row = features.iloc[0]
     assert row["puuid_a"] < row["puuid_b"]
-    assert (features["diff_aggression"] >= 0).all()
+    assert (features[f"diff_{STYLE_NAMES[0]}"] >= 0).all()
 
 
 def test_team_dataset_is_a_signed_difference(tables):

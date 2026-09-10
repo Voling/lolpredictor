@@ -11,9 +11,13 @@ from .propensity import opportunity_rows
 from .match import participant_rows
 from .timeline import pair_rows
 from .champions import champion_profiles
+from .duo import fit_duo_effect
+from .traits import fit_traits
 from .dyad import dyad_rows
 from .extra import extra_rows
 from .jungle import jungle_openings
+from .events import event_response_rows
+from .objectives import objective_rows
 from .wards import ward_rows
 from .wave import response_rows, wave_rows
 
@@ -49,11 +53,18 @@ def qualifying_matches(store: Store, settings: Settings) -> set[str] | None:
         return None
     judged = summary["ranked"] >= settings.min_ranked_participants
     below = judged & (summary["average_lp"].astype(float) < settings.min_average_lp)
+    stale = pd.Series(False, index=summary.index)
+    if settings.season_start and "game_creation" in summary.columns:
+        floor = pd.Timestamp(settings.season_start, tz="UTC")
+        when = pd.to_datetime(summary["game_creation"], utc=True, errors="coerce")
+        stale = when.notna() & (when < floor)
+    drop = below | stale
     logger.info(
-        "rank filter: dropped %s matches below %s average lp, kept %s",
-        int(below.sum()), settings.min_average_lp, int((~below).sum()),
+        "corpus filter: dropped %s below %s average lp, %s before %s, kept %s",
+        int(below.sum()), settings.min_average_lp, int(stale.sum()),
+        settings.season_start, int((~drop).sum()),
     )
-    return set(summary.loc[~below, "match_id"])
+    return set(summary.loc[~drop, "match_id"])
 
 
 def build_tables(settings: Settings | None = None, store: Store | None = None) -> dict[str, pd.DataFrame]:
@@ -68,6 +79,8 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
         response_records: list[dict] = []
         dyad_records: list[dict] = []
         ward_records: list[dict] = []
+        objective_records: list[dict] = []
+        event_records: list[dict] = []
         allowed = qualifying_matches(store, settings)
         opening_records: list[dict] = []
         for match_id in store.match_ids():
@@ -108,6 +121,8 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
                 dyad_records.extend(dyad_rows(match, window))
                 ward_records.extend(ward_rows(match, window))
                 opening_records.extend(jungle_openings(match, window))
+                objective_records.extend(objective_rows(match, window))
+                event_records.extend(event_response_rows(match, window))
             else:
                 pair_records.extend(_bare_pair_rows(match))
             participation_records.extend(rows)
@@ -146,7 +161,16 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
         wards.to_parquet(settings.processed_dir / "wards.parquet", index=False)
         openings = pd.DataFrame(opening_records)
         openings.to_parquet(settings.processed_dir / "jungle_openings.parquet", index=False)
+        objectives = pd.DataFrame(objective_records)
+        objectives.to_parquet(settings.processed_dir / "objectives.parquet", index=False)
+        events = pd.DataFrame(event_records)
+        events.to_parquet(settings.processed_dir / "event_responses.parquet", index=False)
         if not participations.empty:
+            from .player import _refresh_axes, feature_columns
+
+            fit_traits(participations, feature_columns(participations), settings)
+            fit_duo_effect(participations, settings=settings)
+            _refresh_axes()
             champion_profiles(participations, settings)
         logger.info("built %s participations and %s pair rows", len(participations), len(pairs))
         return {
@@ -158,6 +182,8 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
             "dyads": dyads,
             "wards": wards,
             "jungle_openings": openings,
+            "objectives": objectives,
+            "event_responses": events,
         }
     finally:
         if owned:
@@ -175,4 +201,6 @@ def load_tables(settings: Settings | None = None) -> dict[str, pd.DataFrame]:
         "dyads": pd.read_parquet(settings.processed_dir / "dyads.parquet"),
         "wards": pd.read_parquet(settings.processed_dir / "wards.parquet"),
         "jungle_openings": pd.read_parquet(settings.processed_dir / "jungle_openings.parquet"),
+        "objectives": pd.read_parquet(settings.processed_dir / "objectives.parquet"),
+        "event_responses": pd.read_parquet(settings.processed_dir / "event_responses.parquet"),
     }

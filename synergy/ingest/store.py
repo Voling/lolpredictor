@@ -304,9 +304,11 @@ class Store:
     def match_rank_summary(self) -> list[dict]:
         with self.conn.cursor() as cursor:
             cursor.execute(
-                "SELECT c.match_id, COUNT(p.lp_value) AS ranked, AVG(p.lp_value) AS average_lp"
-                " FROM participations c LEFT JOIN players p ON p.puuid = c.puuid"
-                " GROUP BY c.match_id"
+                "SELECT c.match_id, m.game_creation, COUNT(p.lp_value) AS ranked,"
+                " AVG(p.lp_value) AS average_lp"
+                " FROM participations c JOIN matches m ON m.match_id = c.match_id"
+                " LEFT JOIN players p ON p.puuid = c.puuid"
+                " GROUP BY c.match_id, m.game_creation"
             )
             return cursor.fetchall()
 

@@ -81,10 +81,3 @@ def with_ally_state(states: pd.DataFrame, ally_role: str = "JUNGLE") -> pd.DataF
     return merged[merged["position"] != ally_role].reset_index(drop=True)
 
 
-def matchup_table(participations: pd.DataFrame, position: str, min_games: int = 6) -> pd.DataFrame:
-    pairs = matchup_edges(participations)
-    pairs = pairs[pairs["position"] == position]
-    table = pairs.groupby(["champion_name", "champion_name_enemy"], observed=True).agg(
-        games=("residual", "size"), lane_gold=("lane_gold", "mean"), pair_effect=("residual", "mean")
-    )
-    return table[table["games"] >= min_games].sort_values("pair_effect")

@@ -39,6 +39,9 @@ def train(settings: Settings | None = None, min_games: int | None = None) -> dic
     if participations.empty or pairs.empty:
         raise RuntimeError("no processed data, run the ingest and features steps first")
 
+    from ..features.player import _refresh_axes
+
+    _refresh_axes(settings)
     profiles = build_profiles(
         participations, min_games=min_games, settings=settings, opportunities=tables.get("opportunities")
     )

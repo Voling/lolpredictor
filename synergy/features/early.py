@@ -171,7 +171,7 @@ def early_rows(match: dict, timeline: dict) -> list[dict]:
                 "e_damage_share": damage_done / team_damage[team] if team_damage[team] > 0 else 0.0,
             }
         )
-    return rows
+    return _add_lane_differentials(rows, match)
 
 
 def _mean_proximity(parsed: ParsedTimeline, pid: int, other: int | None, span: int) -> float:
@@ -184,6 +184,34 @@ def _mean_proximity(parsed: ParsedTimeline, pid: int, other: int | None, span: i
         return 0.0
     distance = sum(math.hypot(left[i][0] - right[i][0], left[i][1] - right[i][1]) for i in range(steps))
     return 1.0 - (distance / steps) / MAP_SPAN
+
+
+LANE_OUTCOMES = ("e_gold_at_15", "e_xp_at_15", "e_cs_at_15")
+
+
+def _add_lane_differentials(rows: list[dict], match: dict) -> list[dict]:
+    role = {p["puuid"]: (p.get("teamPosition") or p.get("individualPosition") or "").upper()
+            for p in match["info"]["participants"]}
+    team = {p["puuid"]: int(p.get("teamId", 0)) for p in match["info"]["participants"]}
+    by_role: dict[str, list[dict]] = {}
+    for row in rows:
+        position = role.get(row["puuid"], "")
+        if position:
+            by_role.setdefault(position, []).append(row)
+    for position, members in by_role.items():
+        if len(members) != 2 or team.get(members[0]["puuid"]) == team.get(members[1]["puuid"]):
+            continue
+        left, right = members
+        for column in LANE_OUTCOMES:
+            a, b = left.get(column), right.get(column)
+            if a is None or b is None:
+                continue
+            left[f"{column}_diff"] = float(a) - float(b)
+            right[f"{column}_diff"] = float(b) - float(a)
+    for row in rows:
+        for column in LANE_OUTCOMES:
+            row.setdefault(f"{column}_diff", 0.0)
+    return rows
 
 
 EARLY_FEATURE_COLUMNS = [
@@ -212,6 +240,9 @@ EARLY_FEATURE_COLUMNS = [
     "e_wards_killed_pm",
     "e_first_back_minute",
     "e_gold_at_15",
+    "e_gold_at_15_diff",
+    "e_xp_at_15_diff",
+    "e_cs_at_15_diff",
     "e_xp_at_15",
     "e_cs_at_15",
     "e_jungle_cs_at_15",

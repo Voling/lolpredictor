@@ -1,4 +1,5 @@
 import json
+import sys
 import logging
 
 import numpy as np
@@ -6,13 +7,14 @@ import pandas as pd
 
 from ..config import Settings, get_settings
 from .early import EARLY_FEATURE_COLUMNS
+from .traits import load_traits
 from .wave import WAVE_FEATURE_COLUMNS
 from .normalise import apply_normaliser, fit_normaliser, player_residuals
 from .propensity import PROPENSITY_COLUMNS, fit_propensities
 
 logger = logging.getLogger(__name__)
 
-STYLE_AXES: dict[str, dict[str, float]] = {
+_HAND_AXES: dict[str, dict[str, float]] = {
     "invading": {
         "e_enemy_jungle_share": 1.0,
         "e_invade_cs_share": 0.9,
@@ -42,7 +44,7 @@ STYLE_AXES: dict[str, dict[str, float]] = {
     "tempo": {
         "e_first_back_minute": -1.0,
         "e_level_at_15": 0.8,
-        "e_gold_at_15": 0.5,
+        "e_gold_at_15_diff": 0.5,
     },
     "lane_control": {
         "w_push_share": 1.0,
@@ -50,7 +52,8 @@ STYLE_AXES: dict[str, dict[str, float]] = {
     },
 }
 
-STYLE_COLUMNS = [f"style_{name}" for name in STYLE_AXES]
+STYLE_AXES: dict[str, dict[str, float]] = {}
+STYLE_COLUMNS: list[str] = []
 
 
 def feature_columns(frame: pd.DataFrame) -> list[str]:
@@ -59,6 +62,24 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
 
 def normaliser(frame: pd.DataFrame) -> dict:
     return fit_normaliser(frame, feature_columns(frame))
+
+
+def active_axes(settings: Settings | None = None) -> dict:
+    learned = load_traits(settings)
+    axes = learned.get("axes") if learned else None
+    if not axes:
+        return _HAND_AXES
+    kept = set(learned.get("kept") or axes)
+    return {name: weights for name, weights in axes.items() if name in kept} or _HAND_AXES
+
+
+def _refresh_axes(settings: Settings | None = None) -> None:
+    STYLE_AXES.clear()
+    STYLE_AXES.update(active_axes(settings))
+    STYLE_COLUMNS[:] = [f"style_{name}" for name in STYLE_AXES]
+    dataset = sys.modules.get("synergy.ml.dataset")
+    if dataset is not None and hasattr(dataset, "refresh_columns"):
+        dataset.refresh_columns()
 
 
 def _style_scores(scaled: pd.DataFrame) -> pd.DataFrame:
@@ -80,11 +101,6 @@ def participation_styles(participations: pd.DataFrame, stats: dict) -> pd.DataFr
     return pd.concat([keys, styles.reset_index(drop=True)], axis=1)
 
 
-def load_normaliser(settings: Settings | None = None) -> dict:
-    settings = settings or get_settings()
-    with open(settings.processed_dir / "normaliser.json", encoding="utf-8") as handle:
-        return json.load(handle)
-
 
 def build_profiles(
     participations: pd.DataFrame,
@@ -94,6 +110,7 @@ def build_profiles(
 ) -> pd.DataFrame:
     settings = settings or get_settings()
     min_games = settings.min_profile_games if min_games is None else min_games
+    _refresh_axes(settings)
     stats = normaliser(participations)
     scaled = player_residuals(participations, stats["columns"])
     styles = _style_scores(scaled)
@@ -145,6 +162,4 @@ def build_profiles(
     return profile
 
 
-def load_profiles(settings: Settings | None = None) -> pd.DataFrame:
-    settings = settings or get_settings()
-    return pd.read_parquet(settings.processed_dir / "player_profiles.parquet")
+_refresh_axes()

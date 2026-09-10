@@ -101,7 +101,7 @@ def _make_match(match_index: int, roster: list[dict], rng: random.Random, settin
 
     duration_min = int(min(max(rng.gauss(30, 6), 19), 46))
     match_id = f"NA1_SYN{match_index:06d}"
-    game_creation = 1735689600000 + match_index * 2_700_000 + rng.randint(0, 900_000)
+    game_creation = 1767225600000 + match_index * 2_700_000 + rng.randint(0, 900_000)
 
     participants = []
     pid = 0

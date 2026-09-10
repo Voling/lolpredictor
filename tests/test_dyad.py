@@ -1,5 +1,3 @@
-import pytest
-
 from synergy.features.dyad import DYAD_FEATURE_COLUMNS, dyad_rows
 from synergy.features.extra import EXTRA_FEATURE_COLUMNS, extra_rows
 from tests.test_features import build_match, build_timeline

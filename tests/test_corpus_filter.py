@@ -1,5 +1,3 @@
-import pytest
-
 from synergy.config import Settings
 from synergy.features.build import qualifying_matches
 from synergy.ranks import rank_to_lp
