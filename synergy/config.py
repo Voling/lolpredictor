@@ -59,6 +59,7 @@ class Settings:
     seed_riot_id: str = field(default_factory=lambda: _str("SEED_RIOT_ID", "bblskibs#gotg"))
 
     queue_id: int = field(default_factory=lambda: _int("CRAWL_QUEUE_ID", 420))
+    timescale: bool = field(default_factory=lambda: _bool("USE_TIMESCALE", True))
     redis_url: str = field(default_factory=lambda: _str("REDIS_URL", "redis://localhost:6380/0"))
     cache_ttl: int = field(default_factory=lambda: _int("CACHE_TTL_SECONDS", 86400))
     min_tier: str = field(default_factory=lambda: _str("CRAWL_MIN_TIER", "DIAMOND"))

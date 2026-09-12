@@ -14,6 +14,7 @@ from ..config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+TIMESCALE = Path(__file__).resolve().parent.parent / "db" / "timescale.sql"
 ACTOR_KEYS = ("killerId", "creatorId", "participantId")
 POSITIONS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
 
@@ -53,6 +54,16 @@ class Store:
         if not self._schema_ready():
             with self._tx() as cursor:
                 cursor.execute(SCHEMA.read_text(encoding="utf-8"))
+            self._apply_timescale()
+
+    def _apply_timescale(self) -> None:
+        if not self.settings.timescale:
+            return
+        try:
+            with self._tx() as cursor:
+                cursor.execute(TIMESCALE.read_text(encoding="utf-8"))
+        except psycopg.Error as exc:
+            logger.info("timescale setup skipped: %s", exc)
 
     def _schema_ready(self) -> bool:
         with self._tx() as cursor:
