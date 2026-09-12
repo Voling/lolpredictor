@@ -27,7 +27,7 @@ from .timeline import ParsedTimeline, pair_rows
 from .champions import champion_profiles
 from .duo import fit_duo_effect
 from .traits import fit_traits
-from .valuesurface import fit_value_surface
+from .valuesurface import fit_value_model, fit_value_surface
 from .dyad import dyad_rows
 from .extra import extra_rows
 from .jungle import jungle_openings
@@ -276,6 +276,7 @@ def fit_reports(settings: Settings, counts: dict[str, int]) -> dict:
             )
             surface = fit_value_surface(full, states, settings)
             reports["value_surface"] = {"cells": int(len(surface))}
+            reports["value_model"] = fit_value_model(full, states, settings)
             pairs = pd.read_parquet(
                 settings.processed_dir / FILENAMES["pairs"], columns=["puuid_a", "puuid_b"]
             )
