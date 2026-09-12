@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS frames (
     level           SMALLINT,
     damage_done     INTEGER,
     damage_taken    INTEGER,
+    health          INTEGER,
+    health_max      INTEGER,
+    movement_speed  INTEGER,
     PRIMARY KEY (match_id, puuid, minute)
 );
 CREATE INDEX IF NOT EXISTS frames_player_minute ON frames (puuid, minute);
@@ -76,6 +79,10 @@ CREATE TABLE IF NOT EXISTS events (
     building_type   TEXT,
     lane_type       TEXT,
     item_id         INTEGER,
+    tower_type      TEXT,
+    killer_team_id  SMALLINT,
+    kill_type       TEXT,
+    monster_sub_type TEXT,
     PRIMARY KEY (match_id, event_index)
 );
 CREATE INDEX IF NOT EXISTS events_type ON events (type, minute);

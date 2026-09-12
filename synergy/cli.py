@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("deep-compare", help="score learned embeddings against the handwritten axes")
 
     sub.add_parser("db-load", help="load the raw archive on disk into postgres")
+    reingest_cmd = sub.add_parser("reingest", help="rewrite frames and events from the raw timelines")
+    reingest_cmd.add_argument("--workers", type=int, default=None)
 
     sub.add_parser("status", help="show corpus and model status")
 
@@ -137,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
         _report({
             key: value if isinstance(value, int) else len(value) for key, value in tables.items()
         })
+        return 0
+
+    if args.command == "reingest":
+        from .db.reingest import reingest
+
+        _report(reingest(settings, workers=args.workers))
         return 0
 
     if args.command == "ranks":

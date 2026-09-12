@@ -178,6 +178,7 @@ class Store:
                     continue
                 position = payload.get("position") or {}
                 damage = payload.get("damageStats") or {}
+                stats = payload.get("championStats") or {}
                 frames.append(
                     (
                         match_id,
@@ -193,6 +194,9 @@ class Store:
                         payload.get("level"),
                         damage.get("totalDamageDoneToChampions"),
                         damage.get("totalDamageTaken"),
+                        stats.get("health"),
+                        stats.get("healthMax"),
+                        stats.get("movementSpeed"),
                     )
                 )
             for event in frame.get("events") or []:
@@ -222,6 +226,10 @@ class Store:
                         event.get("buildingType"),
                         event.get("laneType"),
                         event.get("itemId"),
+                        event.get("towerType"),
+                        event.get("killerTeamId"),
+                        event.get("killType"),
+                        event.get("monsterSubType"),
                     )
                 )
         with self._tx() as cursor:
@@ -230,15 +238,17 @@ class Store:
             if frames:
                 cursor.executemany(
                     "INSERT INTO frames (match_id, puuid, minute, x, y, total_gold, current_gold, xp,"
-                    " minions, jungle_minions, level, damage_done, damage_taken)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " minions, jungle_minions, level, damage_done, damage_taken,"
+                    " health, health_max, movement_speed)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     frames,
                 )
             if events:
                 cursor.executemany(
                     "INSERT INTO events (match_id, event_index, minute, timestamp_ms, type, actor,"
-                    " victim, assists, x, y, ward_type, monster_type, building_type, lane_type, item_id)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " victim, assists, x, y, ward_type, monster_type, building_type, lane_type,"
+                    " item_id, tower_type, killer_team_id, kill_type, monster_sub_type)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     events,
                 )
         return len(frames), len(events)
