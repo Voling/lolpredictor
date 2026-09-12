@@ -178,7 +178,7 @@ class Seeder:
             if known is None:
                 self.store.upsert_player(puuid, depth=depth + 1)
                 self.report.players_discovered += 1
-            if depth + 1 <= self.settings.max_depth:
+            if self.settings.crawl_discover and depth + 1 <= self.settings.max_depth:
                 self.store.push_frontier(puuid, depth + 1, priority=1.0)
 
     def _since(self) -> int | None:
@@ -243,10 +243,18 @@ class Seeder:
 
     async def run(self, riot_id: str | None = None, leaderboard: bool = False) -> CrawlReport:
         self.store.reset_active()
+        seeded = None
         if leaderboard:
             self.report.leaderboard = await self.seed_leaderboard()
         else:
-            await self.seed(riot_id)
+            seeded = await self.seed(riot_id)
+        if seeded is not None:
+            self.store.mark_frontier(seeded, "active")
+            try:
+                await self._crawl_player(seeded, 0)
+            except Unauthorized as exc:
+                self.report.errors.append(str(exc))
+                return self.report
         while True:
             if self.report.matches_added >= self.settings.max_matches:
                 break

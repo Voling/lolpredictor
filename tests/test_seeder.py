@@ -291,18 +291,16 @@ def _frontier(store, puuid):
         return cursor.fetchone()
 
 
-def test_push_frontier_keeps_the_shortest_path_to_a_player(crawl_settings):
+@pytest.mark.parametrize(
+    "first, second, depth",
+    [((3, 1.0), (1, 1.0), 1), ((1, 1.0), (3, 1.0), 1)],
+    ids=["a shorter path wins", "a longer path is ignored"],
+)
+def test_discovery_keeps_the_shortest_path_to_a_player(crawl_settings, first, second, depth):
     with Store(crawl_settings) as store:
-        store.push_frontier("p", depth=3, priority=1.0)
-        store.push_frontier("p", depth=1, priority=1.0)
-        assert _frontier(store, "p")["depth"] == 1
-
-
-def test_push_frontier_never_lengthens_the_path(crawl_settings):
-    with Store(crawl_settings) as store:
-        store.push_frontier("p", depth=1, priority=1.0)
-        store.push_frontier("p", depth=3, priority=1.0)
-        assert _frontier(store, "p")["depth"] == 1
+        store.push_frontier("p", depth=first[0], priority=first[1])
+        store.push_frontier("p", depth=second[0], priority=second[1])
+        assert _frontier(store, "p")["depth"] == depth
 
 
 def test_discovery_boosts_priority_for_a_player_seen_again(crawl_settings):
@@ -312,20 +310,15 @@ def test_discovery_boosts_priority_for_a_player_seen_again(crawl_settings):
         assert _frontier(store, "p")["priority"] == 6.0
 
 
-def test_seeding_overrides_a_discovered_players_depth_and_priority(crawl_settings):
+def test_seeding_requeues_a_finished_player_without_lowering_priority(crawl_settings):
     with Store(crawl_settings) as store:
         store.push_frontier("p", depth=2, priority=1.0)
         store.mark_frontier("p", "done")
         store.push_frontier("p", depth=0, priority=1744.0, requeue=True)
         row = _frontier(store, "p")
         assert (row["depth"], row["priority"], row["state"]) == (0, 1744.0, "pending")
-
-
-def test_seeding_does_not_lower_an_existing_priority(crawl_settings):
-    with Store(crawl_settings) as store:
-        store.push_frontier("p", depth=0, priority=3300.0, requeue=True)
         store.push_frontier("p", depth=0, priority=17.0, requeue=True)
-        assert _frontier(store, "p")["priority"] == 3300.0
+        assert _frontier(store, "p")["priority"] == 1744.0
 
 
 def test_frontier_pops_the_shallowest_then_highest_priority_first(crawl_settings):
@@ -334,3 +327,26 @@ def test_frontier_pops_the_shallowest_then_highest_priority_first(crawl_settings
         store.push_frontier("low", depth=0, priority=17.0)
         store.push_frontier("high", depth=0, priority=1744.0)
         assert [row["puuid"] for row in store.pop_frontier(3)] == ["high", "low", "deep"]
+
+
+def test_a_named_seed_is_crawled_before_a_crowded_frontier(crawl_settings):
+    with Store(crawl_settings) as store:
+        for index in range(60):
+            store.push_frontier(f"crowd{index:04d}", depth=0, priority=1e9)
+    fake = FakeRiot()
+    report, _ = run_crawl(crawl_settings, fake)
+    with Store(crawl_settings) as store:
+        assert _frontier(store, "puuid-seed")["state"] == "done"
+    assert report.players_crawled >= 1
+
+
+def test_discovery_can_be_switched_off(crawl_settings):
+    crawl_settings.crawl_discover = False
+    fake = FakeRiot()
+    report, counts = run_crawl(crawl_settings, fake)
+    assert report.matches_added >= 1
+    assert report.players_discovered == 0
+    with Store(crawl_settings) as store:
+        with store.conn.cursor() as cursor:
+            cursor.execute("SELECT count(*) AS n FROM frontier WHERE depth > 0")
+            assert cursor.fetchone()["n"] == 0

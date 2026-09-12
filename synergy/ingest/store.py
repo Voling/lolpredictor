@@ -47,8 +47,14 @@ class Store:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
         self.conn = psycopg.connect(self.settings.database_url, row_factory=dict_row, autocommit=False)
+        if not self._schema_ready():
+            with self._tx() as cursor:
+                cursor.execute(SCHEMA.read_text(encoding="utf-8"))
+
+    def _schema_ready(self) -> bool:
         with self._tx() as cursor:
-            cursor.execute(SCHEMA.read_text(encoding="utf-8"))
+            cursor.execute("SELECT to_regclass('matches') AS present")
+            return cursor.fetchone()["present"] is not None
 
     @contextmanager
     def _tx(self):
@@ -99,7 +105,7 @@ class Store:
 
     def save_window(self, match_id: str, timeline: dict) -> None:
         _write_json_gz(self.window_path(match_id), timeline)
-        with self.conn.cursor() as cursor:
+        with self._tx() as cursor:
             cursor.execute(
                 "UPDATE matches SET window_minutes=%s WHERE match_id=%s",
                 (timeline.get("info", {}).get("windowMinutes"), match_id),
@@ -257,7 +263,7 @@ class Store:
         return len(known)
 
     def record_identities(self, participants: list[dict]) -> int:
-        with self.conn.cursor() as cursor:
+        with self._tx() as cursor:
             count = self._record_identities(cursor, participants)
         return count
 
@@ -339,7 +345,7 @@ class Store:
             if requeue
             else " depth=LEAST(frontier.depth, EXCLUDED.depth), priority=frontier.priority + 1"
         )
-        with self.conn.cursor() as cursor:
+        with self._tx() as cursor:
             cursor.execute(
                 "INSERT INTO frontier (puuid, depth, priority, state) VALUES (%s,%s,%s,'pending')"
                 " ON CONFLICT (puuid) DO UPDATE SET" + update,
