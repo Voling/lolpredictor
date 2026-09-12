@@ -119,8 +119,24 @@ class SynergyService:
         else:
             found = profiles[profiles["game_name"].str.lower() == query.lower()]
         if found.empty:
-            raise UnknownPlayer(query)
+            return self._resolve_alias(query)
         return found.iloc[0]
+
+    def _resolve_alias(self, query: str) -> pd.Series:
+        from ..ingest.store import Store
+
+        _, profiles = self._require()
+        if "#" not in query:
+            raise UnknownPlayer(query)
+        name, tag = split_riot_id(query)
+        store = Store(self.settings)
+        try:
+            player = store.find_player_by_riot_id(name, tag)
+        finally:
+            store.close()
+        if not player or player["puuid"] not in profiles.index:
+            raise UnknownPlayer(query)
+        return profiles.loc[player["puuid"]]
 
     def search(self, term: str = "", limit: int = 25) -> list[dict]:
         _, profiles = self._require()

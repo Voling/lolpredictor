@@ -46,17 +46,30 @@ def percentile(payload: dict, column: str, value: float) -> float | None:
     return float(np.interp(value, table, payload["grid"]) * 100.0)
 
 
-def _match_ids(store: Store, name: str, tag: str) -> list[str]:
+def _puuids(store: Store, name: str, tag: str) -> set[str]:
     with store.conn.cursor() as cursor:
         cursor.execute(
-            "SELECT DISTINCT c.match_id FROM participations c JOIN players p ON p.puuid = c.puuid"
-            " WHERE lower(p.game_name) = lower(%s) AND lower(p.tag_line) = lower(%s)",
-            (name, tag),
+            "SELECT puuid FROM players"
+            " WHERE lower(game_name) = lower(%s) AND lower(tag_line) = lower(%s)"
+            " UNION SELECT puuid FROM player_names"
+            " WHERE lower(game_name) = lower(%s) AND lower(tag_line) = lower(%s)",
+            (name, tag, name, tag),
+        )
+        return {row["puuid"] for row in cursor.fetchall()}
+
+
+def _match_ids(store: Store, puuids: set[str]) -> list[str]:
+    if not puuids:
+        return []
+    with store.conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT DISTINCT match_id FROM participations WHERE puuid = ANY(%s)",
+            (list(puuids),),
         )
         return [row["match_id"] for row in cursor.fetchall()]
 
 
-def _rows_for(settings: Settings, match_ids: list[str], wanted: set[str]) -> list[dict]:
+def _rows_for(settings: Settings, match_ids: list[str], puuids: set[str]) -> list[dict]:
     out = []
     for match_id in match_ids:
         try:
@@ -67,7 +80,6 @@ def _rows_for(settings: Settings, match_ids: list[str], wanted: set[str]) -> lis
         except (FileNotFoundError, OSError):
             continue
         parsed = ParsedTimeline(match, window)
-        names = {p["puuid"]: (p.get("riotIdGameName") or "") for p in match["info"]["participants"]}
         merged = {row["puuid"]: dict(row) for row in early_rows(match, window, parsed=parsed)}
         for source in (
             wave_rows(match, window, parsed=parsed),
@@ -85,7 +97,7 @@ def _rows_for(settings: Settings, match_ids: list[str], wanted: set[str]) -> lis
         champions = {p["puuid"]: p.get("championName", "") for p in match["info"]["participants"]}
         wins = {p["puuid"]: bool(p.get("win")) for p in match["info"]["participants"]}
         for puuid, row in merged.items():
-            if names.get(puuid, "").lower() in wanted:
+            if puuid in puuids:
                 row["match_id"] = match_id
                 row["team_id"] = teams.get(puuid, 0)
                 row["position"] = roles.get(puuid, "")
@@ -108,10 +120,11 @@ def outsider_profile(
     name, _, tag = riot_id.partition("#")
     store = Store(settings)
     try:
-        match_ids = _match_ids(store, name, tag)
+        puuids = _puuids(store, name, tag)
+        match_ids = _match_ids(store, puuids)
     finally:
         store.close()
-    rows = _rows_for(settings, match_ids, {name.lower()})
+    rows = _rows_for(settings, match_ids, puuids)
     if not rows:
         payload = {"riot_id": riot_id, "games": 0, "features": {}}
         cache.set(NAMESPACE, key, payload)
@@ -201,10 +214,11 @@ def outsider_synergy(left: str, right: str, settings: Settings | None = None) ->
         name, _, _tag = riot_id.partition("#")
         store = Store(settings)
         try:
-            match_ids = _match_ids(store, name, _tag)
+            puuids = _puuids(store, name, _tag)
+            match_ids = _match_ids(store, puuids)
         finally:
             store.close()
-        rows = _rows_for(settings, match_ids, {name.lower()})
+        rows = _rows_for(settings, match_ids, puuids)
         if not rows:
             raise ValueError(f"no stored games for {riot_id}")
         frames[side] = pd.DataFrame(rows)

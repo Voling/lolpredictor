@@ -350,3 +350,48 @@ def test_discovery_can_be_switched_off(crawl_settings):
         with store.conn.cursor() as cursor:
             cursor.execute("SELECT count(*) AS n FROM frontier WHERE depth > 0")
             assert cursor.fetchone()["n"] == 0
+
+
+def test_a_renamed_player_is_found_by_either_name(crawl_settings):
+    first = make_match("NA1_RENAME_OLD", [f"puuid-{i}" for i in range(10)])
+    for participant in first["info"]["participants"]:
+        participant["riotIdGameName"] = "oldname"
+        participant["riotIdTagline"] = "aaaa"
+    second = make_match("NA1_RENAME_NEW", [f"puuid-{i}" for i in range(10)])
+    for participant in second["info"]["participants"]:
+        participant["riotIdGameName"] = "newname"
+        participant["riotIdTagline"] = "bbbb"
+    with Store(crawl_settings) as store:
+        store.save_match(first)
+        store.save_match(second)
+        by_old = store.find_player_by_riot_id("oldname", "aaaa")
+        by_new = store.find_player_by_riot_id("newname", "bbbb")
+        assert by_old is not None and by_new is not None
+        assert by_old["puuid"] == by_new["puuid"]
+        assert store.find_player_by_riot_id("oldname", "bbbb") is None
+
+
+def test_the_new_name_is_only_reachable_through_the_alias_table(crawl_settings):
+    first = make_match("NA1_GUARD_OLD", [f"puuid-g{i}" for i in range(10)])
+    for p in first["info"]["participants"]:
+        p["riotIdGameName"], p["riotIdTagline"] = "guardold", "aaaa"
+    second = make_match("NA1_GUARD_NEW", [f"puuid-g{i}" for i in range(10)])
+    for p in second["info"]["participants"]:
+        p["riotIdGameName"], p["riotIdTagline"] = "guardnew", "bbbb"
+    with Store(crawl_settings) as store:
+        store.save_match(first)
+        store.save_match(second)
+        with store.conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT puuid FROM players WHERE lower(game_name)='guardnew'"
+                " AND lower(tag_line)='bbbb'"
+            )
+            assert cursor.fetchall() == []
+            cursor.execute(
+                "SELECT game_name, tag_line FROM player_names WHERE puuid='puuid-g0'"
+                " ORDER BY game_name"
+            )
+            assert [tuple(row.values()) for row in cursor.fetchall()] == [
+                ("guardnew", "bbbb"),
+                ("guardold", "aaaa"),
+            ]

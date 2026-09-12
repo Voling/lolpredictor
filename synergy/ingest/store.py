@@ -284,6 +284,11 @@ class Store:
                 "UPDATE players SET game_name=%s, tag_line=%s WHERE puuid=%s AND game_name IS NULL",
                 known,
             )
+            cursor.executemany(
+                "INSERT INTO player_names (puuid, game_name, tag_line) VALUES (%s,%s,%s)"
+                " ON CONFLICT DO NOTHING",
+                [(puuid, name, tag) for name, tag, puuid in known],
+            )
         return len(known)
 
     def record_identities(self, participants: list[dict]) -> int:
@@ -321,7 +326,16 @@ class Store:
     def find_player_by_riot_id(self, name: str, tag: str) -> dict | None:
         with self.conn.cursor() as cursor:
             cursor.execute(
-                "SELECT * FROM players WHERE lower(game_name)=lower(%s) AND lower(tag_line)=lower(%s)",
+                "SELECT p.* FROM players p WHERE lower(p.game_name)=lower(%s)"
+                " AND lower(p.tag_line)=lower(%s)",
+                (name, tag),
+            )
+            found = cursor.fetchone()
+            if found:
+                return found
+            cursor.execute(
+                "SELECT p.* FROM players p JOIN player_names n ON n.puuid = p.puuid"
+                " WHERE lower(n.game_name)=lower(%s) AND lower(n.tag_line)=lower(%s)",
                 (name, tag),
             )
             return cursor.fetchone()

@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 CREATE INDEX IF NOT EXISTS matches_created ON matches (game_creation DESC);
 
+CREATE TABLE IF NOT EXISTS player_names (
+    puuid       TEXT NOT NULL REFERENCES players (puuid) ON DELETE CASCADE,
+    game_name   TEXT NOT NULL,
+    tag_line    TEXT NOT NULL,
+    PRIMARY KEY (puuid, game_name, tag_line)
+);
+
+CREATE INDEX IF NOT EXISTS player_names_lookup
+    ON player_names (lower(game_name), lower(tag_line));
+
 CREATE TABLE IF NOT EXISTS participations (
     match_id        TEXT NOT NULL REFERENCES matches (match_id) ON DELETE CASCADE,
     puuid           TEXT NOT NULL REFERENCES players (puuid),
