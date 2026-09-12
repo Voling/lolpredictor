@@ -95,11 +95,15 @@ def load_policy_vectors(settings: Settings | None = None) -> tuple[pd.DataFrame,
         return vectors, json.load(handle)
 
 
-def standardise(vectors: pd.DataFrame, report: dict) -> np.ndarray:
+def standardise(vectors: pd.DataFrame, report: dict, weighted: bool = True) -> np.ndarray:
     columns = list(report["reliability"])
     centre = np.array([report["mean"][name] for name in columns])
     spread = np.array([report["std"][name] or 1.0 for name in columns])
     matrix = (vectors[columns].to_numpy(dtype=float) - centre) / spread
+    if weighted:
+        matrix = matrix * np.sqrt(
+            np.clip([report["reliability"][name] for name in columns], 0.0, None)
+        )
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix / np.clip(norms, 1e-9, None)
 

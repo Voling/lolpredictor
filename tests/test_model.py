@@ -81,9 +81,9 @@ def test_model_recovers_planted_synergy(tmp_path, database_url):
 
     settings = Settings(data_dir=tmp_path, database_url=database_url)
     settings.ensure_dirs()
-    generate(matches=900, players=90, duos=12, seed=13, settings=settings)
+    generate(matches=600, players=90, duos=12, seed=13, settings=settings)
     build_windows(settings)
-    build_tables(settings)
+    build_tables(settings, reports=False)
     train(settings, min_games=3)
 
     service = SynergyService(settings).load()
@@ -147,3 +147,29 @@ def test_profiles_report_style_confidence(tables, corpus_settings):
     assert profiles["style_confidence"].between(0, 1).all()
     ordered = profiles.sort_values("games")
     assert ordered["style_confidence"].is_monotonic_increasing
+
+
+def test_the_feature_set_has_no_exact_linear_dependency(tables):
+    from synergy.features.player import feature_columns
+
+    frame = tables["participations"]
+    columns = feature_columns(frame)
+    matrix = np.nan_to_num(frame[columns].to_numpy(dtype=float))
+    spread = matrix.std(axis=0)
+    varying = [name for name, value in zip(columns, spread) if value > 0]
+    matrix = matrix[:, spread > 0]
+    matrix = (matrix - matrix.mean(axis=0)) / matrix.std(axis=0)
+    values, vectors = np.linalg.eigh(np.cov(matrix.T))
+    dead = np.where(values < 1e-8)[0]
+    offenders = [
+        sorted(
+            (
+                (abs(float(vectors[index, position])), varying[index])
+                for index in range(len(varying))
+                if abs(float(vectors[index, position])) > 0.08
+            ),
+            reverse=True,
+        )
+        for position in dead
+    ]
+    assert not len(dead), f"feature columns are linearly dependent: {offenders}"

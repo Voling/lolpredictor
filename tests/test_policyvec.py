@@ -34,15 +34,11 @@ def settings(tmp_path):
     return Settings(data_dir=tmp_path)
 
 
-def test_only_reliable_cells_survive(settings):
+def test_only_reliable_cells_survive_and_the_planted_one_does(settings):
     vectors, report = fit_policy_vectors(build_policy(), settings)
     assert report["cells_kept"] < report["cells_tested"]
     assert set(vectors.columns) == set(report["reliability"])
     assert all(value >= report["min_reliability"] for value in report["reliability"].values())
-
-
-def test_the_planted_cell_is_kept(settings):
-    _, report = fit_policy_vectors(build_policy(), settings)
     assert "even|roam" in report["reliability"]
 
 
@@ -76,10 +72,6 @@ def test_neighbours_exclude_the_query_and_respect_role(settings):
     assert "p0" not in found.index
     assert (roles.reindex(found.index) == roles.loc["p0"]).all()
     assert found.is_monotonic_decreasing
-
-
-def test_an_unknown_player_yields_nothing(settings):
-    vectors, report = fit_policy_vectors(build_policy(), settings)
     assert neighbours("nobody", vectors, report).empty
 
 
@@ -87,3 +79,29 @@ def test_a_corpus_too_small_to_measure_keeps_no_cells(settings):
     vectors, report = fit_policy_vectors(build_policy(players=20, minutes=10), settings)
     assert vectors.empty
     assert report == {}
+
+
+def test_weighting_pulls_the_vector_toward_the_more_reliable_cell():
+    report = {
+        "reliability": {"a": 0.9, "b": 0.1},
+        "mean": {"a": 0.0, "b": 0.0},
+        "std": {"a": 1.0, "b": 1.0},
+    }
+    vectors = pd.DataFrame({"a": [1.0], "b": [1.0]})
+    plain = standardise(vectors, report, weighted=False)
+    weighted = standardise(vectors, report, weighted=True)
+    assert plain[0][0] == pytest.approx(plain[0][1])
+    assert weighted[0][0] > weighted[0][1]
+    assert np.linalg.norm(weighted[0]) == pytest.approx(1.0)
+
+
+def test_equal_reliability_makes_weighting_a_no_op():
+    report = {
+        "reliability": {"a": 0.7, "b": 0.7},
+        "mean": {"a": 0.0, "b": 0.0},
+        "std": {"a": 1.0, "b": 1.0},
+    }
+    vectors = pd.DataFrame({"a": [1.0], "b": [-2.0]})
+    assert np.allclose(
+        standardise(vectors, report, weighted=False), standardise(vectors, report, weighted=True)
+    )

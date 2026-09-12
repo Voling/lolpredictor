@@ -58,8 +58,10 @@ def _jungler_events(parsed: ParsedTimeline, jungler: int | None, span: int) -> t
     return invades, ganks
 
 
-def ward_rows(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def ward_rows(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     span = len(parsed.minutes) - 1

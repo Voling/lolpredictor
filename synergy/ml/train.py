@@ -5,7 +5,7 @@ import pandas as pd
 
 from ..config import Settings, get_settings
 from ..features.build import load_tables
-from ..features.player import build_profiles
+from ..features.player import _refresh_axes, build_profiles
 from .dataset import PAIR_HISTORY_SOURCE, attach_dyads, build_pair_dataset, canonical_pairs
 from .model import SynergyModel
 
@@ -33,13 +33,11 @@ def build_pair_history(pairs: pd.DataFrame) -> pd.DataFrame:
 
 def train(settings: Settings | None = None, min_games: int | None = None) -> dict:
     settings = settings or get_settings()
-    tables = load_tables(settings)
+    tables = load_tables(settings, names=("participations", "pairs", "opportunities", "dyads"))
     participations = tables["participations"]
     pairs = attach_dyads(tables["pairs"], tables.get("dyads"))
     if participations.empty or pairs.empty:
         raise RuntimeError("no processed data, run the ingest and features steps first")
-
-    from ..features.player import _refresh_axes
 
     _refresh_axes(settings)
     profiles = build_profiles(

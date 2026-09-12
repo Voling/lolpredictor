@@ -22,8 +22,10 @@ GRUB = "HORDE"
 DRAGON = "DRAGON"
 
 
-def state_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def state_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)

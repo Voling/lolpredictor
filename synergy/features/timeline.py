@@ -2,8 +2,9 @@ import math
 from itertools import combinations
 from typing import Any
 
-MAP_MAX = 15000.0
-LANE_TOLERANCE = 2200.0
+from .anchors import dead_at, death_windows, position_anchors
+from .regions import LANE_TOLERANCE, MAP_SPAN
+
 CLOSE_RANGE = 2500.0
 BANDS = ((0, 10), (10, 20), (20, 90))
 VISION_WARDS = {"YELLOW_TRINKET", "SIGHT_WARD", "CONTROL_WARD", "BLUE_TRINKET"}
@@ -64,6 +65,8 @@ class ParsedTimeline:
     def __init__(self, match: dict, timeline: dict):
         self.match_id = timeline.get("metadata", {}).get("matchId") or match["metadata"]["matchId"]
         self.pid_to_puuid = _participant_puuids(timeline, match)
+        self._anchors: dict | None = None
+        self._deaths: dict | None = None
         self.puuid_to_pid = {puuid: pid for pid, puuid in self.pid_to_puuid.items()}
         self.roles: dict[int, str] = {}
         self.teams: dict[int, int] = {}
@@ -136,6 +139,39 @@ class ParsedTimeline:
         return ids
 
 
+    @property
+    def deaths(self) -> dict[int, list[tuple[float, float]]]:
+        if self._deaths is None:
+            self._deaths = death_windows(self, float(len(self.minutes)))
+        return self._deaths
+
+    def alive_at(self, pid: int, minute: float) -> bool:
+        return not dead_at(self.deaths.get(pid, ()), minute)
+
+    @property
+    def anchors(self) -> dict[int, list[tuple[float, float, float, int]]]:
+        if self._anchors is None:
+            self._anchors = position_anchors(self, float(len(self.minutes)))
+        return self._anchors
+
+    def position_at(
+        self, pid: int, minute: float, ignore: int | None = None
+    ) -> tuple[float, float] | None:
+        track = self.positions.get(pid) or []
+        if not track:
+            return None
+        index = min(max(int(minute + 0.5), 0), len(track) - 1)
+        nearest = track[index]
+        best = abs(minute - index)
+        for when, x, y, source in self.anchors.get(pid, ()):
+            if source == ignore:
+                continue
+            gap = abs(minute - when)
+            if gap < best:
+                best, nearest = gap, (x, y)
+        return nearest
+
+
 def pair_rows(match: dict, timeline: dict, span: int = EARLY_MINUTES) -> list[dict]:
     parsed = ParsedTimeline(match, timeline)
     kills = [
@@ -189,9 +225,9 @@ def pair_rows(match: dict, timeline: dict, span: int = EARLY_MINUTES) -> list[di
                         for p in match["info"]["participants"]
                         if int(p.get("teamId", 0)) == team
                     ))),
-                    "pair_mean_distance": (sum(distances) / len(distances) / MAP_MAX) if distances else 0.5,
+                    "pair_mean_distance": (sum(distances) / len(distances) / MAP_SPAN) if distances else 0.5,
                     "pair_lane_distance": (
-                        sum(lane_distances) / len(lane_distances) / MAP_MAX if lane_distances else 0.5
+                        sum(lane_distances) / len(lane_distances) / MAP_SPAN if lane_distances else 0.5
                     ),
                     "pair_close_share": (
                         sum(1 for d in distances if d < CLOSE_RANGE) / len(distances) if distances else 0.0

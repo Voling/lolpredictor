@@ -16,7 +16,9 @@ def _position(event: dict) -> tuple[float, float] | None:
     return float(payload["x"]), float(payload["y"])
 
 
-def _trigger(kind: str, event: dict, parsed: ParsedTimeline, detail: str = "") -> dict | None:
+def _trigger(
+    kind: str, event: dict, parsed: ParsedTimeline, detail: str = "", index: int | None = None
+) -> dict | None:
     spot = _position(event)
     if spot is None:
         return None
@@ -24,6 +26,7 @@ def _trigger(kind: str, event: dict, parsed: ParsedTimeline, detail: str = "") -
     return {
         "kind": kind,
         "detail": detail,
+        "event_index": index,
         "minute": float(event.get("timestamp", 0)) / 60000.0,
         "actor": actor,
         "actor_team": parsed.teams.get(actor, int(event.get("killerTeamId", 0) or 0)),
@@ -35,19 +38,19 @@ def _trigger(kind: str, event: dict, parsed: ParsedTimeline, detail: str = "") -
 
 def triggers(parsed: ParsedTimeline, limit: int) -> list[dict]:
     out = []
-    for event in parsed.events:
+    for index, event in enumerate(parsed.events):
         minute = float(event.get("timestamp", 0)) / 60000.0
         if minute > limit:
             continue
         kind = event.get("type")
         if kind == "ELITE_MONSTER_KILL" and str(event.get("monsterType")) in MONSTERS:
-            row = _trigger("objective", event, parsed, str(event.get("monsterType")))
+            row = _trigger("objective", event, parsed, str(event.get("monsterType")), index)
         elif kind == "CHAMPION_KILL":
-            row = _trigger("kill", event, parsed)
+            row = _trigger("kill", event, parsed, "", index)
         elif kind == "TURRET_PLATE_DESTROYED":
-            row = _trigger("plate", event, parsed)
+            row = _trigger("plate", event, parsed, "", index)
         elif kind == "BUILDING_KILL":
-            row = _trigger("building", event, parsed, str(event.get("towerType") or ""))
+            row = _trigger("building", event, parsed, str(event.get("towerType") or ""), index)
         else:
             continue
         if row is not None:
@@ -59,13 +62,18 @@ def triggers(parsed: ParsedTimeline, limit: int) -> list[dict]:
 
 def _reaction(parsed: ParsedTimeline, pid: int, trigger: dict, limit: int) -> dict:
     track = parsed.positions.get(pid) or []
-    minute = int(trigger["minute"])
-    before = max(minute - 1, 0)
+    when = float(trigger["minute"])
+    minute = int(when)
     spot = (trigger["x"], trigger["y"])
-    if before >= len(track) or minute >= len(track):
+    if not parsed.alive_at(pid, when):
         return {}
-    approach = math.hypot(track[before][0] - spot[0], track[before][1] - spot[1])
-    arrival = math.hypot(track[minute][0] - spot[0], track[minute][1] - spot[1])
+    source = trigger.get("event_index")
+    here = parsed.position_at(pid, when, ignore=source)
+    earlier = parsed.position_at(pid, max(when - 1.0, 0.0), ignore=source)
+    if here is None or earlier is None or minute >= len(track):
+        return {}
+    approach = math.hypot(earlier[0] - spot[0], earlier[1] - spot[1])
+    arrival = math.hypot(here[0] - spot[0], here[1] - spot[1])
     closing, latency, departure = arrival, float(LATENCY_WINDOW), arrival
     for step in range(1, LATENCY_WINDOW + 1):
         index = minute + step
@@ -89,8 +97,10 @@ def _reaction(parsed: ParsedTimeline, pid: int, trigger: dict, limit: int) -> di
     }
 
 
-def event_response_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def event_response_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)

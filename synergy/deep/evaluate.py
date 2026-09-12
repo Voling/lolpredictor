@@ -47,7 +47,7 @@ def _cross_validated_auc(X: pd.DataFrame, y: np.ndarray, phi: list[str], control
 
 def compare_representations(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
-    tables = load_tables(settings)
+    tables = load_tables(settings, names=("participations", "pairs"))
     participations, pairs = tables["participations"], tables["pairs"]
 
     path = settings.processed_dir / "game_embeddings.parquet"

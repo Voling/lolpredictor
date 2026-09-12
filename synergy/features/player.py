@@ -1,5 +1,4 @@
 import json
-import sys
 import logging
 
 import numpy as np
@@ -7,6 +6,7 @@ import pandas as pd
 
 from ..config import Settings, get_settings
 from .early import EARLY_FEATURE_COLUMNS
+from .excursion import EXCURSION_COLUMNS
 from .traits import load_traits
 from .wave import WAVE_FEATURE_COLUMNS
 from .normalise import apply_normaliser, fit_normaliser, player_residuals
@@ -23,7 +23,7 @@ _HAND_AXES: dict[str, dict[str, float]] = {
     "aggression": {
         "e_damage_done_pm": 1.0,
         "e_trade_ratio": 0.8,
-        "e_fight_volume_pm": 0.7,
+        "e_damage_taken_pm": 0.7,
         "e_damage_share": 0.6,
     },
     "frontline": {
@@ -57,7 +57,8 @@ STYLE_COLUMNS: list[str] = []
 
 
 def feature_columns(frame: pd.DataFrame) -> list[str]:
-    return [column for column in EARLY_FEATURE_COLUMNS + WAVE_FEATURE_COLUMNS if column in frame.columns]
+    known = EARLY_FEATURE_COLUMNS + WAVE_FEATURE_COLUMNS + EXCURSION_COLUMNS
+    return [column for column in known if column in frame.columns]
 
 
 def normaliser(frame: pd.DataFrame) -> dict:
@@ -77,9 +78,6 @@ def _refresh_axes(settings: Settings | None = None) -> None:
     STYLE_AXES.clear()
     STYLE_AXES.update(active_axes(settings))
     STYLE_COLUMNS[:] = [f"style_{name}" for name in STYLE_AXES]
-    dataset = sys.modules.get("synergy.ml.dataset")
-    if dataset is not None and hasattr(dataset, "refresh_columns"):
-        dataset.refresh_columns()
 
 
 def _style_scores(scaled: pd.DataFrame) -> pd.DataFrame:
@@ -100,6 +98,12 @@ def participation_styles(participations: pd.DataFrame, stats: dict) -> pd.DataFr
     keys = participations[["match_id", "puuid", "team_id", "position", "win"]].reset_index(drop=True)
     return pd.concat([keys, styles.reset_index(drop=True)], axis=1)
 
+
+
+def load_normaliser(settings: Settings | None = None) -> dict:
+    settings = settings or get_settings()
+    with open(settings.processed_dir / "normaliser.json", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def build_profiles(

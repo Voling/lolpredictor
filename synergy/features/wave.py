@@ -8,7 +8,6 @@ WAVE_CS = 4.0
 SUSTAINED_MINUTES = 3
 RESPONSE_WINDOW = 2
 EARLY_PUSH_MINUTE = 4
-MINIONS_PER_MINUTE = 13.0
 OWN_JUNGLE = {"JUNGLE_OWN_TOPSIDE", "JUNGLE_OWN_BOTSIDE"}
 ENEMY_JUNGLE = {"JUNGLE_ENEMY_TOPSIDE", "JUNGLE_ENEMY_BOTSIDE"}
 ACTIONS = ("invade", "join_lane", "objective", "recall", "hold")
@@ -30,14 +29,21 @@ def wave_states(parsed: ParsedTimeline, pid: int, span: int) -> list[str]:
     prefix = LANE_PREFIX.get(role)
     positions = parsed.positions.get(pid) or []
     cs = parsed.cs.get(pid) or []
+    jungle = parsed.jungle_cs.get(pid) or []
+    lane_cs = [
+        value - (jungle[index] if index < len(jungle) else 0.0) for index, value in enumerate(cs)
+    ]
     states = []
     for minute in range(min(len(positions), span + 1)):
+        if not parsed.alive_at(pid, float(minute)):
+            states.append(OFF_LANE)
+            continue
         x, y = positions[minute]
         zone = REGIONS[region_of(x, y, team)]
         if prefix is None or not zone.startswith(prefix):
             states.append(OFF_LANE)
             continue
-        farmed = (cs[minute] - cs[minute - 1]) if 0 < minute < len(cs) else 0.0
+        farmed = (lane_cs[minute] - lane_cs[minute - 1]) if 0 < minute < len(lane_cs) else 0.0
         progress = lane_progress(x, y, team)
         if progress >= PUSH_PROGRESS and farmed >= WAVE_CS:
             states.append(PUSH)
@@ -56,8 +62,10 @@ def _sustained(states: list[str], target: str, run: int) -> int:
     return int(best >= run)
 
 
-def wave_rows(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def wave_rows(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     span = len(parsed.minutes) - 1
@@ -91,9 +99,6 @@ def wave_rows(match: dict, timeline: dict) -> list[dict]:
                 "w_push_share": len(pushes) / total,
                 "w_defensive_share": len(defensive) / total,
                 "w_push_cs_per_minute": sum(captured) / len(captured) if captured else 0.0,
-                "w_push_minion_share": (sum(captured) / len(captured) / MINIONS_PER_MINUTE)
-                if captured
-                else 0.0,
                 "w_sustained_defensive": float(_sustained(states, DEFENSIVE, SUSTAINED_MINUTES)),
                 "w_lane_minutes": float(len(lane_minutes)),
             }
@@ -124,8 +129,10 @@ def _action(parsed: ParsedTimeline, pid: int, team: int, lane_role: str, start: 
     return "hold"
 
 
-def response_rows(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def response_rows(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     span = len(parsed.minutes) - 1
@@ -166,6 +173,5 @@ WAVE_FEATURE_COLUMNS = [
     "w_push_share",
     "w_defensive_share",
     "w_push_cs_per_minute",
-    "w_push_minion_share",
     "w_sustained_defensive",
 ]

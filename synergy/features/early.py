@@ -24,8 +24,10 @@ def _dealers(event: dict, key: str) -> set[int]:
     return {int(entry["participantId"]) for entry in event.get(key) or [] if entry.get("participantId")}
 
 
-def early_rows(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def early_rows(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     frames = len(parsed.minutes)
     if frames < 8:
         return []
@@ -153,7 +155,6 @@ def early_rows(match: dict, timeline: dict) -> list[dict]:
                 "e_damage_done_pm": _rate(damage_done, minutes),
                 "e_damage_taken_pm": _rate(damage_taken, minutes),
                 "e_trade_ratio": damage_done / exchange if exchange > 0 else 0.5,
-                "e_fight_volume_pm": _rate(exchange, minutes),
                 "e_distinct_enemies_damaged": float(len(damaged_enemies)),
                 "e_focus_fire": sum(focus_sizes) / len(focus_sizes) if focus_sizes else 0.0,
                 "e_solo_involvement_share": solo_involvements / involvements if involvements else 0.0,
@@ -230,7 +231,6 @@ EARLY_FEATURE_COLUMNS = [
     "e_damage_done_pm",
     "e_damage_taken_pm",
     "e_trade_ratio",
-    "e_fight_volume_pm",
     "e_distinct_enemies_damaged",
     "e_focus_fire",
     "e_solo_involvement_share",

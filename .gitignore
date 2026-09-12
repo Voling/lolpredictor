@@ -25,3 +25,5 @@ frontend/build/
 .idea/
 .vscode/
 .DS_Store
+frontend/.next/
+backups/

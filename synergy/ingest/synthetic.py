@@ -21,6 +21,8 @@ ANCHORS = {
     "JUNGLE": {100: (5200, 8200), 200: (9800, 6800)},
 }
 OBJECTIVES = [(9800, 4400), (4400, 10200), (7500, 7500), (11000, 11000), (4000, 4000)]
+BASES = {100: (1100, 1100), 200: (13900, 13900)}
+RECALL_CHANCE = 0.12
 STYLE_KEYS = ["aggro", "farm", "vision", "roam", "group", "objective"]
 TIERS = [("DIAMOND", "II"), ("DIAMOND", "I"), ("MASTER", "I")]
 
@@ -69,6 +71,9 @@ def _positions_for_minute(player: dict, role: str, team: int, minute: int, rng: 
     if minute >= 14 and rng.random() < group_chance:
         base = objective
         spread = 900
+    elif minute > 3 and rng.random() < RECALL_CHANCE:
+        base = BASES[team]
+        spread = 400
     elif rng.random() < roam_chance:
         base = ANCHORS[rng.choice(POSITIONS)][team]
         spread = 1200

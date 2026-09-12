@@ -21,8 +21,10 @@ def _health(timeline: dict, minute: int, pid: int) -> float:
     return float(stats.get("health", top)) / top if top else 1.0
 
 
-def tempo_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def tempo_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)
@@ -45,12 +47,12 @@ def tempo_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
             continue
         if str(event.get("monsterType") or "") not in OBJECTIVES:
             continue
-        minute = int(float(event.get("timestamp", 0)) // 60000)
+        when = float(event.get("timestamp", 0)) / 60000.0
         position = event.get("position") or {}
-        if minute <= limit and position:
+        if when <= limit and position:
             killer = int(event.get("killerId", 0))
             contests.append(
-                (minute, float(position.get("x", 0.0)), float(position.get("y", 0.0)),
+                (when, float(position.get("x", 0.0)), float(position.get("y", 0.0)),
                  parsed.teams.get(killer, 0))
             )
     pressure: dict[tuple[int, int], dict] = {}
@@ -73,17 +75,18 @@ def tempo_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
                 ),
             }
     rows = []
-    for minute, x, y, killer_team in contests:
+    for when, x, y, killer_team in contests:
+        minute = int(when)
         for team in (100, 200):
             members = [pid for pid in parsed.pid_to_puuid if parsed.teams.get(pid) == team]
             for index, left in enumerate(members):
                 for right in members[index + 1 :]:
                     state = {}
                     for pid, tag in ((left, "a"), (right, "b")):
-                        track = parsed.positions.get(pid) or []
+                        here = parsed.position_at(pid, when)
                         near = (
-                            minute < len(track)
-                            and math.hypot(track[minute][0] - x, track[minute][1] - y) < COMMIT_RANGE
+                            here is not None
+                            and math.hypot(here[0] - x, here[1] - y) < COMMIT_RANGE
                         )
                         info = pressure.get((pid, minute), {})
                         state[tag] = {

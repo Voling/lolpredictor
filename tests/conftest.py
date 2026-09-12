@@ -15,10 +15,8 @@ from synergy.ingest.synthetic import generate
 from synergy.ingest.window import build_windows
 
 
-@pytest.fixture(scope="session")
-def database_url() -> str:
+def _make_database(name: str):
     base = os.environ.get("DATABASE_URL", "postgresql://synergy:synergy@localhost:5432/synergy")
-    name = f"synergy_test_{os.getpid()}"
     admin = psycopg.connect(base, autocommit=True)
     with admin.cursor() as cursor:
         cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')
@@ -29,6 +27,16 @@ def database_url() -> str:
     with admin.cursor() as cursor:
         cursor.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
     admin.close()
+
+
+@pytest.fixture(scope="session")
+def database_url():
+    yield from _make_database(f"synergy_test_{os.getpid()}")
+
+
+@pytest.fixture(scope="session")
+def crawl_database_url():
+    yield from _make_database(f"synergy_crawl_{os.getpid()}")
 
 
 @pytest.fixture(scope="session")

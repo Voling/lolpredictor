@@ -30,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     crawl_cmd.add_argument("--since-days", type=int, default=None)
     crawl_cmd.add_argument("--min-lp", type=int, default=None)
     crawl_cmd.add_argument("--max-tier", default=None)
+    crawl_cmd.add_argument("--no-discover", action="store_true")
+    crawl_cmd.add_argument("--matches-per-player", type=int, default=None)
     crawl_cmd.add_argument("--max-requests", type=int, default=None)
 
     synth_cmd = sub.add_parser("synthetic", help="generate a synthetic match corpus")
@@ -39,8 +41,12 @@ def main(argv: list[str] | None = None) -> int:
 
     window_cmd = sub.add_parser("window", help="cut raw timelines down to the first 15 minutes")
     window_cmd.add_argument("--minutes", type=int, default=15)
+    window_cmd.add_argument("--workers", type=int, default=None)
 
-    sub.add_parser("features", help="extract participation and pair tables from the 15 minute windows")
+    features_cmd = sub.add_parser(
+        "features", help="extract participation and pair tables from the 15 minute windows"
+    )
+    features_cmd.add_argument("--workers", type=int, default=None)
 
     train_cmd = sub.add_parser("train", help="train the pair synergy model")
     train_cmd.add_argument("--min-games", type=int, default=None)
@@ -53,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     deep_cmd.add_argument("--embed-dim", type=int, default=64)
     deep_cmd.add_argument("--layers", type=int, default=3)
     deep_cmd.add_argument("--players-per-batch", type=int, default=64)
+    deep_cmd.add_argument("--adversary-strength", type=float, default=1.0)
+    deep_cmd.add_argument("--identity-conditioning", action="store_true")
     deep_cmd.add_argument("--device", default=None)
 
     sub.add_parser("deep-compare", help="score learned embeddings against the handwritten axes")
@@ -102,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
             settings.apex_min_league_points = args.min_lp
         if args.max_tier:
             settings.max_tier = args.max_tier
+        if args.no_discover:
+            settings.crawl_discover = False
+        if args.matches_per_player is not None:
+            settings.matches_per_player = args.matches_per_player
         if args.max_requests:
             settings.max_requests = args.max_requests
         if not settings.riot_api_key:
@@ -117,12 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "window":
         from .ingest.window import build_windows
 
-        _report(build_windows(settings, minutes=args.minutes))
+        _report(build_windows(settings, minutes=args.minutes, workers=args.workers))
         return 0
 
     if args.command == "features":
-        tables = build_tables(settings)
-        _report({key: len(frame) for key, frame in tables.items()})
+        tables = build_tables(settings, workers=args.workers)
+        _report({
+            key: value if isinstance(value, int) else len(value) for key, value in tables.items()
+        })
         return 0
 
     if args.command == "ranks":
@@ -170,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
                 embed_dim=args.embed_dim,
                 layers=args.layers,
                 players_per_batch=args.players_per_batch,
+                adversary_strength=args.adversary_strength,
+                identity_conditioning=args.identity_conditioning,
                 device=args.device,
             )
         )

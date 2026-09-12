@@ -58,8 +58,10 @@ def _deaths(parsed: ParsedTimeline, span: int) -> dict[int, set[int]]:
     return out
 
 
-def opportunity_rows(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def opportunity_rows(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     frames = len(parsed.minutes)
     if frames < 8:
         return []

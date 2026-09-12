@@ -23,6 +23,13 @@ def _float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 def _str(name: str, default: str) -> str:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -52,9 +59,11 @@ class Settings:
     seed_riot_id: str = field(default_factory=lambda: _str("SEED_RIOT_ID", "bblskibs#gotg"))
 
     queue_id: int = field(default_factory=lambda: _int("CRAWL_QUEUE_ID", 420))
+    redis_url: str = field(default_factory=lambda: _str("REDIS_URL", "redis://localhost:6380/0"))
+    cache_ttl: int = field(default_factory=lambda: _int("CACHE_TTL_SECONDS", 86400))
     min_tier: str = field(default_factory=lambda: _str("CRAWL_MIN_TIER", "DIAMOND"))
     max_tier: str = field(default_factory=lambda: _str("CRAWL_MAX_TIER", "MASTER"))
-    matches_per_player: int = field(default_factory=lambda: _int("CRAWL_MATCHES_PER_PLAYER", 20))
+    matches_per_player: int = field(default_factory=lambda: _int("CRAWL_MATCHES_PER_PLAYER", 100))
     max_matches: int = field(default_factory=lambda: _int("CRAWL_MAX_MATCHES", 2000))
     max_players: int = field(default_factory=lambda: _int("CRAWL_MAX_PLAYERS", 400))
     max_depth: int = field(default_factory=lambda: _int("CRAWL_MAX_DEPTH", 3))
@@ -62,6 +71,7 @@ class Settings:
     max_requests: int = field(default_factory=lambda: _int("CRAWL_MAX_REQUESTS", 2600))
     identify_reserve: int = field(default_factory=lambda: _int("CRAWL_IDENTIFY_RESERVE", 200))
     crawl_since_days: int = field(default_factory=lambda: _int("CRAWL_SINCE_DAYS", 0))
+    crawl_discover: bool = field(default_factory=lambda: _bool("CRAWL_DISCOVER", True))
     apex_min_league_points: int = field(default_factory=lambda: _int("CRAWL_APEX_MIN_LP", 500))
     apex_tiers: str = field(default_factory=lambda: _str("CRAWL_APEX_TIERS", "challenger,grandmaster,master"))
     min_average_lp: int = field(default_factory=lambda: _int("CORPUS_MIN_AVERAGE_LP", 2800))

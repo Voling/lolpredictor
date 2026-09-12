@@ -18,10 +18,13 @@ ACTOR_KEYS = ("killerId", "creatorId", "participantId")
 POSITIONS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
 
 
+COMPRESS_LEVEL = 6
+
+
 def _write_json_gz(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with gzip.open(tmp, "wt", encoding="utf-8") as handle:
+    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=COMPRESS_LEVEL) as handle:
         json.dump(payload, handle, separators=(",", ":"))
     tmp.replace(path)
 

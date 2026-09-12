@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: timescale/timescaledb:latest-pg17
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
     environment:
       POSTGRES_USER: synergy
       POSTGRES_PASSWORD: synergy
@@ -15,15 +16,29 @@ services:
       timeout: 3s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   api:
     build: .
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATA_DIR: /app/data
       DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - ./data:/app/data
     ports:
@@ -33,8 +48,10 @@ services:
     build: ./frontend
     depends_on:
       - api
+    environment:
+      API_URL: http://api:8000
     ports:
-      - "3000:80"
+      - "3000:3000"
 
   pipeline:
     build: .

@@ -6,6 +6,7 @@ import numpy as np
 from ..config import Settings, get_settings
 from ..features.regions import MAP_SPAN, REGIONS, region_of
 from ..features.timeline import VISION_WARDS, ParsedTimeline
+from ..features.build import qualifying_matches
 from ..ingest.store import Store
 from ..ingest.window import truncate_timeline
 
@@ -208,8 +209,10 @@ def build_sequences(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     rows: list[dict] = []
     with Store(settings) as store:
-        match_ids = store.match_ids()
-        for match_id in match_ids:
+        allowed = qualifying_matches(store, settings)
+        for match_id in store.match_ids():
+            if allowed is not None and match_id not in allowed:
+                continue
             window = _window(store, match_id)
             if window is None:
                 continue

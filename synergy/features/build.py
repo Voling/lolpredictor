@@ -1,27 +1,78 @@
+import json
 import logging
+import os
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from itertools import combinations
 
 import pandas as pd
 
+from ..chunks import ChunkWriter, merge
 from ..config import Settings, get_settings
 from ..ingest.store import Store
 from ..ingest.window import truncate_timeline
+from .advantage import fit_evaluation, state_rows
+from .complement import complement_table
+from .coupling import couple, coupling_table
+from .detection import awareness, detection_rows
 from .early import early_rows
+from .families import family_rows
+from .player import _refresh_axes, feature_columns
+from .policy import policy_rows
+from .policyvec import fit_policy_vectors
 from .propensity import opportunity_rows
 from .match import participant_rows
-from .timeline import pair_rows
+from .tempo import tempo_rows
+from .timeline import ParsedTimeline, pair_rows
 from .champions import champion_profiles
 from .duo import fit_duo_effect
 from .traits import fit_traits
+from .valuesurface import fit_value_surface
 from .dyad import dyad_rows
 from .extra import extra_rows
 from .jungle import jungle_openings
 from .events import event_response_rows
+from .excursion import excursion_rows
 from .objectives import objective_rows
 from .wards import ward_rows
 from .wave import response_rows, wave_rows
 
 logger = logging.getLogger(__name__)
+
+COUPLING_SAMPLE = 4000
+
+STREAMED_TABLES = {
+    "opportunities": opportunity_rows,
+    "responses": response_rows,
+    "dyads": dyad_rows,
+    "jungle_openings": jungle_openings,
+    "wards": ward_rows,
+    "objectives": objective_rows,
+    "event_responses": event_response_rows,
+    "policy": policy_rows,
+    "tempo": tempo_rows,
+    "families": family_rows,
+    "detection": detection_rows,
+    "game_states": state_rows,
+}
+FILENAMES = {
+    "participations": "participations.parquet",
+    "pairs": "pair_observations.parquet",
+    "opportunities": "opportunities.parquet",
+    "waves": "waves.parquet",
+    "responses": "responses.parquet",
+    "dyads": "dyads.parquet",
+    "jungle_openings": "jungle_openings.parquet",
+    "wards": "wards.parquet",
+    "objectives": "objectives.parquet",
+    "event_responses": "event_responses.parquet",
+    "policy": "policy.parquet",
+    "tempo": "tempo.parquet",
+    "families": "families.parquet",
+    "detection": "detection.parquet",
+    "game_states": "game_states.parquet",
+    "excursions": "excursions.parquet",
+}
 
 
 def _bare_pair_rows(match: dict) -> list[dict]:
@@ -67,25 +118,14 @@ def qualifying_matches(store: Store, settings: Settings) -> set[str] | None:
     return set(summary.loc[~drop, "match_id"])
 
 
-def build_tables(settings: Settings | None = None, store: Store | None = None) -> dict[str, pd.DataFrame]:
-    settings = settings or get_settings()
-    owned = store is None
-    store = store or Store(settings)
+def _extract(settings: Settings, match_ids: list[str], shard: int) -> dict:
+    store = Store(settings)
+    shards = settings.processed_dir / "shards"
+    shards.mkdir(parents=True, exist_ok=True)
+    names = tuple(STREAMED_TABLES) + ("waves", "participations", "pairs")
+    writers = {n: ChunkWriter(shards / f"{n}.{shard:03d}.parquet") for n in names}
     try:
-        participation_records: list[dict] = []
-        pair_records: list[dict] = []
-        opportunity_records: list[dict] = []
-        wave_records: list[dict] = []
-        response_records: list[dict] = []
-        dyad_records: list[dict] = []
-        ward_records: list[dict] = []
-        objective_records: list[dict] = []
-        event_records: list[dict] = []
-        allowed = qualifying_matches(store, settings)
-        opening_records: list[dict] = []
-        for match_id in store.match_ids():
-            if allowed is not None and match_id not in allowed:
-                continue
+        for match_id in match_ids:
             try:
                 match = store.load_match(match_id)
             except FileNotFoundError:
@@ -100,12 +140,21 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
             except FileNotFoundError:
                 window = None
             if window is not None:
-                by_puuid = {row["puuid"]: row for row in early_rows(match, window)}
-                wave_by_puuid = {row["puuid"]: row for row in wave_rows(match, window)}
-                for row in extra_rows(match, window):
-                    target = by_puuid.setdefault(row["puuid"], row)
-                    if target is not row:
-                        target.update({k: v for k, v in row.items() if k not in ("match_id", "puuid")})
+                parsed = ParsedTimeline(match, window)
+                by_puuid = {row["puuid"]: row for row in early_rows(match, window, parsed=parsed)}
+                wave_by_puuid = {
+                    row["puuid"]: row for row in wave_rows(match, window, parsed=parsed)
+                }
+                for source in (
+                    extra_rows(match, window, parsed=parsed),
+                    excursion_rows(match, window, parsed=parsed),
+                ):
+                    for row in source:
+                        target = by_puuid.setdefault(row["puuid"], row)
+                        if target is not row:
+                            target.update(
+                                {k: v for k, v in row.items() if k not in ("match_id", "puuid")}
+                            )
                 for puuid, wave in wave_by_puuid.items():
                     target = by_puuid.setdefault(puuid, {"match_id": match_id, "puuid": puuid})
                     target.update({k: v for k, v in wave.items()
@@ -114,20 +163,53 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
                     extra = by_puuid.get(row["puuid"])
                     if extra:
                         row.update({k: v for k, v in extra.items() if k not in ("match_id", "puuid")})
-                pair_records.extend(pair_rows(match, window))
-                opportunity_records.extend(opportunity_rows(match, window))
-                wave_records.extend(wave_by_puuid.values())
-                response_records.extend(response_rows(match, window))
-                dyad_records.extend(dyad_rows(match, window))
-                ward_records.extend(ward_rows(match, window))
-                opening_records.extend(jungle_openings(match, window))
-                objective_records.extend(objective_rows(match, window))
-                event_records.extend(event_response_rows(match, window))
+                writers["pairs"].add(pair_rows(match, window))
+                writers["waves"].add(list(wave_by_puuid.values()))
+                for name, extract in STREAMED_TABLES.items():
+                    writers[name].add(extract(match, window, parsed=parsed))
             else:
-                pair_records.extend(_bare_pair_rows(match))
-            participation_records.extend(rows)
-        participations = pd.DataFrame(participation_records)
-        pairs = pd.DataFrame(pair_records)
+                writers["pairs"].add(_bare_pair_rows(match))
+            writers["participations"].add(rows)
+        return {name: writer.close() for name, writer in writers.items()}
+    finally:
+        store.close()
+
+
+def _merge(settings: Settings, name: str, shards: int) -> int:
+    directory = settings.processed_dir / "shards"
+    parts = [directory / f"{name}.{index:03d}.parquet" for index in range(shards)]
+    rows = merge(parts, settings.processed_dir / FILENAMES[name])
+    for part in parts:
+        part.unlink(missing_ok=True)
+    return rows
+
+
+def build_tables(
+    settings: Settings | None = None,
+    store: Store | None = None,
+    reports: bool = True,
+    workers: int | None = None,
+) -> dict[str, pd.DataFrame]:
+    settings = settings or get_settings()
+    owned = store is None
+    store = store or Store(settings)
+    try:
+        settings.processed_dir.mkdir(parents=True, exist_ok=True)
+        allowed = qualifying_matches(store, settings)
+        wanted = [m for m in store.match_ids() if allowed is None or m in allowed]
+        workers = workers if workers is not None else max(1, min(8, (os.cpu_count() or 2) // 2))
+        chunks = _split(wanted, workers)
+        logger.info("extracting %s matches across %s workers", len(wanted), len(chunks))
+        if len(chunks) == 1:
+            results = [_extract(settings, chunks[0], 0)]
+        else:
+            with ProcessPoolExecutor(max_workers=len(chunks)) as pool:
+                results = list(
+                    pool.map(_extract, repeat(settings), chunks, range(len(chunks)))
+                )
+        counts = {name: _merge(settings, name, len(chunks)) for name in results[0]}
+        participations = pd.read_parquet(settings.processed_dir / FILENAMES["participations"])
+        pairs = pd.read_parquet(settings.processed_dir / FILENAMES["pairs"])
         if not participations.empty:
             players = pd.DataFrame(store.players())
             if not players.empty:
@@ -146,61 +228,109 @@ def build_tables(settings: Settings | None = None, store: Store | None = None) -
                     if c in players
                 ]
                 participations = participations.merge(players[keep], on="puuid", how="left")
-        settings.processed_dir.mkdir(parents=True, exist_ok=True)
-        participations.to_parquet(settings.processed_dir / "participations.parquet", index=False)
-        pairs.to_parquet(settings.processed_dir / "pair_observations.parquet", index=False)
-        opportunities = pd.DataFrame(opportunity_records)
-        opportunities.to_parquet(settings.processed_dir / "opportunities.parquet", index=False)
-        waves = pd.DataFrame(wave_records)
-        waves.to_parquet(settings.processed_dir / "waves.parquet", index=False)
-        responses = pd.DataFrame(response_records)
-        responses.to_parquet(settings.processed_dir / "responses.parquet", index=False)
-        dyads = pd.DataFrame(dyad_records)
-        dyads.to_parquet(settings.processed_dir / "dyads.parquet", index=False)
-        wards = pd.DataFrame(ward_records)
-        wards.to_parquet(settings.processed_dir / "wards.parquet", index=False)
-        openings = pd.DataFrame(opening_records)
-        openings.to_parquet(settings.processed_dir / "jungle_openings.parquet", index=False)
-        objectives = pd.DataFrame(objective_records)
-        objectives.to_parquet(settings.processed_dir / "objectives.parquet", index=False)
-        events = pd.DataFrame(event_records)
-        events.to_parquet(settings.processed_dir / "event_responses.parquet", index=False)
-        if not participations.empty:
-            from .player import _refresh_axes, feature_columns
-
+            participations.to_parquet(
+                settings.processed_dir / FILENAMES["participations"], index=False
+            )
             fit_traits(participations, feature_columns(participations), settings)
             fit_duo_effect(participations, settings=settings)
             _refresh_axes()
             champion_profiles(participations, settings)
+        if reports:
+            fit_reports(settings, counts)
         logger.info("built %s participations and %s pair rows", len(participations), len(pairs))
         return {
+            **{name: value for name, value in counts.items()},
             "participations": participations,
             "pairs": pairs,
-            "opportunities": opportunities,
-            "waves": waves,
-            "responses": responses,
-            "dyads": dyads,
-            "wards": wards,
-            "jungle_openings": openings,
-            "objectives": objectives,
-            "event_responses": events,
         }
     finally:
         if owned:
             store.close()
 
 
-def load_tables(settings: Settings | None = None) -> dict[str, pd.DataFrame]:
-    settings = settings or get_settings()
-    return {
-        "participations": pd.read_parquet(settings.processed_dir / "participations.parquet"),
-        "pairs": pd.read_parquet(settings.processed_dir / "pair_observations.parquet"),
-        "opportunities": pd.read_parquet(settings.processed_dir / "opportunities.parquet"),
-        "waves": pd.read_parquet(settings.processed_dir / "waves.parquet"),
-        "responses": pd.read_parquet(settings.processed_dir / "responses.parquet"),
-        "dyads": pd.read_parquet(settings.processed_dir / "dyads.parquet"),
-        "wards": pd.read_parquet(settings.processed_dir / "wards.parquet"),
-        "jungle_openings": pd.read_parquet(settings.processed_dir / "jungle_openings.parquet"),
-        "objectives": pd.read_parquet(settings.processed_dir / "objectives.parquet"),
-        "event_responses": pd.read_parquet(settings.processed_dir / "event_responses.parquet"),
+def _split(items: list[str], parts: int) -> list[list[str]]:
+    if not items:
+        return [[]]
+    parts = max(1, min(parts, len(items)))
+    size = (len(items) + parts - 1) // parts
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def fit_reports(settings: Settings, counts: dict[str, int]) -> dict:
+    reports: dict[str, dict] = {}
+    if counts.get("policy"):
+        policy = pd.read_parquet(
+            settings.processed_dir / FILENAMES["policy"], columns=["puuid", "state", "action"]
+        )
+        _, report = fit_policy_vectors(policy, settings)
+        reports["policy_vectors"] = report
+        del policy
+        reports["coupling"] = _coupling_report(settings)
+    if counts.get("game_states"):
+        states = pd.read_parquet(settings.processed_dir / FILENAMES["game_states"])
+        reports["evaluation"] = fit_evaluation(states, settings)
+        if counts.get("policy"):
+            full = pd.read_parquet(
+                settings.processed_dir / FILENAMES["policy"],
+                columns=["match_id", "team_id", "minute", "puuid", "role", "state", "action"],
+            )
+            surface = fit_value_surface(full, states, settings)
+            reports["value_surface"] = {"cells": int(len(surface))}
+            pairs = pd.read_parquet(
+                settings.processed_dir / FILENAMES["pairs"], columns=["puuid_a", "puuid_b"]
+            )
+            table = complement_table(full, pairs, settings)
+            reports["complement"] = {"pairs": int(len(table))}
+            del full, pairs, table, surface
+        del states
+    if counts.get("detection"):
+        detection = pd.read_parquet(
+            settings.processed_dir / FILENAMES["detection"],
+            columns=["puuid", "role", "pressure", "reacted"],
+        )
+        table = awareness(detection)
+        reports["awareness"] = {
+            "players": int(len(table)),
+            "d_prime_median": round(float(table["d_prime"].median()), 4) if len(table) else None,
+            "bias_median": round(float(table["bias"].median()), 4) if len(table) else None,
+        }
+        _write_report(settings, "awareness.json", reports["awareness"])
+        del detection, table
+    return reports
+
+
+def _coupling_report(settings: Settings) -> dict:
+    policy = pd.read_parquet(
+        settings.processed_dir / FILENAMES["policy"],
+        columns=["match_id", "team_id", "minute", "puuid", "role", "action", "state"],
+    )
+    matches = policy["match_id"].drop_duplicates()
+    sample = matches.sample(min(COUPLING_SAMPLE, len(matches)), random_state=0)
+    policy = policy[policy["match_id"].isin(set(sample))]
+    table = coupling_table(couple(policy, lag=1))
+    del policy
+    payload = {
+        "matches": int(len(sample)),
+        "role_pairs": table.to_dict(orient="records") if not table.empty else [],
     }
+    _write_report(settings, "coupling.json", payload)
+    return payload
+
+
+def _write_report(settings: Settings, name: str, payload: dict) -> None:
+    settings.processed_dir.mkdir(parents=True, exist_ok=True)
+    with open(settings.processed_dir / name, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def load_tables(
+    settings: Settings | None = None, names: tuple[str, ...] | None = None
+) -> dict[str, pd.DataFrame]:
+    settings = settings or get_settings()
+    wanted = names if names is not None else tuple(FILENAMES)
+    out = {}
+    for name in wanted:
+        path = settings.processed_dir / FILENAMES[name]
+        if path.exists():
+            out[name] = pd.read_parquet(path)
+    return out

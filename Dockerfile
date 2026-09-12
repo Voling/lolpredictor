@@ -8,7 +8,6 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY synergy ./synergy
-COPY lolpredictordjango ./lolpredictordjango
 
 EXPOSE 8000
-CMD ["gunicorn", "--chdir", "lolpredictordjango", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120", "lolpredictordjango.wsgi:application"]
+CMD ["uvicorn", "synergy.api.server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

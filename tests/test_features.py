@@ -188,3 +188,27 @@ def test_bot_lane_pairs_stand_closer_than_cross_map_pairs(corpus_settings):
                 elif pairing == {"TOP", "BOTTOM"}:
                     split.append(row["pair_lane_distance"])
     assert sum(lane) / len(lane) < sum(split) / len(split)
+
+
+def test_position_at_snaps_to_the_nearest_frame_not_a_midpoint():
+    from synergy.features.timeline import ParsedTimeline
+
+    parsed = ParsedTimeline(build_match(), build_timeline())
+    pid = next(iter(parsed.pid_to_puuid))
+    track = parsed.positions[pid]
+    assert parsed.position_at(pid, 4.0) == track[4]
+    assert parsed.position_at(pid, 4.4) == track[4]
+    assert parsed.position_at(pid, 4.6) == track[5]
+    assert parsed.position_at(pid, 900.0) == track[-1]
+
+
+def test_wave_state_ignores_jungle_camps_and_dead_minutes():
+    from synergy.features.timeline import ParsedTimeline
+    from synergy.features.wave import OFF_LANE, wave_states
+
+    parsed = ParsedTimeline(build_match(), build_timeline())
+    for pid in parsed.pid_to_puuid:
+        states = wave_states(parsed, pid, 15)
+        for minute, state in enumerate(states):
+            if not parsed.alive_at(pid, float(minute)):
+                assert state == OFF_LANE

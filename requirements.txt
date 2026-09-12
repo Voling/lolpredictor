@@ -1,11 +1,12 @@
-Django==5.2.1
-django-cors-headers==4.7.0
-django-redis==5.4.0
 httpx==0.28.1
 numpy==2.2.5
 pandas==2.2.3
 pyarrow==19.0.1
 scikit-learn==1.6.1
 python-dotenv==1.1.0
-gunicorn==23.0.0
 pytest==8.3.5
+fastapi
+uvicorn[standard]
+redis
+scipy
+psycopg[binary]

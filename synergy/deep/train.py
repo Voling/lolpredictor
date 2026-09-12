@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 
 from ..config import Settings, get_settings
+from ..features.player import STYLE_COLUMNS, normaliser, participation_styles
 from .model import Adversary, TimelineEncoder, centroid_loss, supervised_contrastive_loss
 from .sequences import MAX_MINUTES, NO_EVENT_REGION, load_sequences
 from ..features.regions import REGIONS
@@ -119,8 +120,6 @@ def _handwritten_embeddings(data: dict, settings: Settings) -> np.ndarray | None
     path = settings.processed_dir / "participations.parquet"
     if not path.exists():
         return None
-    from ..features.player import STYLE_COLUMNS, normaliser, participation_styles
-
     participations = pd.read_parquet(path)
     styles = participation_styles(participations, normaliser(participations))
     styles = styles.set_index(["match_id", "puuid"])[STYLE_COLUMNS]
@@ -156,7 +155,8 @@ def train_encoder(
     games_per_player: int = 4,
     centroid_weight: float = 1.0,
     learning_rate: float = 3e-4,
-    adversary_strength: float = 0.0,
+    adversary_strength: float = 1.0,
+    identity_conditioning: bool = False,
     crop_minimum: float = 0.6,
     step_dropout: float = 0.1,
     device: str | None = None,
@@ -201,6 +201,7 @@ def train_encoder(
         dim=dim,
         embed_dim=embed_dim,
         layers=layers,
+        identity_conditioning=identity_conditioning,
     ).to(device)
     adversary = Adversary(embed_dim, int(champions.max().item()) + 1).to(device)
     optimiser = torch.optim.AdamW(

@@ -36,8 +36,10 @@ def classify(farm: list[float], gank: float, invade: float, span: int) -> str:
     return "late_gank"
 
 
-def jungle_openings(match: dict, timeline: dict) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def jungle_openings(
+    match: dict, timeline: dict, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     span = min(len(parsed.minutes) - 1, OPENING_MINUTES)

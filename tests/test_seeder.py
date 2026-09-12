@@ -98,10 +98,10 @@ def run_crawl(settings: Settings, fake: FakeRiot):
 
 
 @pytest.fixture
-def crawl_settings(tmp_path, database_url):
+def crawl_settings(tmp_path, crawl_database_url):
     settings = Settings(
         data_dir=tmp_path,
-        database_url=database_url,
+        database_url=crawl_database_url,
         riot_api_key="test-key",
         max_matches=5,
         max_players=4,

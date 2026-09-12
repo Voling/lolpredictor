@@ -1,7 +1,7 @@
 import math
 from itertools import combinations
 
-from .regions import REGIONS, region_of
+from .regions import MAP_SPAN, REGIONS, region_of
 from .timeline import ParsedTimeline
 
 SPAN = 15
@@ -10,7 +10,6 @@ BREAK_RANGE = 5000.0
 BANDS = (1500.0, 3000.0, 5000.0)
 DEATH_WINDOW = 0.5
 AVENGE_WINDOW = 1.0
-MAP_MAX = 16000.0
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float:
@@ -58,8 +57,10 @@ def _lead_lag(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> flo
     return (toward_b - toward_a) / total if total else 0.0
 
 
-def dyad_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def dyad_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)
@@ -89,7 +90,11 @@ def dyad_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
             frames = min(len(track_a), len(track_b))
             if frames < 4:
                 continue
-            distances = [math.dist(track_a[i], track_b[i]) for i in range(1, frames)]
+            distances = [
+                math.dist(track_a[i], track_b[i])
+                for i in range(1, frames)
+                if parsed.alive_at(left, float(i)) and parsed.alive_at(right, float(i))
+            ]
             if not distances:
                 continue
             links, linked = 0, distances[0] < LINK_RANGE
@@ -151,9 +156,9 @@ def dyad_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
                 "role_a": parsed.roles.get(left, "") or "UNKNOWN",
                 "role_b": parsed.roles.get(right, "") or "UNKNOWN",
                 "win": win,
-                "d_mean_distance": sum(distances) / len(distances) / MAP_MAX,
-                "d_min_distance": min(distances) / MAP_MAX,
-                "d_distance_trend": _slope(distances) / MAP_MAX,
+                "d_mean_distance": sum(distances) / len(distances) / MAP_SPAN,
+                "d_min_distance": min(distances) / MAP_SPAN,
+                "d_distance_trend": _slope(distances) / MAP_SPAN,
                 "d_links": float(links),
                 "d_link_rate": links / max(frames - 1, 1),
                 "d_lead_lag": _lead_lag(track_a, track_b),

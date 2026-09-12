@@ -12,8 +12,10 @@ def _damage(entries: list[dict] | None) -> float:
     )
 
 
-def extra_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def extra_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)

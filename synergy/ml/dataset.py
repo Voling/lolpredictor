@@ -5,6 +5,7 @@ import pandas as pd
 
 from ..config import get_settings
 from ..features.player import STYLE_AXES, normaliser, participation_styles
+from ..features.complement import COMPLEMENT_COLUMNS, load_complement
 from ..features.dyad import DYAD_FEATURE_COLUMNS
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 
@@ -26,7 +27,7 @@ def refresh_columns() -> None:
         "hist_winrate_centred",
         *[f"hist_{column}" for column in PAIR_HISTORY_SOURCE],
     ]
-    PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + HISTORY_COLUMNS
+    PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + HISTORY_COLUMNS + COMPLEMENT_COLUMNS
     STYLE_SUM_COLUMNS[:] = [f"team_style_{name}" for name in STYLE_NAMES]
     CONTROL_COLUMNS[:] = STYLE_SUM_COLUMNS + _TEAM_CONTROLS
 PAIR_HISTORY_SOURCE = PAIR_TIMELINE_COLUMNS + DYAD_FEATURE_COLUMNS
@@ -129,6 +130,7 @@ def attach_dyads(pairs: pd.DataFrame, dyads: pd.DataFrame) -> pd.DataFrame:
 def phi_from_styles(
     left: np.ndarray, right: np.ndarray, history: pd.DataFrame | None = None
 ) -> pd.DataFrame:
+    refresh_columns()
     frame = pd.DataFrame(index=range(len(left)))
     index = {name: position for position, name in enumerate(STYLE_NAMES)}
     for column, (first, second) in zip(CROSS_COLUMNS, CROSS_TERMS):
@@ -155,6 +157,7 @@ def build_pair_dataset(
     stats: dict | None = None,
     shrinkage_k: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    refresh_columns()
     context, stats = player_context(participations, stats, shrinkage_k)
     context_key = context.set_index(["match_id", "puuid"])
     loo_columns = [f"loo_style_{name}" for name in STYLE_NAMES]
@@ -171,6 +174,16 @@ def build_pair_dataset(
         left[loo_columns].to_numpy(dtype=float), right[loo_columns].to_numpy(dtype=float), history
     )
     phi.index = frame.index
+    complement = load_complement()
+    if not complement.empty:
+        merged = frame[["puuid_a", "puuid_b"]].merge(
+            complement, on=["puuid_a", "puuid_b"], how="left"
+        )
+        for column in COMPLEMENT_COLUMNS:
+            phi[column] = merged[column].fillna(0.0).to_numpy()
+    else:
+        for column in COMPLEMENT_COLUMNS:
+            phi[column] = 0.0
     keep = left[loo_columns].notna().all(axis=1) & right[loo_columns].notna().all(axis=1)
     features = pd.concat(
         [frame[["match_id", "team_id", "pair_key", "puuid_a", "puuid_b", "win"]], phi], axis=1
@@ -198,6 +211,7 @@ def build_pair_dataset(
 def build_team_dataset(
     features: pd.DataFrame, controls: pd.DataFrame
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    refresh_columns()
     grouped = features.groupby(["match_id", "team_id"])
     merged = grouped[PHI_COLUMNS].sum().join(grouped["win"].first())
     merged = merged.join(controls.set_index(["match_id", "team_id"])).dropna()

@@ -31,8 +31,10 @@ class TimelineEncoder(nn.Module):
         layers: int = 3,
         heads: int = 4,
         dropout: float = 0.2,
+        identity_conditioning: bool = False,
     ):
         super().__init__()
+        self.identity_conditioning = identity_conditioning
         region_dim, event_dim = 48, 32
         self.region_embedding = nn.Embedding(regions, region_dim)
         self.event_embedding = nn.Embedding(event_regions, event_dim)
@@ -65,9 +67,9 @@ class TimelineEncoder(nn.Module):
             ],
             dim=-1,
         )
-        cls = self.cls.expand(batch, -1, -1) + (
-            self.champion_embedding(champion) + self.role_embedding(role)
-        )[:, None]
+        cls = self.cls.expand(batch, -1, -1)
+        if self.identity_conditioning:
+            cls = cls + (self.champion_embedding(champion) + self.role_embedding(role))[:, None]
         sequence = torch.cat([cls, tokens], dim=1)
         steps = torch.arange(sequence.shape[1], device=regions.device)
         sequence = self.input_norm(sequence + self.position_embedding(steps)[None])

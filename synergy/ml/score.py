@@ -33,6 +33,9 @@ AXIS_LABELS = {
 }
 STYLE_COLUMNS = [f"style_{name}" for name in STYLE_NAMES]
 STYLE_SUFFIXES = ("_pct", "_var")
+UNINFORMATIVE = (
+    "the pair model found no usable synergy signal in this corpus, so no score is reported"
+)
 
 
 class UnknownPlayer(LookupError):
@@ -209,9 +212,7 @@ class SynergyService:
         return {
             "score": round(score, 1) if informative else None,
             "reliable": informative,
-            "note": None
-            if informative
-            else "the pair model found no usable synergy signal in this corpus, so no score is reported",
+            "note": None if informative else UNINFORMATIVE,
             "synergy": round(synergy, 5),
             "projected_winrate": round(projected, 4),
             "games_together": games,
@@ -295,6 +296,14 @@ class SynergyService:
     def best_partners(self, query: str, limit: int = 10) -> dict:
         model, profiles = self._require()
         target = self.resolve(query)
+        if not model.informative:
+            return {
+                "player": self.player_summary(target),
+                "reliable": False,
+                "note": UNINFORMATIVE,
+                "best": [],
+                "worst": [],
+            }
         candidates = profiles[
             (profiles["puuid"] != target["puuid"]) & profiles["game_name"].notna()
         ].reset_index(drop=True)
@@ -311,6 +320,7 @@ class SynergyService:
         ).sort_values("score", ascending=False)
         return {
             "player": self.player_summary(target),
+            "reliable": True,
             "best": frame.head(limit).to_dict(orient="records"),
             "worst": frame.tail(limit).sort_values("score").to_dict(orient="records"),
         }

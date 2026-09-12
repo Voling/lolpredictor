@@ -43,8 +43,10 @@ def objective_events(parsed: ParsedTimeline, limit: int) -> list[dict]:
     return sorted(out, key=lambda row: row["minute"])
 
 
-def objective_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
-    parsed = ParsedTimeline(match, timeline)
+def objective_rows(
+    match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
+) -> list[dict]:
+    parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
     limit = min(len(parsed.minutes) - 1, span)
@@ -58,16 +60,18 @@ def objective_rows(match: dict, timeline: dict, span: int = SPAN) -> list[dict]:
     ]
     rows = []
     for event in events:
-        minute = int(event["minute"])
-        before = max(minute - 1, 0)
+        when = float(event["minute"])
+        minute = int(when)
         pit = (event["x"], event["y"])
         for pid, puuid in parsed.pid_to_puuid.items():
             track = parsed.positions.get(pid) or []
-            if before >= len(track) or minute >= len(track):
+            here = parsed.position_at(pid, when)
+            earlier = parsed.position_at(pid, max(when - 1.0, 0.0))
+            if here is None or earlier is None or minute >= len(track):
                 continue
             team = parsed.teams.get(pid, 100)
-            approach = _distance(track[before], pit)
-            arrival = _distance(track[minute], pit)
+            approach = _distance(earlier, pit)
+            arrival = _distance(here, pit)
             after = (
                 _distance(track[min(minute + 1, len(track) - 1)], pit)
                 if minute + 1 < len(track)
