@@ -7,6 +7,7 @@ from ..config import Settings, get_settings
 from ..features.build import load_tables
 from ..features.player import _refresh_axes, build_profiles
 from .dataset import PAIR_HISTORY_SOURCE, attach_dyads, build_pair_dataset, canonical_pairs
+from .gold import team_advantage
 from .model import SynergyModel
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,13 @@ def train(settings: Settings | None = None, min_games: int | None = None) -> dic
         participations, pairs, shrinkage_k=settings.style_shrinkage_k
     )
 
+    try:
+        advantage = team_advantage(settings)
+    except ValueError as exc:
+        logger.warning("no advantage target, falling back to the win gate: %s", exc)
+        advantage = None
     model = SynergyModel()
-    report = model.fit(features, controls)
+    report = model.fit(features, controls, advantage=advantage)
 
     history = build_pair_history(pairs)
     history.to_parquet(settings.processed_dir / "pair_history.parquet", index=False)

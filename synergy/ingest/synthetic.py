@@ -260,7 +260,8 @@ def _make_match(match_index: int, roster: list[dict], rng: random.Random, settin
         "info": {
             "gameCreation": game_creation,
             "gameDuration": duration_min * 60,
-            "gameVersion": "15.1.1.1",
+            "gameVersion": f"{get_settings().season}.1.1.1",
+            "endOfGameResult": "GameComplete",
             "queueId": settings.queue_id,
             "platformId": settings.platform.upper(),
             "participants": info_participants,

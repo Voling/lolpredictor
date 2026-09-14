@@ -37,10 +37,12 @@ def _split(items: list[str], parts: int) -> list[list[str]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
-def reingest(settings: Settings | None = None, workers: int | None = None) -> dict:
+def reingest(
+    settings: Settings | None = None, workers: int | None = None, missing: bool = False
+) -> dict:
     settings = settings or get_settings()
     with Store(settings) as store:
-        match_ids = store.match_ids()
+        match_ids = store.matches_without_frames() if missing else store.match_ids()
     workers = workers if workers is not None else max(1, min(8, (os.cpu_count() or 2) // 2))
     chunks = _split(match_ids, workers)
     if len(chunks) == 1:
@@ -50,6 +52,7 @@ def reingest(settings: Settings | None = None, workers: int | None = None) -> di
             results = list(pool.map(_chunk, repeat(settings), chunks))
     return {
         "matches": len(match_ids),
+        "missing_only": missing,
         "frames": sum(item[0] for item in results),
         "events": sum(item[1] for item in results),
         "skipped": sum(item[2] for item in results),

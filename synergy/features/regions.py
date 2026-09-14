@@ -58,3 +58,53 @@ def region_of(x: float, y: float, team: int) -> int:
     side = "TOPSIDE" if diagonal < 0 else "BOTSIDE"
     own_half = (x + y) < MAP_SPAN if team == 100 else (x + y) >= MAP_SPAN
     return REGION_INDEX[f"JUNGLE_{'OWN' if own_half else 'ENEMY'}_{side}"]
+
+
+def regions_of(x, y, team):
+    import numpy as np
+
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    team = np.asarray(team)
+    out = np.full(x.shape, REGION_INDEX["UNKNOWN"], dtype=np.int16)
+    todo = ~((x <= 0) & (y <= 0))
+
+    blue = team == 100
+    diagonal = x - y
+    progress = (x + y) / MAP_SPAN
+    shifted = np.where(blue, progress, 2.0 - progress)
+    depth = np.where(shifted < 0.85, "OWN", np.where(shifted < 1.15, "NEUTRAL", "ENEMY"))
+
+    near = np.hypot(x, y) < BASE_RADIUS
+    far = np.hypot(MAP_SPAN - x, MAP_SPAN - y) < BASE_RADIUS
+    for hit, label in (
+        (todo & near & blue, "BASE_OWN"),
+        (todo & near & ~blue, "BASE_ENEMY"),
+        (todo & ~near & far & blue, "BASE_ENEMY"),
+        (todo & ~near & far & ~blue, "BASE_OWN"),
+    ):
+        out[hit] = REGION_INDEX[label]
+    todo &= ~(near | far)
+
+    root = math.sqrt(2.0)
+    lanes = {
+        "LANE_MID": np.abs(diagonal) / root < LANE_TOLERANCE,
+        "LANE_TOP": ((x < 3200) & (y > 3200)) | ((y > 11800) & (x < 11800)),
+        "LANE_BOT": ((y < 3200) & (x > 3200)) | ((x > 11800) & (y < 11800)),
+    }
+    for lane, mask in lanes.items():
+        for name in ("OWN", "NEUTRAL", "ENEMY"):
+            hit = todo & mask & (depth == name)
+            out[hit] = REGION_INDEX[f"{lane}_{name}"]
+        todo &= ~mask
+
+    river = np.abs(x + y - MAP_SPAN) / root < RIVER_TOLERANCE
+    out[todo & river & (diagonal < 0)] = REGION_INDEX["RIVER_BARON"]
+    out[todo & river & (diagonal >= 0)] = REGION_INDEX["RIVER_DRAGON"]
+    todo &= ~river
+
+    own = np.where(blue, (x + y) < MAP_SPAN, (x + y) >= MAP_SPAN)
+    for half, side in (("OWN", "TOPSIDE"), ("OWN", "BOTSIDE"), ("ENEMY", "TOPSIDE"), ("ENEMY", "BOTSIDE")):
+        hit = todo & (own == (half == "OWN")) & ((diagonal < 0) == (side == "TOPSIDE"))
+        out[hit] = REGION_INDEX[f"JUNGLE_{half}_{side}"]
+    return out

@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from synergy.config import Settings
+from synergy.config import get_settings, Settings
 from synergy.ingest.seeder import Seeder
 from synergy.ingest.store import Store
 from synergy.riot.client import NotFound, RiotClient
@@ -38,7 +38,8 @@ def make_match(match_id: str, puuids: list[str], duration: int = 1800, queue: in
         "info": {
             "gameCreation": 1735689600000,
             "gameDuration": duration,
-            "gameVersion": "15.1.1.1",
+            "gameVersion": f"{get_settings().season}.1.1.1",
+            "endOfGameResult": "GameComplete",
             "queueId": queue,
             "platformId": "NA1",
             "participants": participants,

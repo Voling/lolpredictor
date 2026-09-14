@@ -9,7 +9,7 @@ import pandas as pd
 
 from ..chunks import ChunkWriter, merge
 from ..config import Settings, get_settings
-from ..ingest.store import Store
+from ..ingest.store import Store, in_season
 from ..ingest.window import truncate_timeline
 from .advantage import fit_evaluation, state_rows
 from .complement import complement_table
@@ -18,7 +18,7 @@ from .detection import awareness, detection_rows
 from .early import early_rows
 from .families import family_rows
 from .player import _refresh_axes, feature_columns
-from .policy import policy_rows
+from .policy import POLICY_COLUMNS, policy_rows
 from .policyvec import fit_policy_vectors
 from .propensity import opportunity_rows
 from .match import participant_rows
@@ -97,23 +97,24 @@ def _bare_pair_rows(match: dict) -> list[dict]:
 
 
 def qualifying_matches(store: Store, settings: Settings) -> set[str] | None:
-    if settings.min_average_lp <= 0:
-        return None
     summary = pd.DataFrame(store.match_rank_summary())
-    if summary.empty or summary["ranked"].sum() == 0:
+    if summary.empty:
         return None
+    if "patch" not in summary.columns:
+        raise ValueError("match summary has no patch, cannot enforce the season rule")
+    stale = ~summary["patch"].map(lambda value: in_season(value, settings.season))
+    decided = settings.min_average_lp > 0 and summary["ranked"].sum() > 0
     judged = summary["ranked"] >= settings.min_ranked_participants
-    below = judged & (summary["average_lp"].astype(float) < settings.min_average_lp)
-    stale = pd.Series(False, index=summary.index)
-    if settings.season_start and "game_creation" in summary.columns:
-        floor = pd.Timestamp(settings.season_start, tz="UTC")
-        when = pd.to_datetime(summary["game_creation"], utc=True, errors="coerce")
-        stale = when.notna() & (when < floor)
+    below = (
+        judged & (summary["average_lp"].astype(float) < settings.min_average_lp)
+        if decided
+        else pd.Series(False, index=summary.index)
+    )
     drop = below | stale
     logger.info(
-        "corpus filter: dropped %s below %s average lp, %s before %s, kept %s",
+        "corpus filter: dropped %s below %s average lp, %s outside season %s, kept %s",
         int(below.sum()), settings.min_average_lp, int(stale.sum()),
-        settings.season_start, int((~drop).sum()),
+        settings.season, int((~drop).sum()),
     )
     return set(summary.loc[~drop, "match_id"])
 
@@ -272,7 +273,10 @@ def fit_reports(settings: Settings, counts: dict[str, int]) -> dict:
         if counts.get("policy"):
             full = pd.read_parquet(
                 settings.processed_dir / FILENAMES["policy"],
-                columns=["match_id", "team_id", "minute", "puuid", "role", "state", "action"],
+                columns=[
+                    "match_id", "team_id", "minute", "puuid", "role", "state", "action",
+                    *POLICY_COLUMNS,
+                ],
             )
             surface = fit_value_surface(full, states, settings)
             reports["value_surface"] = {"cells": int(len(surface))}

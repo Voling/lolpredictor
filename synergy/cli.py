@@ -67,8 +67,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("db-load", help="load the raw archive on disk into postgres")
     reingest_cmd = sub.add_parser("reingest", help="rewrite frames and events from the raw timelines")
+    reingest_cmd.add_argument("--missing", action="store_true", help="only matches with no frames")
     reingest_cmd.add_argument("--workers", type=int, default=None)
 
+    sub.add_parser("validate", help="check the corpus for integrity problems")
+    sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
 
     pair_cmd = sub.add_parser("pair", help="score one pairing")
@@ -144,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "reingest":
         from .db.reingest import reingest
 
-        _report(reingest(settings, workers=args.workers))
+        _report(reingest(settings, workers=args.workers, missing=args.missing))
         return 0
 
     if args.command == "ranks":
@@ -211,6 +214,17 @@ def main(argv: list[str] | None = None) -> int:
         _report(load_from_archive(settings))
         return 0
 
+    if args.command == "validate":
+        from .db.validate import validate
+
+        report = validate(settings)
+        _report(report)
+        return 0 if not any(report.values()) else 1
+    if args.command == "profiles":
+        from .db.profiles import build_profiles as build_player_profiles
+
+        _report(build_player_profiles(settings))
+        return 0
     if args.command == "status":
         with Store(settings) as store:
             corpus = store.counts()

@@ -14,7 +14,26 @@ from ..config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+
+
+def season_of(patch: str) -> int | None:
+    head = str(patch or "").split(".")[0]
+    return int(head) if head.isdigit() else None
+
+
+def in_season(patch: str, season: int) -> bool:
+    found = season_of(patch)
+    return found is not None and found == season
+
+
+def conclusive(info: dict) -> bool:
+    if str(info.get("endOfGameResult") or COMPLETE) != COMPLETE:
+        return False
+    return not any(
+        person.get("gameEndedInEarlySurrender") for person in info.get("participants") or ()
+    )
 TIMESCALE = Path(__file__).resolve().parent.parent / "db" / "timescale.sql"
+COMPLETE = "GameComplete"
 ACTOR_KEYS = ("killerId", "creatorId", "participantId")
 POSITIONS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
 
@@ -125,18 +144,27 @@ class Store:
                 (timeline.get("info", {}).get("windowMinutes"), match_id),
             )
 
-    def save_match(self, match: dict) -> None:
+    def save_match(self, match: dict) -> bool:
         info = match["info"]
         match_id = match["metadata"]["matchId"]
-        _write_json_gz(self.match_path(match_id), match)
         patch = ".".join(str(info.get("gameVersion", "")).split(".")[:2])
+        if not in_season(patch, self.settings.season):
+            logger.debug("skipping %s, patch %s is outside season %s",
+                         match_id, patch, self.settings.season)
+            return False
+        result = info.get("endOfGameResult")
+        if not conclusive(info):
+            logger.debug("skipping %s, riot ended it as %s", match_id, result)
+            return False
+        _write_json_gz(self.match_path(match_id), match)
         with self._tx() as cursor:
             cursor.execute(
-                "INSERT INTO matches (match_id, platform, queue_id, game_creation, game_duration, patch)"
-                " VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (match_id) DO UPDATE SET"
+                "INSERT INTO matches (match_id, platform, queue_id, game_creation, game_duration,"
+                " patch, end_result)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (match_id) DO UPDATE SET"
                 " platform=EXCLUDED.platform, queue_id=EXCLUDED.queue_id,"
                 " game_creation=EXCLUDED.game_creation, game_duration=EXCLUDED.game_duration,"
-                " patch=EXCLUDED.patch",
+                " patch=EXCLUDED.patch, end_result=EXCLUDED.end_result",
                 (
                     match_id,
                     info.get("platformId"),
@@ -144,6 +172,7 @@ class Store:
                     _moment(info.get("gameCreation")),
                     info.get("gameDuration"),
                     patch,
+                    result,
                 ),
             )
             self._record_identities(cursor, info["participants"])
@@ -167,10 +196,21 @@ class Store:
             )
 
     def save_timeline(self, match_id: str, timeline: dict) -> None:
+        if not self.has_match(match_id):
+            logger.debug("skipping the timeline for %s, the match was not stored", match_id)
+            return
         _write_json_gz(self.timeline_path(match_id), timeline)
         self.ingest_timeline(match_id, timeline)
 
     def ingest_timeline(self, match_id: str, timeline: dict) -> tuple[int, int]:
+        with self._tx() as cursor:
+            cursor.execute(
+                "SELECT game_creation FROM matches WHERE match_id=%s", (match_id,)
+            )
+            found = cursor.fetchone()
+        if not found or found["game_creation"] is None:
+            raise KeyError(f"{match_id} has no game_creation, cannot partition its rows")
+        created = found["game_creation"]
         info = timeline.get("info", {})
         puuids = {
             int(entry["participantId"]): entry["puuid"]
@@ -193,6 +233,7 @@ class Store:
                 frames.append(
                     (
                         match_id,
+                        created,
                         puuid,
                         minute,
                         position.get("x"),
@@ -219,6 +260,7 @@ class Store:
                 events.append(
                     (
                         match_id,
+                        created,
                         index,
                         int(event.get("timestamp", 0)) // 60000,
                         event.get("timestamp"),
@@ -248,18 +290,20 @@ class Store:
             cursor.execute("DELETE FROM events WHERE match_id=%s", (match_id,))
             if frames:
                 cursor.executemany(
-                    "INSERT INTO frames (match_id, puuid, minute, x, y, total_gold, current_gold, xp,"
+                    "INSERT INTO frames (match_id, game_creation, puuid, minute, x, y,"
+                    " total_gold, current_gold, xp,"
                     " minions, jungle_minions, level, damage_done, damage_taken,"
                     " health, health_max, movement_speed)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     frames,
                 )
             if events:
                 cursor.executemany(
-                    "INSERT INTO events (match_id, event_index, minute, timestamp_ms, type, actor,"
+                    "INSERT INTO events (match_id, game_creation, event_index, minute,"
+                    " timestamp_ms, type, actor,"
                     " victim, assists, x, y, ward_type, monster_type, building_type, lane_type,"
                     " item_id, tower_type, killer_team_id, kill_type, monster_sub_type)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     events,
                 )
         return len(frames), len(events)
@@ -345,14 +389,23 @@ class Store:
             cursor.execute("SELECT * FROM players")
             return cursor.fetchall()
 
+    def matches_without_frames(self) -> list[str]:
+        with self._tx() as cursor:
+            cursor.execute(
+                "SELECT m.match_id FROM matches m"
+                " WHERE NOT EXISTS (SELECT 1 FROM frames f WHERE f.match_id = m.match_id)"
+                " ORDER BY m.game_creation NULLS LAST, m.match_id"
+            )
+            return [row["match_id"] for row in cursor.fetchall()]
+
     def match_rank_summary(self) -> list[dict]:
         with self.conn.cursor() as cursor:
             cursor.execute(
-                "SELECT c.match_id, m.game_creation, COUNT(p.lp_value) AS ranked,"
+                "SELECT c.match_id, m.game_creation, m.patch, COUNT(p.lp_value) AS ranked,"
                 " AVG(p.lp_value) AS average_lp"
                 " FROM participations c JOIN matches m ON m.match_id = c.match_id"
                 " LEFT JOIN players p ON p.puuid = c.puuid"
-                " GROUP BY c.match_id, m.game_creation"
+                " GROUP BY c.match_id, m.game_creation, m.patch"
             )
             return cursor.fetchall()
 

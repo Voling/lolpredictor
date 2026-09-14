@@ -25,6 +25,7 @@ from .dataset import (
 RIDGE_ALPHAS = np.logspace(1, 6, 24)
 MIN_SYNERGY_SPREAD = 1e-3
 MIN_SYNERGY_GAIN_SIGMA = 2.0
+ADVANTAGE_NULLS = 20
 SCORE_SPAN = 6.0
 OBSERVED_LINEUP = 3
 PROBABILITY_FLOOR = 1e-4
@@ -45,6 +46,15 @@ class TrainingReport:
     synergy_mean: float = 0.0
     synergy_gain: float = 0.0
     synergy_gain_sigma: float = 0.0
+    advantage_matches: int = 0
+    advantage_sd: float = 0.0
+    advantage_base_r2: float = 0.0
+    advantage_full_r2: float = 0.0
+    advantage_gain: float = 0.0
+    advantage_null_mean: float = 0.0
+    advantage_null_sd: float = 0.0
+    advantage_nulls_above: int = 0
+    advantage_gold_sd: float = 0.0
     style_only_auc: float = 0.0
     observed_matches: int = 0
     observed_baseline_auc: float = 0.0
@@ -72,6 +82,15 @@ class TrainingReport:
             "synergy_mean": round(self.synergy_mean, 5),
             "synergy_gain": round(self.synergy_gain, 4),
             "synergy_gain_sigma": round(self.synergy_gain_sigma, 2),
+            "advantage_matches": self.advantage_matches,
+            "advantage_sd": round(self.advantage_sd, 1),
+            "advantage_base_r2": round(self.advantage_base_r2, 6),
+            "advantage_full_r2": round(self.advantage_full_r2, 6),
+            "advantage_gain": round(self.advantage_gain, 6),
+            "advantage_null_mean": round(self.advantage_null_mean, 6),
+            "advantage_null_sd": round(self.advantage_null_sd, 6),
+            "advantage_nulls_above": self.advantage_nulls_above,
+            "advantage_gold_sd": round(self.advantage_gold_sd, 1),
             "top_terms": self.top_terms,
         }
 
@@ -88,6 +107,8 @@ class SynergyModel:
     def __init__(self):
         self.baseline: Pipeline | None = None
         self.residual: Pipeline | None = None
+        self.advantage: Pipeline | None = None
+        self.advantage_weights: pd.Series = pd.Series(dtype=float)
         self.weights: pd.Series = pd.Series(dtype=float)
         self.quantiles: np.ndarray = np.array([])
         self.report = TrainingReport()
@@ -98,7 +119,13 @@ class SynergyModel:
         coefficients = coefficients[0] if coefficients.ndim > 1 else coefficients
         return pd.Series(coefficients / np.where(scale == 0, 1.0, scale), index=columns)
 
-    def fit(self, features: pd.DataFrame, controls: pd.DataFrame, folds: int = 5) -> TrainingReport:
+    def fit(
+        self,
+        features: pd.DataFrame,
+        controls: pd.DataFrame,
+        folds: int = 5,
+        advantage: pd.Series | None = None,
+    ) -> TrainingReport:
         X, y, observed = build_team_dataset(features, controls)
         report = TrainingReport(
             matches=len(X), pair_rows=len(features), pairs=int(features["pair_key"].nunique())
@@ -138,6 +165,10 @@ class SynergyModel:
             report.synergy_gain = report.auc - report.baseline_auc
             report.synergy_gain_sigma = report.synergy_gain / (0.5 / np.sqrt(max(len(y), 4) / 4.0))
 
+        target = None if advantage is None else advantage.reindex(X.index)
+        if target is not None and target.notna().sum() >= 2000:
+            self._fit_advantage(report, X, phi, control, target, folds)
+
         self.baseline = _baseline().fit(control, y)
         expected = self.baseline.predict_proba(control)[:, 1]
         self.residual = _residual().fit(phi, y - expected)
@@ -146,6 +177,7 @@ class SynergyModel:
 
         synergy = self.synergy(features)
         report.synergy_std = float(np.std(synergy))
+        report.advantage_gold_sd = round(float(np.std(synergy) * report.advantage_sd), 1)
         report.synergy_mean = float(np.mean(synergy))
         self.quantiles = np.quantile(synergy, np.linspace(0, 1, 1001))
         ordered = self.weights.reindex(self.weights.abs().sort_values(ascending=False).index)
@@ -155,16 +187,65 @@ class SynergyModel:
         self.report = report
         return report
 
+    def _fit_advantage(self, report, X, phi, control, target, folds) -> None:
+        keep = target.notna().to_numpy()
+        gold = target.to_numpy(dtype=float)[keep]
+        report.advantage_matches = int(keep.sum())
+        report.advantage_sd = float(np.std(gold))
+        scaled = (gold - gold.mean()) / max(float(np.std(gold)), 1e-9)
+        block, side = phi[keep], control[keep]
+        splitter = KFold(n_splits=min(folds, max(2, len(gold) // 20)), shuffle=True, random_state=42)
+
+        def held_out(matrix, values):
+            out = np.zeros(len(values))
+            for fit, test in splitter.split(matrix):
+                model = _residual().fit(matrix.iloc[fit], values[fit])
+                out[test] = model.predict(matrix.iloc[test])
+            total = ((values - values.mean()) ** 2).sum()
+            return 1.0 - ((values - out) ** 2).sum() / total, out
+
+        base_r2, base_out = held_out(side, scaled)
+        joined = pd.concat([side, block], axis=1)
+        full_r2, _ = held_out(joined, scaled)
+        report.advantage_base_r2 = float(base_r2)
+        report.advantage_full_r2 = float(full_r2)
+        report.advantage_gain = float(full_r2 - base_r2)
+
+        rng = np.random.default_rng(0)
+        draws = []
+        for _ in range(ADVANTAGE_NULLS):
+            spun = block.to_numpy(dtype=float)[rng.permutation(len(block))]
+            fake = pd.concat(
+                [side, pd.DataFrame(spun, index=side.index, columns=block.columns)], axis=1
+            )
+            draws.append(held_out(fake, scaled)[0] - base_r2)
+        draws = np.asarray(draws)
+        report.advantage_null_mean = float(draws.mean())
+        report.advantage_null_sd = float(draws.std(ddof=1))
+        report.advantage_nulls_above = int((draws >= report.advantage_gain).sum())
+
+        self.advantage = _residual().fit(joined, scaled - base_out)
+        self.advantage_weights = self._raw_weights(self.advantage, list(joined.columns))
+
     def synergy(self, phi: pd.DataFrame) -> np.ndarray:
-        if self.weights.empty:
+        weights = self.pair_weights
+        if weights.empty:
             raise RuntimeError("model not trained")
-        matrix = phi.reindex(columns=PHI_COLUMNS).fillna(0.0).to_numpy(dtype=float)
-        return matrix @ self.weights.to_numpy()
+        matrix = phi.reindex(columns=list(weights.index)).fillna(0.0).to_numpy(dtype=float)
+        return matrix @ weights.to_numpy()
+
+    @property
+    def pair_weights(self) -> pd.Series:
+        if not getattr(self, "advantage_weights", pd.Series(dtype=float)).empty:
+            return self.advantage_weights.reindex(PHI_COLUMNS).dropna()
+        return self.weights
 
     @property
     def informative(self) -> bool:
         if float(self.report.synergy_std) < MIN_SYNERGY_SPREAD:
             return False
+        if self.report.advantage_matches:
+            return self.report.advantage_gain > 0.0 and self.report.advantage_nulls_above == 0
         return float(self.report.synergy_gain_sigma) >= MIN_SYNERGY_GAIN_SIGMA
 
     def score(self, synergy: np.ndarray | float) -> np.ndarray:
@@ -174,21 +255,26 @@ class SynergyModel:
         return np.clip(50.0 + 50.0 * np.tanh(centred / (SCORE_SPAN * spread)), 0.0, 100.0)
 
     def contributions(self, phi: pd.DataFrame) -> pd.Series:
-        row = phi.reindex(columns=PHI_COLUMNS).fillna(0.0).iloc[0]
-        return row * self.weights
+        weights = self.pair_weights
+        row = phi.reindex(columns=list(weights.index)).fillna(0.0).iloc[0]
+        return row * weights
 
     def explain(self, phi: pd.DataFrame, top: int = 5) -> list[dict]:
         contributions = self.contributions(phi)
         by_axis: dict[str, float] = {name: 0.0 for name in STYLE_NAMES}
         by_axis["shared_history"] = 0.0
         for column, (first, second) in zip(CROSS_COLUMNS, CROSS_TERMS):
+            if column not in contributions:
+                continue
             value = float(contributions[column])
             by_axis[first] += value / 2.0
             by_axis[second] += value / 2.0
         for column, name in zip(DIFF_COLUMNS, STYLE_NAMES):
-            by_axis[name] += float(contributions[column])
+            if column in contributions:
+                by_axis[name] += float(contributions[column])
         for column in HISTORY_COLUMNS:
-            by_axis["shared_history"] += float(contributions[column])
+            if column in contributions:
+                by_axis["shared_history"] += float(contributions[column])
         ranked = sorted(by_axis.items(), key=lambda item: abs(item[1]), reverse=True)
         return [{"axis": axis, "impact": float(value)} for axis, value in ranked[:top]]
 

@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS matches (
     game_creation   TIMESTAMPTZ,
     game_duration   INTEGER,
     patch           TEXT,
-    window_minutes  SMALLINT
+    window_minutes  SMALLINT,
+    end_result      TEXT
 );
 CREATE INDEX IF NOT EXISTS matches_created ON matches (game_creation DESC);
 
@@ -54,6 +55,7 @@ CREATE INDEX IF NOT EXISTS participations_champion ON participations (champion_n
 
 CREATE TABLE IF NOT EXISTS frames (
     match_id        TEXT NOT NULL REFERENCES matches (match_id) ON DELETE CASCADE,
+    game_creation   TIMESTAMPTZ NOT NULL,
     puuid           TEXT NOT NULL,
     minute          SMALLINT NOT NULL,
     x               INTEGER,
@@ -75,6 +77,7 @@ CREATE INDEX IF NOT EXISTS frames_player_minute ON frames (puuid, minute);
 
 CREATE TABLE IF NOT EXISTS events (
     match_id        TEXT NOT NULL REFERENCES matches (match_id) ON DELETE CASCADE,
+    game_creation   TIMESTAMPTZ NOT NULL,
     event_index     INTEGER NOT NULL,
     minute          SMALLINT,
     timestamp_ms    INTEGER,

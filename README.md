@@ -11,7 +11,7 @@ the part of a team's result that only a specific pairing explains.
 1. **Crawl** ([seeder.py](synergy/ingest/seeder.py)) resolves the seed Riot ID, pulls their ranked match
    ids, stores each match and its timeline, then pushes every participant onto a priority frontier.
    Repeat encounters raise a player's priority, so the crawl densifies the seed's own circle instead of
-   drifting into strangers. Players outside the tier window are skipped, the frontier lives in SQLite so
+   drifting into strangers. Players outside the tier window are skipped, the frontier lives in Postgres so
    a run resumes where it stopped, a token bucket enforces both Riot rate windows with 429 back-off, and
    `CRAWL_MAX_REQUESTS` caps what one run may spend. Matches are fetched eight at a time; a reserve of
    requests at the end resolves Riot IDs for the participants seen often enough to be profiled.
@@ -49,9 +49,9 @@ the part of a team's result that only a specific pairing explains.
    distinguishable from chance: given the same situation every player responds about the same, which
    says defence is dictated by where you already were rather than by disposition. Conditioning matters:
    the top 20 initiators split across all five roles rather than collapsing to junglers.
-6. **Profiles** collapse the window features into nine style axes (invading, jungle support, aggression,
-   frontline, teamfighting, vision, farming, tempo, lane focus) reported as percentiles, alongside the
-   three tendencies. A seeded crawl leaves most participants with one or two games, so each estimate is
+6. **Profiles** collapse the window features into six style axes learned from the data by a generalised
+   eigendecomposition, `t1` to `t6`, reported as percentiles alongside the tendencies. They replaced nine
+   hand named axes; two of those were exactly collinear, which left the basis rank deficient. A seeded crawl leaves most participants with one or two games, so each estimate is
    shrunk toward the population average by `games / (games + STYLE_SHRINKAGE_K)` and the profile reports
    the confidence weight it was given.
 7. **Model** turns each match's ten same-team pairs into an interaction vector: the symmetric
@@ -61,30 +61,56 @@ the part of a team's result that only a specific pairing explains.
    strength. Every profile input is leave-one-out. Role pairing is deliberately absent: both teams always
    field the same ten role combinations, so it cancels exactly in the team difference.
 8. **Score** is `w . phi(pair)`, the pair's contribution to the team's win-rate residual, reported as a
-   percentile against every pairing in the corpus, so 50 is an average pairing.
+   percentile against every pairing in the corpus, so 50 is an average pairing. It is gated: the model
+   reports no score unless the pair terms beat their own noise by `synergy_gain_sigma` of 2, and on the
+   win outcome they never have. See [docs/variance.md](docs/variance.md).
 
-## What it measures, on 1155 real Master and Diamond matches
+Frames and events live in Postgres 17 hypertables under TimescaleDB, everything else in ordinary
+relational tables. See [docs/timescaledb.md](docs/timescaledb.md).
 
-Out-of-fold AUC on predicting which team won, from a seeded crawl of bblskibs#gotg. A seeded crawl
-knows a lot about the few players it crawled and almost nothing about the rest, so the numbers are
-reported both over the whole corpus and over the 200 matches where at least
-three of the ten players have five or more games on record.
+## What it measures, on 42,816 Master and Diamond matches
 
-| Predictor | All 1155 matches | 200 well observed matches |
+Out-of-fold AUC on predicting which team won, from a seeded crawl outward from bblskibs#gotg. The corpus
+holds 43,835 matches, 12,795,420 frames and 48,863,986 events; 42,816 matches and 17,262 players survive
+the tier and season filters.
+
+| Predictor | AUC | Log loss |
 |---|---|---|
-| Playstyle sums alone | 0.524 | 0.605 |
-| Individual strength (style, LP, ladder win rate, corpus win rate) | 0.538 | 0.614 |
-| Strength plus pair interaction terms | 0.530 | 0.601 |
+| Playstyle sums alone | 0.5446 | |
+| Individual strength, styles, rank, movement | 0.6745 | 0.6515 |
+| Strength plus pair interaction terms | 0.6747 | 0.6515 |
 
-Read it as a coverage result, not a ceiling. Where the lineup is known the model reaches 0.61; where it
-is not, everything collapses toward chance because a one-game player's style vector is shrunk to the
-population average by construction. Pair interaction terms move the result by less than the noise in
-either column, and the ridge drives most of their weights toward zero, so treat individual pair scores
-as indicative rather than settled. `tests/test_model.py::test_model_recovers_planted_synergy` plants a
-known synergy function in a synthetic corpus and asserts the estimator recovers it, correlation 0.38
-with ground truth over 4000 matches, which separates a data volume limit from a broken estimator.
+Pair terms add 0.0002 AUC, and `synergy_gain_sigma` reads 0.04 against a gate of 2, so no pair score is
+reported on this outcome. That null is informative rather than merely absent: simulating a known pair
+effect through the real design shows the win outcome recovers an effect of 0.25, nearly as large as the
+player effect itself, at only 1.5 null spreads. Win compresses each match into one bit shared across ten
+pairs and arrives twenty minutes after the features, so it cannot see a pair effect of any plausible size.
+
+Gold plus objectives at minute 15 can. It recovers that same planted effect at 13.3 null spreads, and on
+real data it says two different things:
+
+| Question | Result |
+|---|---|
+| Does pair identity have a variance component? | no, 0.1 null spreads, so any effect is under about 600 gold |
+| Do the two players' styles interact beyond each player alone? | **yes, +0.0011 R², no draw of 40 nulls reached it** |
+
+So a specific duo carries no consistent effect of its own, but how two playstyles combine does predict
+board advantage, worth roughly 180 gold at minute 15 and about 2 percent of what the players individually
+explain. The current gate is calibrated on win and therefore rejects it.
+
+## Movement
+
+Players are distinguishable by where they go next given where they are. Each player's region transition
+matrix is shrunk toward the global one, and held out by whole player-games that beats the global matrix
+by 0.096 nats per transition. Reduced to 12 components, the signature adds 0.0082 R² on gold at 15 beyond
+rank, which no draw of 40 scrambled nulls reached. Averaging a player's position instead of conditioning
+on it predicts nothing: position responds to what just happened, so a marginal average describes the
+situations a player met rather than the player. See [docs/movement.md](docs/movement.md).
 
 ## Learned timeline representations
+
+These numbers predate the current corpus and are kept for the comparison they make rather than as
+current metrics.
 
 `synergy/deep/` replaces the hand weighted axes with a representation learned from the timelines
 themselves. Each player game becomes 45 minute steps carrying a map region token from 18 team relative
@@ -135,6 +161,7 @@ Run from the repo root with the virtualenv active. Copy `.env.example` to `.env`
 | `python -m synergy window` | Cut raw timelines down to the first 15 minutes |
 | `python -m synergy features` | Extract participation, pair and opportunity tables from the windows |
 | `python -m synergy train` | Fit the baseline and synergy models, write profiles and the report |
+| `python -m synergy reingest` | Rewrite frames and events from the raw timelines |
 | `python -m synergy status` | Corpus counts, crawl frontier and model metrics |
 | `python -m synergy pair "a#tag" "b#tag"` | Score one pairing with its drivers |
 | `python -m synergy partners "a#tag"` | Best and worst modelled partners |
@@ -173,6 +200,6 @@ sustains roughly 50 requests a minute, and the defaults in `.env.example` fit a 
 
 ## Data on disk
 
-`DATA_DIR` (default `./data`) holds `raw/matches/*.json.gz`, `raw/timelines/*.json.gz`, the
-`catalog.sqlite3` crawl catalog, the parquet tables under `processed/`, and the pickled model plus
-`training_report.json` under `models/`. Nothing in `data/` is committed.
+`DATA_DIR` (default `./data`) holds `raw/matches/*.json.gz`, `raw/timelines/*.json.gz`, the parquet
+tables under `processed/`, and the pickled model plus `training_report.json` under `models/`. The crawl
+frontier, matches, frames and events live in Postgres, not on disk. Nothing in `data/` is committed.

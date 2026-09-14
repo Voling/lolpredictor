@@ -82,8 +82,10 @@ def design(pairs: pd.DataFrame, min_games: int = MIN_PAIR_GAMES) -> dict:
     players = pd.Index(sorted(roster.puuid.unique()))
     seats = players.get_indexer(roster.puuid).reshape(-1, TEAM_SIZE)
     slots = frame.pair_slot.to_numpy().reshape(-1, TEAM_PAIRS)
-    outcome = sides.sort_values(["match_id", "team_id"]).win.to_numpy().reshape(-1, 2)
+    ordered = sides.sort_values(["match_id", "team_id"])
+    outcome = ordered.win.to_numpy().reshape(-1, 2)
     return {
+        "matches": ordered.match_id.to_numpy()[0::2],
         "player_a": seats[0::2],
         "player_b": seats[1::2],
         "pair_a": slots[0::2],

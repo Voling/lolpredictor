@@ -2,6 +2,7 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg17
     command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
+    shm_size: 1gb
     environment:
       POSTGRES_USER: synergy
       POSTGRES_PASSWORD: synergy

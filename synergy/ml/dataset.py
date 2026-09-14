@@ -8,6 +8,7 @@ from ..features.player import STYLE_AXES, normaliser, participation_styles
 from ..features.complement import COMPLEMENT_COLUMNS, load_complement
 from ..features.dyad import DYAD_FEATURE_COLUMNS
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
+from .movement import MOVEMENT_COLUMNS, load_movement
 
 OBSERVED_GAMES = 5
 STYLE_NAMES: list[str] = []
@@ -27,11 +28,13 @@ def refresh_columns() -> None:
         "hist_winrate_centred",
         *[f"hist_{column}" for column in PAIR_HISTORY_SOURCE],
     ]
-    PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + HISTORY_COLUMNS + COMPLEMENT_COLUMNS
+    BEHAVIOUR_COLUMNS[:] = [f"hist_{column}" for column in PAIR_HISTORY_SOURCE]
+    PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + BEHAVIOUR_COLUMNS
     STYLE_SUM_COLUMNS[:] = [f"team_style_{name}" for name in STYLE_NAMES]
-    CONTROL_COLUMNS[:] = STYLE_SUM_COLUMNS + _TEAM_CONTROLS
+    CONTROL_COLUMNS[:] = STYLE_SUM_COLUMNS + _TEAM_CONTROLS + MOVEMENT_SUM_COLUMNS
 PAIR_HISTORY_SOURCE = PAIR_TIMELINE_COLUMNS + DYAD_FEATURE_COLUMNS
 HISTORY_COLUMNS: list[str] = []
+BEHAVIOUR_COLUMNS: list[str] = []
 PHI_COLUMNS: list[str] = []
 STYLE_SUM_COLUMNS: list[str] = []
 _TEAM_CONTROLS = [
@@ -41,6 +44,9 @@ _TEAM_CONTROLS = [
     "team_experience",
     "team_season_winrate",
     "team_season_coverage",
+]
+MOVEMENT_SUM_COLUMNS = [f"team_{column}" for column in MOVEMENT_COLUMNS] + [
+    "team_move_coverage"
 ]
 CONTROL_COLUMNS: list[str] = []
 
@@ -202,6 +208,21 @@ def build_pair_dataset(
     style_sums = grouped[loo_columns].sum()
     style_sums.columns = STYLE_SUM_COLUMNS
     controls = controls.join(style_sums)
+    movement = load_movement()
+    if not movement.empty:
+        seats = context[["match_id", "team_id", "puuid"]].merge(
+            movement, on=["match_id", "puuid"], how="left"
+        )
+        grouped_moves = seats.groupby(["match_id", "team_id"])
+        means = grouped_moves[MOVEMENT_COLUMNS].mean()
+        means.columns = [f"team_{column}" for column in MOVEMENT_COLUMNS]
+        means["team_move_coverage"] = grouped_moves[MOVEMENT_COLUMNS[0]].apply(
+            lambda values: values.notna().mean()
+        )
+        controls = controls.join(means)
+    else:
+        for column in MOVEMENT_SUM_COLUMNS:
+            controls[column] = 0.0
     for column in CONTROL_COLUMNS:
         if column in controls.columns:
             controls[column] = controls[column].fillna(controls[column].mean()).fillna(0.0)
