@@ -2,8 +2,9 @@
 
 Asks whether a pair of players has an effect beyond the two players individually. One
 observation per match, both teams entering as a difference, in
-[variance.py](../synergy/ml/variance.py) for `win` and [gold.py](../synergy/ml/gold.py) for
-the minute 15 outcomes:
+[gold.py](../synergy/ml/gold.py) on the minute 15 outcomes. The `win` row below is kept as
+the record of why end of game results were retired as a target; the module that fitted it is
+gone and nothing trains on `win` any more:
 
 ```
 outcome = mean + Σ player[blue] − Σ player[red] + Σ pair[blue] − Σ pair[red]

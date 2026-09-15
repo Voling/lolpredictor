@@ -1,5 +1,6 @@
 export type Status = {
   ready: boolean;
+  informative: boolean;
   players: number;
   known_pairs: number;
   cache: boolean;
@@ -11,9 +12,19 @@ export type PairScore = {
   reliable: boolean;
   note: string | null;
   synergy: number;
+  projected_gold_at_15: number;
   games_together: number;
   winrate_together: number | null;
-  adjusted_winrate_together: number;
+  hinge: Record<
+    string,
+    { converged: number; present: number; nearby: number; triggers: number } | null
+  >;
+  interaction: {
+    synergy: number;
+    percentile: number;
+    left_seats: number;
+    right_seats: number;
+  } | null;
   players: { riot_id: string; main_position: string; games: number; winrate: number }[];
 };
 

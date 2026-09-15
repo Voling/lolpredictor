@@ -7,7 +7,7 @@ from ..config import Settings, get_settings
 from ..features.build import load_tables
 from ..features.player import _refresh_axes, build_profiles
 from .dataset import PAIR_HISTORY_SOURCE, attach_dyads, build_pair_dataset, canonical_pairs
-from .gold import team_advantage
+from .gold import team_advantage, team_gold
 from .model import SynergyModel
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,8 @@ def train(settings: Settings | None = None, min_games: int | None = None) -> dic
     try:
         advantage = team_advantage(settings)
     except ValueError as exc:
-        logger.warning("no advantage target, falling back to the win gate: %s", exc)
-        advantage = None
+        logger.warning("objectives cannot be priced, training on gold at 15 alone: %s", exc)
+        advantage = team_gold(settings)
     model = SynergyModel()
     report = model.fit(features, controls, advantage=advantage)
 

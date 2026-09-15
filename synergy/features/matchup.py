@@ -3,7 +3,6 @@ import pandas as pd
 
 MATCHUP_SHRINKAGE = 8.0
 CHAMPION_SHRINKAGE = 12.0
-COUNTER_STATES = ("countered", "even", "favoured")
 LANE_ROLES = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
 
 

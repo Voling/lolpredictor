@@ -13,8 +13,33 @@ from .ml.score import SynergyService
 from .ml.train import train
 
 
+BLOCKS = ("movement", "embedding", "orphans", "tendency", "habit", "hinge")
+
+
 def _report(payload) -> None:
     print(json.dumps(payload, indent=2, default=str))
+
+
+def _build_blocks(settings, only: list[str] | None) -> dict:
+    from .features.habit import build_habits
+    from .features.hinge import build_hinge
+    from .features.orphans import build_orphan_features
+    from .features.tendency import build_tendencies
+    from .ml.embedding import embedding_features
+    from .ml.movement import movement_features
+
+    makers = {
+        "movement": lambda: {"rows": int(len(movement_features(settings)))},
+        "embedding": lambda: embedding_features(settings),
+        "orphans": lambda: build_orphan_features(settings),
+        "tendency": lambda: build_tendencies(settings),
+        "habit": lambda: build_habits(settings),
+        "hinge": lambda: build_hinge(settings),
+    }
+    out = {}
+    for name in only or BLOCKS:
+        out[name] = makers[name]()
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,13 +88,38 @@ def main(argv: list[str] | None = None) -> int:
     deep_cmd.add_argument("--identity-conditioning", action="store_true")
     deep_cmd.add_argument("--device", default=None)
 
-    sub.add_parser("deep-compare", help="score learned embeddings against the handwritten axes")
 
     sub.add_parser("db-load", help="load the raw archive on disk into postgres")
     reingest_cmd = sub.add_parser("reingest", help="rewrite frames and events from the raw timelines")
     reingest_cmd.add_argument("--missing", action="store_true", help="only matches with no frames")
     reingest_cmd.add_argument("--workers", type=int, default=None)
 
+    stream_cmd = sub.add_parser("stream", help="write the per match event sequence")
+    stream_cmd.add_argument("--limit", type=int, default=None)
+    walk_cmd = sub.add_parser("walk-train", help="train the match walk on the event sequence")
+    walk_cmd.add_argument("--epochs", type=int, default=10)
+    walk_cmd.add_argument("--batch", type=int, default=128)
+    blocks_cmd = sub.add_parser("blocks", help="build the derived feature tables the model loads")
+    blocks_cmd.add_argument(
+        "--only", nargs="*", choices=list(BLOCKS), default=None, help="build a subset"
+    )
+    variance_cmd = sub.add_parser(
+        "variance", help="fit the pair identity variance component on advantage at 15"
+    )
+    variance_cmd.add_argument("--min-games", type=int, default=5)
+    interact_cmd = sub.add_parser(
+        "interaction", help="does a pair term over in match behaviour beat its null"
+    )
+    interact_cmd.add_argument("--components", type=int, default=16)
+    interact_cmd.add_argument("--steps", type=int, default=8000)
+    interact_cmd.add_argument("--nulls", type=int, default=40)
+    interact_cmd.add_argument("--source", choices=("style", "walk"), default="style")
+    interact_cmd.add_argument(
+        "--scores", action="store_true", help="write per player styles and every corpus pair score"
+    )
+    interact_cmd.add_argument(
+        "--skip-fit", action="store_true", help="reuse the saved matrix, only write the scores"
+    )
     sub.add_parser("validate", help="check the corpus for integrity problems")
     sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
@@ -202,18 +252,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if args.command == "deep-compare":
-        from .deep.evaluate import compare_representations
-
-        _report(compare_representations(settings))
-        return 0
-
     if args.command == "db-load":
         from .db.load import load_from_archive
 
         _report(load_from_archive(settings))
         return 0
 
+    if args.command == "stream":
+        from .deep.stream import build_stream
+
+        _report(build_stream(settings, limit=args.limit))
+        return 0
+    if args.command == "walk-train":
+        from .deep.walk_train import train_walk
+
+        report = train_walk(settings, epochs=args.epochs, batch=args.batch)
+        _report(report["best"])
+        return 0
+    if args.command == "blocks":
+        _report(_build_blocks(settings, args.only))
+        return 0
+    if args.command == "variance":
+        from .features.build import load_tables
+        from .ml.dataset import attach_dyads
+
+        from .ml.gold import fit_gold
+
+        tables = load_tables(settings, names=("pairs", "dyads"))
+        pairs = attach_dyads(tables["pairs"], tables.get("dyads"))
+        _report(fit_gold(pairs, settings, min_games=args.min_games))
+        return 0
+    if args.command == "interaction":
+        from .ml.interaction import fit_interaction, write_scores
+
+        if not args.skip_fit:
+            _report(
+                fit_interaction(
+                    settings,
+                    components=args.components,
+                    steps=args.steps,
+                    nulls=args.nulls,
+                    source=args.source,
+                )
+            )
+        if args.scores or args.skip_fit:
+            _report(write_scores(settings, source=args.source))
+        return 0
     if args.command == "validate":
         from .db.validate import validate
 

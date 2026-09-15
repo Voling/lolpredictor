@@ -124,6 +124,3 @@ def family_rows(
                     if row["opportunity"]:
                         rows.append(row)
     return rows
-
-
-FAMILY_NAMES = ("lane_partners", "jungler_laner", "cross_map", "roaming_support")

@@ -11,13 +11,77 @@ from numpyro.infer import SVI, Trace_ELBO, autoguide
 from ..config import Settings, get_settings
 from ..features.advantage import STATE_COLUMNS, load_evaluation
 from ..ingest.store import Store
-from .variance import LEARNING_RATE, MIN_PAIR_GAMES, SEED, _gather, design
 
+MIN_PAIR_GAMES = 5
+LEARNING_RATE = 0.02
+SEED = 0
 STEPS = 20000
 MINUTE = 15
 TEAM_SIZE = 5
 TEAM_PAIRS = 10
 OBJECTIVES = {"DRAGON": "dragon_diff", "HORDE": "grub_diff"}
+
+
+def _gather(effect, index):
+    return jnp.where(index >= 0, effect[jnp.clip(index, 0, None)], 0.0).sum(axis=1)
+
+
+def design(pairs: pd.DataFrame, min_games: int = MIN_PAIR_GAMES) -> dict:
+    frame = pairs.dropna(subset=["win"]).copy()
+    low = np.where(frame.puuid_a < frame.puuid_b, frame.puuid_a, frame.puuid_b)
+    high = np.where(frame.puuid_a < frame.puuid_b, frame.puuid_b, frame.puuid_a)
+    frame["puuid_a"], frame["puuid_b"] = low, high
+    frame["pair_key"] = frame.puuid_a + "|" + frame.puuid_b
+    counts = frame.pair_key.value_counts()
+    repeat = pd.Index(sorted(counts[counts >= min_games].index))
+    frame["pair_slot"] = repeat.get_indexer(frame.pair_key)
+    frame = frame.sort_values(["match_id", "team_id", "pair_key"]).reset_index(drop=True)
+
+    sizes = frame.groupby(["match_id", "team_id"], sort=True).size()
+    full = sizes[sizes == TEAM_PAIRS].index
+    frame = frame.set_index(["match_id", "team_id"]).loc[full].reset_index()
+    frame = frame.sort_values(["match_id", "team_id", "pair_key"]).reset_index(drop=True)
+
+    sides = frame[["match_id", "team_id", "win"]].drop_duplicates(
+        subset=["match_id", "team_id"]
+    )
+    both = sides.match_id.value_counts()
+    keep = set(both[both == 2].index)
+    mask = frame.match_id.isin(keep)
+    frame, sides = frame[mask].reset_index(drop=True), sides[sides.match_id.isin(keep)]
+
+    roster = (
+        pd.concat(
+            [
+                frame[["match_id", "team_id", "puuid_a"]].rename(columns={"puuid_a": "puuid"}),
+                frame[["match_id", "team_id", "puuid_b"]].rename(columns={"puuid_b": "puuid"}),
+            ]
+        )
+        .drop_duplicates()
+        .sort_values(["match_id", "team_id", "puuid"])
+        .reset_index(drop=True)
+    )
+    if len(roster) != len(sides) * TEAM_SIZE:
+        raise ValueError(f"roster is {len(roster)} rows, expected {len(sides) * TEAM_SIZE}")
+
+    players = pd.Index(sorted(roster.puuid.unique()))
+    seats = players.get_indexer(roster.puuid).reshape(-1, TEAM_SIZE)
+    slots = frame.pair_slot.to_numpy().reshape(-1, TEAM_PAIRS)
+    ordered = sides.sort_values(["match_id", "team_id"])
+    outcome = ordered.win.to_numpy().reshape(-1, 2)
+    return {
+        "matches": ordered.match_id.to_numpy()[0::2],
+        "player_a": seats[0::2],
+        "player_b": seats[1::2],
+        "pair_a": slots[0::2],
+        "pair_b": slots[1::2],
+        "win": outcome[:, 0].astype(int),
+        "n_players": len(players),
+        "n_pairs": int(slots.max()) + 1,
+        "repeat_rows": int((slots >= 0).sum()),
+        "players": players,
+        "repeat": repeat,
+    }
 
 
 def objective_prices(settings: Settings) -> dict:

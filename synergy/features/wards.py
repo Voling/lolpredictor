@@ -134,12 +134,3 @@ def ward_rows(
             }
         )
     return rows
-
-
-WARD_FEATURE_COLUMNS = [
-    "in_enemy_jungle",
-    "in_own_jungle",
-    "in_river",
-    "warded_before_invade",
-    "warded_near_next_gank",
-]

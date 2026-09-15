@@ -10,8 +10,9 @@ export default async function Home() {
   }
 
   const model = (status?.model ?? {}) as Record<string, number>;
-  const sigma = model.synergy_gain_sigma;
-  const informative = typeof sigma === "number" && sigma >= 2;
+  const gain = model.advantage_gain;
+  const nullsAbove = model.advantage_nulls_above;
+  const informative = status?.informative ?? false;
 
   return (
     <main>
@@ -23,8 +24,9 @@ export default async function Home() {
       {status && !informative && (
         <div className="gate">
           <strong>Scores are withheld</strong>
-          synergy_gain_sigma is {sigma?.toFixed(2)}, below the threshold of 2.00, so the model
-          reports no usable pair signal and pair scores return null.
+          The pair block adds {gain?.toFixed(6)} R² on advantage at 15 and {nullsAbove ?? "?"} of 20
+          permutation nulls reached it, so the model reports no usable pair signal and pair scores
+          return null.
         </div>
       )}
 
@@ -37,7 +39,15 @@ export default async function Home() {
             <tr><td>players profiled</td><td className="num">{status.players.toLocaleString()}</td></tr>
             <tr><td>known pairs</td><td className="num">{status.known_pairs.toLocaleString()}</td></tr>
             <tr><td>cache</td><td className="num">{status.cache ? "connected" : "off"}</td></tr>
-            {["matches", "baseline_auc", "auc", "synergy_gain", "synergy_gain_sigma", "log_loss", "brier"].map(
+            {[
+              "matches",
+              "advantage_matches",
+              "advantage_base_r2",
+              "advantage_full_r2",
+              "advantage_gain",
+              "advantage_nulls_above",
+              "advantage_gold_sd",
+            ].map(
               (key) =>
                 model[key] !== undefined && (
                   <tr key={key}>

@@ -103,14 +103,3 @@ def awareness(frame, key: str = "puuid", min_chances: int = 12):
         norm.ppf(clip(table.hit, table.threat_n)) + norm.ppf(clip(table.false_alarm, table.quiet_n))
     )
     return table.sort_values("d_prime", ascending=False)
-
-
-DETECTION_COLUMNS = [
-    "nearest_enemy",
-    "threat",
-    "pressure",
-    "jungler_threat",
-    "progress_drop",
-    "homeward",
-    "reacted",
-]

@@ -27,3 +27,4 @@ frontend/build/
 .DS_Store
 frontend/.next/
 backups/
+frontend/tsconfig.tsbuildinfo

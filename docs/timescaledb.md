@@ -7,12 +7,14 @@ columnar compression; everything else is a plain relational table.
 
 | table | kind | rows | why |
 |---|---|---|---|
-| `matches` | relational | 43,835 | keeps `PRIMARY KEY (match_id)`, which a hypertable cannot |
-| `players` | relational | 35,857 | dimension table |
-| `participations` | relational | 428,160 | dimension table, joined per match |
-| `frontier` | relational | ~34,000 | crawl state, updated constantly |
-| `frames` | **hypertable** | 12,795,420 | per player per minute |
-| `events` | **hypertable** | 48,863,986 | positioned game events |
+| `matches` | relational | 44,919 | keeps `PRIMARY KEY (match_id)`, which a hypertable cannot |
+| `players` | relational | 39,591 | dimension table |
+| `player_names` | relational | 42,036 | every name a player has used, so a rename still resolves |
+| `player_profiles` | relational | 39,433 | rank, role and champion summary built from the corpus |
+| `participations` | relational | 449,190 | dimension table, joined per match |
+| `frontier` | relational | 34,097 | crawl state, updated constantly |
+| `frames` | **hypertable** | 13,110,860 | per player per minute |
+| `events` | **hypertable** | 50,087,274 | positioned game events |
 
 Mixing the two is the intended pattern: TimescaleDB is a Postgres extension, so the fact
 tables partition by time while the dimension tables keep ordinary constraints and join

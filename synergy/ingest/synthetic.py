@@ -24,7 +24,7 @@ OBJECTIVES = [(9800, 4400), (4400, 10200), (7500, 7500), (11000, 11000), (4000, 
 BASES = {100: (1100, 1100), 200: (13900, 13900)}
 RECALL_CHANCE = 0.12
 STYLE_KEYS = ["aggro", "farm", "vision", "roam", "group", "objective"]
-TIERS = [("DIAMOND", "II"), ("DIAMOND", "I"), ("MASTER", "I")]
+TIERS = [("MASTER", "I"), ("MASTER", "I"), ("GRANDMASTER", "I"), ("CHALLENGER", "I")]
 
 
 def _logistic(value: float) -> float:
@@ -55,7 +55,7 @@ def make_players(count: int, rng: random.Random, seed_riot_id: str) -> list[dict
                 "skill": rng.gauss(0, 1),
                 "tier": tier,
                 "division": division,
-                "league_points": rng.randint(0, 99),
+                "league_points": rng.randint(0, 600),
                 "main": POSITIONS[index % 5],
                 **style,
             }
@@ -140,6 +140,7 @@ def _make_match(match_index: int, roster: list[dict], rng: random.Random, settin
                 + kills[pid] * 300
                 + assists[pid] * 130
                 + (minute * 22 if winning else 0)
+                + minute * 40 * synergy[team]
                 + rng.gauss(0, 120)
             )
             cs_track[pid].append(cs_value)

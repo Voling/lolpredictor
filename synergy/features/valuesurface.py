@@ -141,11 +141,3 @@ def load_value_surface(settings: Settings | None = None) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
-
-
-def state_mix(policy: pd.DataFrame) -> pd.Series:
-    return policy.groupby("state").size() / max(len(policy), 1)
-
-
-def action_base(policy: pd.DataFrame) -> pd.Series:
-    return policy.groupby(["state", "action"]).size() / policy.groupby("state").size()

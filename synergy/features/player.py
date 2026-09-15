@@ -99,13 +99,6 @@ def participation_styles(participations: pd.DataFrame, stats: dict) -> pd.DataFr
     return pd.concat([keys, styles.reset_index(drop=True)], axis=1)
 
 
-
-def load_normaliser(settings: Settings | None = None) -> dict:
-    settings = settings or get_settings()
-    with open(settings.processed_dir / "normaliser.json", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
 def build_profiles(
     participations: pd.DataFrame,
     min_games: int | None = None,

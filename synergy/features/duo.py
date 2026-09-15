@@ -94,12 +94,3 @@ def fit_duo_effect(
     with open(settings.processed_dir / "duo_effect.json", "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
     return payload
-
-
-def load_duo_effect(settings: Settings | None = None) -> dict:
-    settings = settings or get_settings()
-    path = settings.processed_dir / "duo_effect.json"
-    if not path.exists():
-        return {}
-    with open(path, encoding="utf-8") as handle:
-        return json.load(handle)

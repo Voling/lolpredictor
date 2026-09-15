@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
+from ..features.hinge import hinge_between
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
@@ -67,6 +68,7 @@ class SynergyService:
     def status(self) -> dict:
         return {
             "ready": self.ready,
+            "informative": bool(self.model is not None and self.model.informative),
             "players": 0 if self.profiles is None else int(len(self.profiles)),
             "known_pairs": 0 if self.history is None else int(len(self.history)),
             "model": self.report,
@@ -174,9 +176,6 @@ class SynergyService:
         present = games > 0
         frame["hist_present"] = present.astype(float)
         frame["hist_games_log"] = np.log1p(games)
-        frame["hist_winrate_centred"] = np.where(
-            present, np.nan_to_num(known["winrate"].to_numpy(dtype=float)) - 0.5, 0.0
-        )
         for column in PAIR_HISTORY_SOURCE:
             values = (
                 np.nan_to_num(known[column].to_numpy(dtype=float))
@@ -210,6 +209,8 @@ class SynergyService:
         return described
 
     def pair_score(self, left: str, right: str) -> dict:
+        from .interaction import pair_between
+
         model, _ = self._require()
         a = self.resolve(left)
         b = self.resolve(right)
@@ -218,22 +219,20 @@ class SynergyService:
         phi = self.build_phi(a, b.to_frame().T)
         synergy = float(model.synergy(phi)[0])
         score = float(model.score(synergy)[0])
-        projected = min(max(0.5 + synergy, 0.05), 0.95)
         history = self._pair_history(a["puuid"], b["puuid"])
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
-        k = self.settings.shrinkage_k
-        adjusted = (wins + k * projected) / (games + k) if games else projected
         informative = model.informative
         return {
             "score": round(score, 1) if informative else None,
             "reliable": informative,
             "note": None if informative else UNINFORMATIVE,
             "synergy": round(synergy, 5),
-            "projected_winrate": round(projected, 4),
+            "projected_gold_at_15": round(synergy * float(model.report.advantage_sd), 0),
             "games_together": games,
             "winrate_together": round(wins / games, 4) if games else None,
-            "adjusted_winrate_together": round(adjusted, 4),
+            "hinge": hinge_between(a["puuid"], b["puuid"], self.settings),
+            "interaction": pair_between(a["puuid"], b["puuid"], self.settings),
             "drivers": self._describe(model.explain(phi), a, b) if informative else [],
             "players": [self.player_summary(a), self.player_summary(b)],
             "shared_play": {

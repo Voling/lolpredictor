@@ -7,7 +7,11 @@ from ..config import get_settings
 from ..features.player import STYLE_AXES, normaliser, participation_styles
 from ..features.complement import COMPLEMENT_COLUMNS, load_complement
 from ..features.dyad import DYAD_FEATURE_COLUMNS
+from ..features.habit import HABIT_COLUMNS, load_habits
+from ..features.orphans import ORPHAN_COLUMNS, load_orphan_features
+from ..features.tendency import TENDENCY_COLUMNS, load_tendencies
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
+from .embedding import EMBED_COLUMNS, load_embedding
 from .movement import MOVEMENT_COLUMNS, load_movement
 
 OBSERVED_GAMES = 5
@@ -25,29 +29,48 @@ def refresh_columns() -> None:
     HISTORY_COLUMNS[:] = [
         "hist_present",
         "hist_games_log",
-        "hist_winrate_centred",
         *[f"hist_{column}" for column in PAIR_HISTORY_SOURCE],
     ]
     BEHAVIOUR_COLUMNS[:] = [f"hist_{column}" for column in PAIR_HISTORY_SOURCE]
     PHI_COLUMNS[:] = CROSS_COLUMNS + DIFF_COLUMNS + BEHAVIOUR_COLUMNS
-    STYLE_SUM_COLUMNS[:] = [f"team_style_{name}" for name in STYLE_NAMES]
-    CONTROL_COLUMNS[:] = STYLE_SUM_COLUMNS + _TEAM_CONTROLS + MOVEMENT_SUM_COLUMNS
+    STYLE_SUM_COLUMNS[:] = slot_columns([f"loo_style_{name}" for name in STYLE_NAMES])
+    CONTROL_COLUMNS[:] = (
+        STYLE_SUM_COLUMNS
+        + _TEAM_CONTROLS
+        + MOVEMENT_SUM_COLUMNS
+        + EMBED_SUM_COLUMNS
+        + ORPHAN_SUM_COLUMNS
+        + TENDENCY_SUM_COLUMNS
+        + HABIT_SUM_COLUMNS
+    )
 PAIR_HISTORY_SOURCE = PAIR_TIMELINE_COLUMNS + DYAD_FEATURE_COLUMNS
 HISTORY_COLUMNS: list[str] = []
 BEHAVIOUR_COLUMNS: list[str] = []
 PHI_COLUMNS: list[str] = []
 STYLE_SUM_COLUMNS: list[str] = []
-_TEAM_CONTROLS = [
-    "team_skill",
-    "team_lp",
-    "team_lp_coverage",
-    "team_experience",
-    "team_season_winrate",
-    "team_season_coverage",
-]
-MOVEMENT_SUM_COLUMNS = [f"team_{column}" for column in MOVEMENT_COLUMNS] + [
-    "team_move_coverage"
-]
+ROLE_SLOTS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+
+
+def slot_columns(columns: list[str]) -> list[str]:
+    return [f"{role.lower()}_{column}" for role in ROLE_SLOTS for column in columns]
+
+
+def by_role(seats: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    seated = seats[seats["position"].isin(ROLE_SLOTS)]
+    wide = seated.pivot_table(
+        index=["match_id", "team_id"], columns="position", values=columns, aggfunc="mean"
+    )
+    wide.columns = [f"{role.lower()}_{column}" for column, role in wide.columns]
+    return wide.reindex(columns=slot_columns(columns))
+
+
+SEAT_CONTROLS = ["lp_value", "player_games"]
+_TEAM_CONTROLS = slot_columns(SEAT_CONTROLS) + ["team_lp_coverage", "team_observed"]
+MOVEMENT_SUM_COLUMNS = slot_columns(MOVEMENT_COLUMNS)
+EMBED_SUM_COLUMNS = slot_columns(EMBED_COLUMNS)
+ORPHAN_SUM_COLUMNS = slot_columns(ORPHAN_COLUMNS)
+TENDENCY_SUM_COLUMNS = slot_columns(TENDENCY_COLUMNS)
+HABIT_SUM_COLUMNS = slot_columns(HABIT_COLUMNS)
 CONTROL_COLUMNS: list[str] = []
 
 
@@ -85,19 +108,7 @@ def player_context(
     frame = styles.copy()
     for index, column in enumerate(style_columns):
         frame[f"loo_{column}"] = means[:, index] * weight
-    wins = grouped["win"].transform("sum").to_numpy(dtype=float) - styles["win"].to_numpy(dtype=float)
-    frame["loo_winrate"] = (wins + k * 0.5) / (others + k)
     frame["player_games"] = grouped["puuid"].transform("count").to_numpy()
-    if {"wins", "losses"}.issubset(participations.columns):
-        played = participations["wins"].to_numpy(dtype=float) + participations["losses"].to_numpy(dtype=float)
-        frame["season_winrate"] = np.divide(
-            participations["wins"].to_numpy(dtype=float),
-            played,
-            out=np.full(len(participations), np.nan),
-            where=played > 0,
-        )
-    else:
-        frame["season_winrate"] = np.nan
     frame["lp_value"] = (
         participations["lp_value"].to_numpy() if "lp_value" in participations.columns else np.nan
     )
@@ -107,13 +118,13 @@ def player_context(
 def pair_history_features(pairs: pd.DataFrame) -> pd.DataFrame:
     frame = canonical_pairs(pairs)
     available = [column for column in PAIR_HISTORY_SOURCE if column in frame.columns]
-    columns = ["win", *available]
-    loo = leave_one_out(frame.assign(**{c: frame[c].astype(float) for c in columns}), "pair_key", columns)
+    loo = leave_one_out(
+        frame.assign(**{c: frame[c].astype(float) for c in available}), "pair_key", available
+    )
     counts = (frame.groupby("pair_key")["pair_key"].transform("count") - 1).to_numpy()
     out = pd.DataFrame(index=frame.index)
     out["hist_present"] = (counts > 0).astype(float)
     out["hist_games_log"] = np.log1p(np.maximum(counts, 0))
-    out["hist_winrate_centred"] = np.nan_to_num(loo["win"].to_numpy() - 0.5)
     for column in PAIR_HISTORY_SOURCE:
         values = loo[column].to_numpy() if column in available else np.zeros(len(frame))
         out[f"hist_{column}"] = np.nan_to_num(values)
@@ -167,7 +178,7 @@ def build_pair_dataset(
     context, stats = player_context(participations, stats, shrinkage_k)
     context_key = context.set_index(["match_id", "puuid"])
     loo_columns = [f"loo_style_{name}" for name in STYLE_NAMES]
-    carry = [*loo_columns, "loo_winrate", "lp_value", "position"]
+    carry = [*loo_columns, "lp_value", "position"]
 
     frame = canonical_pairs(pairs).reset_index(drop=True)
     history = pair_history_features(pairs)
@@ -197,31 +208,59 @@ def build_pair_dataset(
 
     grouped = context.groupby(["match_id", "team_id"])
     controls = grouped.agg(
-        team_skill=("loo_winrate", "sum"),
-        team_lp=("lp_value", "mean"),
         team_lp_coverage=("lp_value", lambda values: values.notna().mean()),
-        team_experience=("player_games", "mean"),
-        team_season_winrate=("season_winrate", "mean"),
-        team_season_coverage=("season_winrate", lambda values: values.notna().mean()),
         team_observed=("player_games", lambda values: int((values >= OBSERVED_GAMES).sum())),
     )
-    style_sums = grouped[loo_columns].sum()
-    style_sums.columns = STYLE_SUM_COLUMNS
-    controls = controls.join(style_sums)
+    controls = controls.join(by_role(context, SEAT_CONTROLS))
+    controls = controls.join(by_role(context, loo_columns))
     movement = load_movement()
     if not movement.empty:
-        seats = context[["match_id", "team_id", "puuid"]].merge(
+        seats = context[["match_id", "team_id", "puuid", "position"]].merge(
             movement, on=["match_id", "puuid"], how="left"
         )
-        grouped_moves = seats.groupby(["match_id", "team_id"])
-        means = grouped_moves[MOVEMENT_COLUMNS].mean()
-        means.columns = [f"team_{column}" for column in MOVEMENT_COLUMNS]
-        means["team_move_coverage"] = grouped_moves[MOVEMENT_COLUMNS[0]].apply(
-            lambda values: values.notna().mean()
-        )
-        controls = controls.join(means)
+        controls = controls.join(by_role(seats, MOVEMENT_COLUMNS))
     else:
         for column in MOVEMENT_SUM_COLUMNS:
+            controls[column] = 0.0
+
+    learned = load_embedding()
+    if not learned.empty:
+        seats = context[["match_id", "team_id", "puuid", "position"]].merge(
+            learned, on=["match_id", "puuid"], how="left"
+        )
+        controls = controls.join(by_role(seats, EMBED_COLUMNS))
+    else:
+        for column in EMBED_SUM_COLUMNS:
+            controls[column] = 0.0
+
+    orphans = load_orphan_features()
+    if not orphans.empty:
+        seats = context[["match_id", "team_id", "puuid", "position"]].merge(
+            orphans, on=["match_id", "puuid"], how="left"
+        )
+        controls = controls.join(by_role(seats, ORPHAN_COLUMNS))
+    else:
+        for column in ORPHAN_SUM_COLUMNS:
+            controls[column] = 0.0
+
+    tendencies = load_tendencies()
+    if not tendencies.empty:
+        seats = context[["match_id", "team_id", "puuid", "position"]].merge(
+            tendencies, on=["match_id", "puuid"], how="left"
+        )
+        controls = controls.join(by_role(seats, TENDENCY_COLUMNS))
+    else:
+        for column in TENDENCY_SUM_COLUMNS:
+            controls[column] = 0.0
+
+    habits = load_habits()
+    if not habits.empty:
+        seats = context[["match_id", "team_id", "puuid", "position"]].merge(
+            habits, on=["match_id", "puuid"], how="left"
+        )
+        controls = controls.join(by_role(seats, HABIT_COLUMNS))
+    else:
+        for column in HABIT_SUM_COLUMNS:
             controls[column] = 0.0
     for column in CONTROL_COLUMNS:
         if column in controls.columns:

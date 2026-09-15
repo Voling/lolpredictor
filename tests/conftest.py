@@ -39,6 +39,20 @@ def crawl_database_url():
     yield from _make_database(f"synergy_crawl_{os.getpid()}")
 
 
+@pytest.fixture
+def fresh_database_url(request):
+    yield from _make_database(f"synergy_{request.node.name[:40]}_{os.getpid()}")
+
+
+@pytest.fixture(autouse=True)
+def hand_axes(tmp_path):
+    from synergy.features.player import _refresh_axes
+    from synergy.ml.dataset import refresh_columns
+
+    _refresh_axes(Settings(data_dir=tmp_path))
+    refresh_columns()
+
+
 @pytest.fixture(scope="session")
 def corpus_settings(tmp_path_factory, database_url) -> Settings:
     settings = Settings(

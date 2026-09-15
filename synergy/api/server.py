@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from ..cache import get_cache
-from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml.score import UnknownPlayer, get_service, reload_service
 

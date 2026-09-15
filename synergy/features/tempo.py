@@ -130,13 +130,3 @@ def tempo_rows(
                         }
                     )
     return rows
-
-
-TEMPO_COLUMNS = [
-    "either_committed",
-    "aligned",
-    "misaligned",
-    "max_time_on_map",
-    "max_banked",
-    "min_health",
-]

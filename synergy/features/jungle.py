@@ -108,13 +108,3 @@ def jungle_openings(
             }
         )
     return rows
-
-
-JUNGLE_OPENINGS = (
-    "level_one_invade",
-    "early_invade",
-    "early_gank",
-    "three_camp_gank",
-    "late_gank",
-    "full_clear",
-)

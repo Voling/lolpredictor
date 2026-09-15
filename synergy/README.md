@@ -12,14 +12,15 @@ specific pairing adds.
 | Window | [ingest/window.py](ingest/window.py) | Cuts every timeline to 0:00-15:00 so laning behaviour is comparable across games |
 | Features | [features/build.py](features/build.py) | Runs 15 extractors over each match in parallel, streaming 16 tables to parquet |
 | Traits | [features/traits.py](features/traits.py) | Learns the style basis by maximising between-player over within-player variance |
-| Model | [ml/model.py](ml/model.py) | Logistic baseline on strength, ridge on the residual using pair terms only |
+| Model | [ml/model.py](ml/model.py) | Ridge on rank and playstyle predicts advantage at 15, a second ridge on the residual uses pair terms only |
 
 ## The corpus filter
 
 `qualifying_matches` drops any match with fewer than two ranked participants or an average below
-`CORPUS_MIN_AVERAGE_LP` (Master 0 LP, 2800), and anything before `CORPUS_SEASON_START`. Games below
-the floor stay on disk and remain queryable, they simply never reach `participations`. That is how
-sub-Master players can be evaluated without entering the corpus.
+`CORPUS_MIN_AVERAGE_LP` (Master 0 LP, 2800), and any match whose patch falls outside `CRAWL_SEASON`.
+The season rule is decided on the patch string and stays on even when the rank floor cannot decide.
+Games below the floor stay on disk and remain queryable, they simply never reach `participations`.
+That is how sub-Master players can be evaluated without entering the corpus.
 
 ## Position certainty
 
@@ -38,15 +39,18 @@ certainty is invisible to frame sampling alone.
 
 ## What it measures
 
-The pair term is `synergy_gain`, the AUC the ridge adds over the baseline, and `synergy_gain_sigma`
-is that gain in standard errors. It has returned 0.15σ to 0.25σ across every configuration tried,
-against a threshold of 2.0, so `informative` is false and scores are withheld. Five independent
-tests agree: winrate, behavioural adaptation, static complementarity, role-family splits, and a
-stronger gradient-boosted baseline.
+Nothing trains on the end of game result. The target is advantage at 15, gold plus objectives,
+blue minus red. The pair term is `advantage_gain`, the held out R² the pair block adds over the
+rank and playstyle baseline, and `informative` is true only when none of 20 permutation nulls
+reaches it; otherwise `pair_score` withholds the score. Every input is a player's leave one out
+playstyle from their other games, never win rate, not even as a strength control. The current
+value lives in `data/models/training_report.json` and the top level README carries the full three
+rung test.
 
 Individual signal is solid by contrast. Trait reliability runs 0.59 to 0.91 split-half, `policyvec`
 keeps 18 conditional action cells above 0.50, and action coupling between bot and mid sits at 40x
-its shuffled control. The representation works; the pair effect on winning does not appear.
+its shuffled control. On the win target the pair effect never appeared; on advantage at 15 the
+style cross term is small and clear of its null.
 
 ## Commands
 
@@ -60,7 +64,7 @@ its shuffled control. The representation works; the pair effect on winning does 
 | `python -m synergy status` | Corpus counts, frontier state, model metrics |
 | `python -m synergy pair "a#tag" "b#tag"` | Score one pairing |
 | `python -m synergy partners "a#tag"` | Best and worst modelled partners |
-| `python -m synergy sequences` / `deep-train` / `deep-compare` | The timeline encoder, see below |
+| `python -m synergy sequences` / `deep-train` | The timeline encoder, see below |
 
 `--workers 1` forces the serial build, which takes about five times longer.
 

@@ -3,10 +3,9 @@ from itertools import combinations
 from typing import Any
 
 from .anchors import dead_at, death_windows, position_anchors
-from .regions import LANE_TOLERANCE, MAP_SPAN
+from .regions import MAP_SPAN
 
 CLOSE_RANGE = 2500.0
-BANDS = ((0, 10), (10, 20), (20, 90))
 VISION_WARDS = {"YELLOW_TRINKET", "SIGHT_WARD", "CONTROL_WARD", "BLUE_TRINKET"}
 EARLY_MINUTES = 15
 
@@ -25,25 +24,6 @@ def _participant_puuids(timeline: dict, match: dict | None = None) -> dict[int, 
 
 def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-def _in_lane(position: tuple[float, float], role: str) -> bool:
-    x, y = position
-    diagonal = abs(x - y) / math.sqrt(2)
-    if role == "MIDDLE":
-        return diagonal < LANE_TOLERANCE
-    if role == "TOP":
-        return (x < 3200 and y > 3200) or (y > 11800 and x < 11800)
-    if role in ("BOTTOM", "UTILITY"):
-        return (y < 3200 and x > 3200) or (x > 11800 and y < 11800)
-    return False
-
-
-def _band_index(minute: float) -> int:
-    for index, (low, high) in enumerate(BANDS):
-        if low <= minute < high:
-            return index
-    return len(BANDS) - 1
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float:

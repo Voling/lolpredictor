@@ -130,28 +130,28 @@ def event_response_rows(
     return rows
 
 
-def dyadic_responses(responses, same_team: bool = True):
-    import pandas as pd
-
-    frame = responses if isinstance(responses, pd.DataFrame) else pd.DataFrame(responses)
-    if frame.empty:
-        return frame
-    keys = ["match_id", "trigger_id", "trigger", "detail", "minute"]
-    joined = frame.merge(frame, on=keys, suffixes=("_a", "_b"))
-    joined = joined[joined["puuid_a"] < joined["puuid_b"]]
-    if same_team:
-        joined = joined[joined["team_id_a"] == joined["team_id_b"]]
-    joined["pair_key"] = joined["puuid_a"] + "|" + joined["puuid_b"]
-    joined["role_pair"] = [
-        "-".join(sorted(pair)) for pair in zip(joined["role_a"], joined["role_b"])
-    ]
-    joined["both_present"] = ((joined["present_a"] > 0) & (joined["present_b"] > 0)).astype(float)
-    joined["either_present"] = ((joined["present_a"] > 0) | (joined["present_b"] > 0)).astype(float)
-    joined["both_converged"] = (
-        (joined["converged_a"] > 0) & (joined["converged_b"] > 0)
-    ).astype(float)
-    joined["latency_gap"] = (joined["latency_a"] - joined["latency_b"]).abs()
-    return joined.reset_index(drop=True)
+def dyadic_responses(responses, same_team: bool = True):
+    import pandas as pd
+
+    frame = responses if isinstance(responses, pd.DataFrame) else pd.DataFrame(responses)
+    if frame.empty:
+        return frame
+    keys = ["match_id", "trigger_id", "trigger", "detail", "minute"]
+    joined = frame.merge(frame, on=keys, suffixes=("_a", "_b"))
+    joined = joined[joined["puuid_a"] < joined["puuid_b"]]
+    if same_team:
+        joined = joined[joined["team_id_a"] == joined["team_id_b"]]
+    joined["pair_key"] = joined["puuid_a"] + "|" + joined["puuid_b"]
+    joined["role_pair"] = [
+        "-".join(sorted(pair)) for pair in zip(joined["role_a"], joined["role_b"])
+    ]
+    joined["both_present"] = ((joined["present_a"] > 0) & (joined["present_b"] > 0)).astype(float)
+    joined["either_present"] = ((joined["present_a"] > 0) | (joined["present_b"] > 0)).astype(float)
+    joined["both_converged"] = (
+        (joined["converged_a"] > 0) & (joined["converged_b"] > 0)
+    ).astype(float)
+    joined["latency_gap"] = (joined["latency_a"] - joined["latency_b"]).abs()
+    return joined.reset_index(drop=True)
 
 
 RESPONSE_COLUMNS = [
@@ -165,4 +165,3 @@ RESPONSE_COLUMNS = [
     "held_ground",
     "latency",
 ]
-TRIGGER_KINDS = ("objective", "kill", "plate", "building")

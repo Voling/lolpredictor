@@ -6,12 +6,10 @@ SPAN = 15
 NEARBY = 2500.0
 APPROACH = 5000.0
 CONTEST_WINDOW = 1.0
-AFTER_WINDOW = 1.5
 PITS = {
     "DRAGON": {100: (9866, 4414), 200: (9866, 4414)},
     "HORDE": {100: (4300, 10200), 200: (4300, 10200)},
 }
-OBJECTIVE_KINDS = ("DRAGON", "HORDE")
 STATES = ("contested", "taken_by_us", "taken_by_them")
 
 
@@ -117,16 +115,3 @@ def objective_rows(
                 }
             )
     return rows
-
-
-OBJECTIVE_FEATURE_COLUMNS = [
-    "o_approach_distance",
-    "o_arrival_distance",
-    "o_present",
-    "o_approaching",
-    "o_committed",
-    "o_rotated_in",
-    "o_left_after",
-    "o_fought",
-    "o_died",
-]
