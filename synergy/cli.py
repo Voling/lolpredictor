@@ -63,6 +63,11 @@ def main(argv: list[str] | None = None) -> int:
     crawl_cmd.add_argument("--matches-per-player", type=int, default=None)
     crawl_cmd.add_argument("--max-requests", type=int, default=None)
 
+    breadth_cmd = sub.add_parser(
+        "breadth", help="queue every Master and above player who already has depth in a position"
+    )
+    breadth_cmd.add_argument("--min-games", type=int, default=10, help="games in one position to qualify")
+
     synth_cmd = sub.add_parser("synthetic", help="generate a synthetic match corpus")
     synth_cmd.add_argument("--matches", type=int, default=400)
     synth_cmd.add_argument("--players", type=int, default=120)
@@ -188,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
             print("RIOT_API_KEY is not set", file=sys.stderr)
             return 2
         _report(asyncio.run(crawl(args.riot_id, settings, leaderboard=args.leaderboard)).as_dict())
+        return 0
+
+    if args.command == "breadth":
+        from .ingest.breadth import enqueue
+
+        _report(enqueue(settings, min_games=args.min_games))
         return 0
 
     if args.command == "synthetic":

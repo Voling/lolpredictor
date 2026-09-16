@@ -89,13 +89,29 @@ class Store:
             cursor.execute("SELECT to_regclass('matches') AS present")
             return cursor.fetchone()["present"] is not None
 
+    def _reconnect(self) -> None:
+        try:
+            self.conn.close()
+        except psycopg.Error:
+            pass
+        self.conn = psycopg.connect(
+            self.settings.database_url, row_factory=dict_row, autocommit=False
+        )
+        logger.warning("database connection lost, reconnected")
+
     @contextmanager
     def _tx(self):
         try:
             with self.conn.cursor() as cursor:
                 yield cursor
+        except psycopg.OperationalError:
+            self._reconnect()
+            raise
         except Exception:
-            self.conn.rollback()
+            try:
+                self.conn.rollback()
+            except psycopg.OperationalError:
+                self._reconnect()
             raise
         else:
             self.conn.commit()
