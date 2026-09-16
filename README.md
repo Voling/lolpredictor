@@ -33,8 +33,10 @@ the part of a team's result that only a specific pairing explains.
    reads as a poor trader against a bot laner until the champion and role baseline is removed.
 5. **Tendencies** ([propensity.py](synergy/features/propensity.py)) treat invading as conditional rather
    than as a rate, because the chance to invade is handed to a player by the game. Every player minute
-   becomes an opportunity row with the situation lagged one minute behind the decision, a logistic model
-   predicts the chance any player would act, and each player's observed over expected ratio is shrunk
+   becomes an opportunity row with the situation lagged one minute behind the decision, including the
+   filtered lane priority of top, mid and bot separately from the 10 second track, so a jungler's gank
+   is conditioned on which lane holds priority rather than on a team average, a logistic model predicts
+   the chance any player would act, and each player's observed over expected ratio is shrunk
    with a Gamma-Poisson empirical Bayes prior fitted from how much players actually differ. Three
    tendencies are estimated separately: starting an invade, following one already underway, and
    answering an invasion of your own jungle.
@@ -78,33 +80,113 @@ across 39,433 players, every one season 16, patches 16.1 to 16.18. Mixing season
 `qualifying_matches` drops anything outside the configured season on the patch string, and the rule stays
 on even when the rank floor cannot decide.
 
-Every input is a player's playstyle from their *other* games, leave one out: reaction propensities given
-a prior event, response to a teammate's kill or objective, jungle openings, movement and the learned
-signature. Never champion pool, never win rate, never a summary of the match being scored. A player has a
-couple hundred games and a handful with any given duo, so the duo subset cannot carry a playstyle.
+Every input is a player's playstyle from their *other* games, leave one out, and none of it is an
+average. It is learned per position: a seat's cells come from the player's other games in the position
+they held in that match, shrunk toward that position's corpus row, so a top main autofilled to jungle
+is described by their jungle games, which for most players means the jungle corpus row. A player who
+plays two positions is two players here, since they neither stand in the same places nor answer the
+same triggers in each. Each block keeps the player's distribution over outcomes within a situation,
+Dirichlet shrunk toward the position's corpus row with a strength fitted from the data, exactly as the
+movement transitions are:
+
+| block | situations | outcomes | columns |
+|---|---|---|---|
+| reaction to a trigger | kill, plate, objective or building, by a teammate or an enemy, near, mid or far from the responder | converged, held, left, present, absent | 120 |
+| objectives | dragon or grubs, taken by us or them, near, mid or far | died, fought, committed, rotated, approached, absent | 72 |
+| wards | early, mid, late game | own side of a lane, its middle, the enemy side, own jungle, enemy jungle, river, other | 21 |
+| jungle openings | first gank, first invade, sides | by 3, by 5, by 8, late, never; crossed, stayed | 12 |
+| lane priority | every tick, the minute before an objective | own lane depth × opponent's depth × farming, five by six by two, plus off lane and dead | 124 |
+| tendencies | which of top, mid and bot hold priority, eight patterns, × own or enemy half | observed over expected log ratio per action kind, initiate, follow, dive, fight_join and the rest | 144 |
+| habit, movement, identity signature | conditional distributions and a learned embedding, as before | | 34 |
+
+Never champion pool, never win rate, never a summary of the match being scored. A player has a couple
+hundred games and a handful with any given duo, so the duo subset cannot carry a playstyle.
 
 The pair question is asked in numpyro against the right baseline. Gold compounds, so two players who are
 each ahead produce more than the sum, and a cross term picks that up with no synergy present. The test is
-therefore three nested rungs on held out matches, every fit run to an ELBO plateau and refused if the
-richer rung lands worse:
+therefore three nested rungs on held out matches, every fit run to an ELBO plateau, each rung given at
+least the steps the rung below it needed, and the pair term set aside if it fits the training matches
+worse than solo at its posterior median, which is what a cross term shrunk to nothing looks like. The
+ELBO itself is not the nesting check: on 527 cells the richer rung carries thousands more latent
+loadings, so its ELBO sits a few nats above the poorer one even when the optimiser did its job. The
+equal budget matters: on the per position cells solo held out 0.0367 after 40,000 steps and 0.0371
+after 96,000, a move larger than any pair gain, so a pair rung that stopped earlier than solo would
+have read as synergy.
 
-| rung | held out R² |
-|---|---|
-| linear, Σ w·z over the five seats, blue minus red | 0.0302 |
-| plus each player's own quadratic, z^T S z | 0.0304 |
-| plus the pair cross term, Σ z_a^T C z_b over the ten same team pairs | 0.0315 |
+| rung | held out R², per position | same, shallower corpus | pooled over positions | 16 principal components |
+|---|---|---|---|---|
+| linear, Σ w·z over the five seats, blue minus red | 0.0517 | 0.0368 | 0.0452 | 0.0303 |
+| plus each player's own quadratic, z^T S z | 0.0516 | 0.0371 | 0.0452 | 0.0297 |
+| plus the pair cross term, Σ z_a^T C z_b over the ten same team pairs | 0.0517 | 0.0370 | 0.0457 | 0.0310 |
 
-The pair term earns **+0.0010 R²** beyond each player alone, on 69 leave one out columns reduced to 16
-components, 8,958 held out matches. That increment has now appeared three times through different
+Per position, which is how a seat is described now, the pair term finds nothing. On 46,619 matches with
+9,324 held out it earns **+0.000002 R²** beyond each player alone, and the own quadratic earns −0.000007,
+so all three rungs sit within one part in a hundred thousand of each other. Every rung was run to
+96,000 steps and reached a drift near 1e-06; a 16,000 step fit of the same data gave the same three
+numbers to four decimal places, so this is convergence, not a stopping artefact.
+
+The scores it does produce are noise, and two fits show it. Between the 16,000 and 96,000 step fits of
+the identical corpus, pair scores changed sign and crossed the whole percentile range: one top and
+jungle pair went from the 98th percentile to the 4th, a top and mid pair from the 96th to the 29th. A
+quantity that reorders itself under a change that leaves the held out R² unmoved is measuring optimiser
+noise. This is why `pair_between` reports `reliable: false` and why the percentile must not be shown to
+a user as a finding.
+
+Deepening the corpus is what moved the linear rung, from 0.0368 to 0.0517, after three players were
+crawled from roughly 150 games each to between 400 and 800. Better descriptions of individuals, no pair
+effect. That is the cleanest statement of where the evidence stands.
+
+The middle column is the same cells with a player pooled across every position they play, where the pair
+term earned +0.00048 against 10 nulls that reached at most +0.000007. That fit was measuring the wrong
+thing. 49% of the variance of its pair scores was the pair's main position combination alone, two players
+of the same main position averaging −0.0028 against +0.0009 for different mains, because two top mains
+share a team only when one is autofilled, the cells carried no position, and the cross term was the only
+place that damage could go. Splitting by position removes the configuration, and the increment goes with
+it. Part of the fall is power rather than structure: the linear rung dropped from 0.0452 to 0.0368 and
+the share of seats with every column present from 0.79 to 0.67, since a player's evidence is now divided
+among their positions. Deepening the corpus is the answer to that, not pooling positions back together.
+
+The permutation null, when there is a positive gain to test, reshuffles seats across matches within role
+and side, keeping the target and every seat's own distribution but breaking who was actually together.
+Both rungs then fit nothing and the gain between them measures optimiser noise alone. That bounds the
+noise in the gain, not the leakage of individual effects into the cross term, which is what the solo rung
+is there to absorb.
+
+On the previous representation, 69 leave one out scalars reduced to 16 principal components, the pair
+term earned +0.0013 R² in its final run, and the same increment appeared four times through different
 constructions: +0.0011 from an earlier held out ridge on style cross products against the same target,
-+0.0011 from this test on 60 columns before the tendency block was repaired, and +0.0010 here. Its
-permutation null reshuffles seats across matches within role and side, keeping the target and every
-seat's own distribution but breaking who was actually together. None of 10 draws reaches it: the null
-mean is −0.00018 with a spread of 0.00024 and the largest draw is +0.00008, so the real gain sits about
-five null spreads above the null and thirteen times the best draw. When the pair matrix `C` is fitted
-on named columns its entries are readable, initiate against follow, dive against fight_join, and the
-per pair score `z_a^T C z_b` is what `pair` reports as `interaction`, with its percentile against every
-same team pair in the corpus.
++0.0011 on 60 columns before the tendency block was repaired, +0.0010 on 69, and +0.0013 there, with
+none of 10 null draws reaching it. Decomposed, though, that `C` was unreadable, its weight sat on habit
+and movement components rather than on anything named. On the named cells every cross term has a name,
+but a pair's score is spread across thousands of them: for the reference roster the largest single term
+contributes about one percent of the pair's score, so a pair is read through each player's cells rather
+than through a handful of drivers.
+
+The representation above replaces it. `z` is now the 527 named cells with no compression, and the
+comparison is a rank 8 factored form, `C = U diag(s) Uᵀ` on the named cells directly, with `solo` the
+same shape on each player's own cells. Fewer parameters than the dense 16 by 16 had per column, every
+cross term readable as "this reaction on one player with that reaction on the other", and the pair
+score `z_a^T C z_b` decomposes into its strongest named cross terms, which `pair` reports as `drivers`
+alongside the `interaction` percentile. `C` is still symmetric, so a one directional reaction, one
+player converging on the other's plays but not the reverse, remains the hinge's to show.
+
+The first fit of these cells pooled a player across positions, and 49% of the variance of its pair
+scores was the pair's main position combination alone, two players of the same main position averaging
+−0.0028 against +0.0009 for different mains. Two top mains share a team only when one is autofilled,
+the cells carried no position, and the cross term was the only place the autofill damage could go, so
+it read duplicated profiles as anti synergy. The per position cells remove that configuration from
+training, and the rungs above are the per position fit. A second effect stays by construction: every
+team holds exactly one pair of each position combination, so the fit cannot pin the combinations'
+baselines against each other, and a pair's percentile is therefore taken within its own position pair.
+
+`pair` takes the position each player will play. The same position for both is refused, a player with
+no games in the asked position is refused with a message naming the position. Each player's cells
+carry a fitted share of their own evidence, the exposure weighted posterior weight of their own games
+against the position's corpus row under the shrinkage strengths the blocks fitted; when that share is
+under a half the answer warns by name, share and games, since the description is then more corpus row
+than player. The answer carries each player's games and evidence share in that position either way.
+`lineup` names one player per position, sums the ten pairs, ranked against every corpus team, and
+carries the same warnings.
 
 What this replaced tells you why. The same test with `z` pooled out of a transformer trained on the
 outcome gave linear 0.671, solo 0.827, pair 0.819: a quality of play summary of the match itself, where
@@ -143,29 +225,87 @@ replication. See [docs/representation.md](docs/representation.md).
 
 `synergy/deep/` also reads a match as an ordered event sequence rather than as per minute summaries.
 Every event under minute 15 becomes one token carrying its kind, the acting and suffering seats, the
-region it happened in, the actor's own region that minute and the clock. A 4 layer transformer over up
-to 1024 tokens regresses advantage at 15, with the running gold lead zeroed out of its inputs so it can
-only read actions. Building the sequence is `python -m synergy stream`; training is
+region it happened in, the clock, the actor's position at that instant as a posterior over the 18
+regions, and the actor's wave state as probabilities derived from that posterior. A 4 layer transformer
+over up to 1024 tokens regresses advantage at 15, with the running gold lead zeroed out of its inputs so
+it can only read actions. Building the sequence is `python -m synergy stream`; training is
 `python -m synergy walk-train`.
+
+Frames are 60 seconds apart, so between them a position is uncertain and the honest object is a
+distribution, not a snapped point. Measured on 40,167 kill, plate and objective anchors that fell
+strictly inside a frame gap and passed the reachability check, players do not move linearly: the anchor
+sits nearer the earlier frame with probability close to one minus its time fraction, the nearer frame is
+a median 1,547 units away against 2,147 for the linear interpolant, and the interpolant is the closer
+guess only 40 percent of the time. So [posterior.py](synergy/features/posterior.py) uses a two component
+mixture, one Gaussian around each bracketing known point weighted by time, with a per role spread that
+grows with the time distance to that point, about 700 units three seconds from a frame and 1,700 to
+2,500 at the middle of the minute, calibrated on those anchors. Known points are frames while alive,
+kill victims at the kill, shop events at the fountain, plausible killer and assist claims, and the
+fountain at respawn; a dead actor has no position. On the full corpus 91 percent of the 28.0M actor
+tokens carry a posterior, the rest are dead, the top region holds 0.69 of the mass on average and the
+top three hold 0.88, so close to half of all tokens are genuinely split between regions. The walk mixes
+its region embeddings by that mass.
+Wave state is the same push, defensive, neutral, off lane rule the feature tables use, applied to the
+posterior: mass in the role's lane, the chance lane progress is past 1.0 or short of 0.85 under the
+mixture, and whether at least four lane minions fell in the previous minute. A latent wave model was
+tried before and retired at plate AUC 0.55. Minute resolution features stay exact because frames are
+exact there; the movement transitions now exclude frames inside a death window.
+
+Read the 0.0003 the wave channel adds inside the walk carefully. It says the channel is redundant with
+position and CS in a model that already sees both and predicts gold, not that lane priority is
+worthless. The place a skill lives is the player's leave one out playstyle, where the pair test can ask
+whether it combines with a partner's. [priority.py](synergy/features/priority.py) samples every
+player's position posterior on a 10 second grid, 90 ticks per player per match, 40.4 million rows for
+the corpus in `positions_10s.parquet`, each row carrying the most likely region as an index into
+`REGIONS`, −1 while dead, with the posterior mass on it, and derives lane
+priority per tick as the chance the lane front, the midpoint of the two sides' lane coordinates under
+their posteriors, sits on the enemy half; an empty enemy lane hands priority to whoever is there, and
+a mid minute posterior gives a probability rather than a verdict, about a third of laner ticks come out
+decisive and a fifth near a coin flip. From that track each laner gets priority share, priority in the
+minute before an objective fell, the lane gap, push and defensive shares on the fine grid, and how often
+a reset followed a push, all leave one out across their other games and shrunk toward the population.
+The frames are still 60 seconds apart, so the grid is a common time base for the two sides and the
+objective windows, not new information, and nothing finer than the frames and anchors is ever observed.
+The block enters the pair test's `z` alongside the others.
+
+Priority plays two roles and they must not share an information set. As a description of what
+happened, the share of a game a lane was theirs, it is the smoothed estimate, the posterior that also
+uses the frame after each tick. As context for what a player does next, a prior for the event, it must
+be the filtered estimate, built only from frames and anchors at or before that tick, otherwise the
+frame that records where the player went is already inside the condition and the reaction is scored
+against a prior that contains it, the same error as reading a gold frame that came after the event.
+The track carries both, `prio` and `prio_filtered`; on 27,292 laner ticks they differ by 0.14 on
+average. Traits read the smoothed one, anything that conditions a tendency reads the filtered one,
+lagged like every other situation covariate. Inferring priority from a roam and then scoring the roam
+given priority is the circular form and is never done.
 
 | | held out R² |
 |---|---|
-| walk, actions only | 0.9453 |
+| walk, actions only, position as a posterior | **0.9486** |
+| same walk on raw frames at the floored minute | 0.9453 |
 | gold lead at the last event before 15, one number | 0.9033 |
-| walk with `actor` shuffled across matches | −0.192 |
-| walk with `region` shuffled | 0.516 |
-| walk with `kind` shuffled | 0.840 |
+| walk with `actor` shuffled across matches | −0.211 |
+| walk with `region` shuffled | 0.596 |
+| walk with the position posterior shuffled | 0.918 |
+| walk with `kind` shuffled | 0.837 |
+| walk with `wave` shuffled | 0.948 |
 
-Shuffle who did each thing and it drops below zero, so it is reading who did what where. It is an
-accounting model for how actions become gold, not a synergy model, and its per seat encodings are
-deliberately not the pair test's input for the reason above. Earlier figures of 0.8511 AUC were from a
-version trained on the end of game result and are withdrawn.
+Shuffle who did each thing and it drops below zero, so it is reading who did what where. The posterior
+is the channel the switch changed: shuffling the actor's region cost 0.004 R² when it was a raw frame
+and costs 0.030 now, and skill over the gold lead baseline rose from 0.434 to 0.468. The wave channel
+adds almost nothing on top of it, 0.0003, which is expected when the target is gold and the wave state
+is derived from the same posterior. It is an accounting model for how actions become gold, not a
+synergy model, and its per seat encodings are deliberately not the pair test's input for the reason
+above. Earlier figures of 0.8511 AUC were from a version trained on the end of game result and are
+withdrawn.
 
 ## Movement
 
 Players are distinguishable by where they go next given where they are. Each player's region transition
-matrix is shrunk toward the global one, and held out by whole player-games that beats the global matrix
-by 0.096 nats per transition. Reduced to 12 components, the signature adds 0.0082 R² on gold at 15 beyond
+matrix, per position, is shrunk toward their position's matrix, and held out by whole player-games that
+beats the position matrix by 0.005 nats per transition once frames inside a death window are excluded.
+Against one global matrix the same players were worth 0.102 nats, so most of what looked like personal
+movement was where each position goes. Reduced to 12 components, the signature adds 0.0082 R² on gold at 15 beyond
 rank, which no draw of 40 scrambled nulls reached. Averaging a player's position instead of conditioning
 on it predicts nothing: position responds to what just happened, so a marginal average describes the
 situations a player met rather than the player. See [docs/movement.md](docs/movement.md).
@@ -238,7 +378,8 @@ Run from the repo root with the virtualenv active. Copy `.env.example` to `.env`
 | `python -m synergy ranks` | Look up rank for players that have none |
 | `python -m synergy priors` | Conditional base rates for a behaviour given the matchup |
 | `python -m synergy status` | Corpus counts, crawl frontier and model metrics |
-| `python -m synergy pair "a#tag" "b#tag"` | Score one pairing with its drivers |
+| `python -m synergy pair "a#tag" "b#tag" --left-position top --right-position jungle` | Score one pairing in the positions they will play |
+| `python -m synergy lineup --top "a#tag" --jungle "b#tag" --mid "c#tag" --bot "d#tag" --support "e#tag"` | Score a full five |
 | `python -m synergy partners "a#tag"` | Best and worst modelled partners |
 | `python -m synergy sequences` | Encode timelines into per player game tensors |
 | `python -m synergy deep-train --epochs 300` | Train the timeline encoder, GPU if one is present |
@@ -271,8 +412,9 @@ sustains roughly 50 requests a minute, and the defaults in `.env.example` fit a 
 | `GET /api/players/?q=&limit=` | Known players, most-seen first |
 | `GET /api/players/<riot id or puuid>/` | Profile, style percentiles, behavioural traits, dashboard series |
 | `GET /api/partners/<riot id or puuid>/?limit=` | Best and worst modelled partners |
-| `GET /api/pair/?a=&b=` | One pairing: score, drivers, shared play, projected gold at 15, the hinge from shared games, the interaction percentile |
+| `GET /api/pair/?a=&b=&a_position=&b_position=` | One pairing in the given positions: score, drivers, shared play, projected gold at 15, the hinge from shared games, the interaction percentile within that position pair |
 | `POST /api/team/` | `{"players": [...]}` up to five, returns the pairwise matrix and group score |
+| `POST /api/lineup/` | `{"players": {"top": ..., "jungle": ..., "mid": ..., "bot": ..., "support": ...}}`, the ten pairs and the team's rank against every corpus team |
 | `POST /api/reload/` | Reload profiles and model from disk after a retrain |
 
 ## Data on disk

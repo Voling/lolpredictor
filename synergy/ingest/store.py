@@ -340,10 +340,25 @@ class Store:
             count = self._record_identities(cursor, participants)
         return count
 
+    def match_ids_missing_identities(self) -> list[str]:
+        with self._tx() as cursor:
+            cursor.execute(
+                "SELECT m.match_id FROM matches m"
+                " WHERE NOT EXISTS (SELECT 1 FROM participations p WHERE p.match_id = m.match_id)"
+                " OR EXISTS (SELECT 1 FROM participations p"
+                " LEFT JOIN players pl ON pl.puuid = p.puuid"
+                " WHERE p.match_id = m.match_id AND (pl.puuid IS NULL OR pl.game_name IS NULL))"
+                " ORDER BY m.game_creation NULLS LAST, m.match_id"
+            )
+            return [row["match_id"] for row in cursor.fetchall()]
+
     def backfill_identities(self) -> int:
+        wanted = self.match_ids_missing_identities()
+        if not wanted:
+            return 0
         named = 0
         with self._tx() as cursor:
-            for match_id in self.match_ids():
+            for match_id in wanted:
                 try:
                     match = self.load_match(match_id)
                 except FileNotFoundError:

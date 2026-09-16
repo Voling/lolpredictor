@@ -17,7 +17,16 @@ PATIENCE = 3
 HOLDOUT = 0.2
 SEED = 0
 TARGET = "advantage"
-CHANNELS = ("lead", "kind", "actor", "victim", "region", "seat_region", "clock")
+CHANNELS = {
+    "lead": ("lead",),
+    "kind": ("kind",),
+    "actor": ("actor",),
+    "victim": ("victim",),
+    "region": ("region",),
+    "seat_region": ("seat_region_top", "seat_region_p"),
+    "wave": ("wave",),
+    "clock": ("clock",),
+}
 
 
 def _predict(model, data, index, batch, device):
@@ -122,10 +131,11 @@ def train_walk(
 
     ablation = {}
     shuffle = np.random.default_rng(SEED).permutation(len(test))
-    for channel in CHANNELS:
+    for channel, keys in CHANNELS.items():
         swapped = dict(data)
-        swapped[channel] = data[channel].copy()
-        swapped[channel][test] = data[channel][test][shuffle]
+        for key in keys:
+            swapped[key] = data[key].copy()
+            swapped[key][test] = data[key][test][shuffle]
         spoiled, _ = _predict(model, swapped, test, batch, device)
         ablation[channel] = {"r2": round(_r2(actual, spoiled), 5)}
 

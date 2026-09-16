@@ -7,6 +7,7 @@ import pandas as pd
 
 from ..config import Settings, get_settings
 from ..features.hinge import hinge_between
+from ..features.positions import parse_position
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
@@ -37,6 +38,19 @@ STYLE_SUFFIXES = ("_pct", "_var")
 UNINFORMATIVE = (
     "the pair model found no usable synergy signal in this corpus, so no score is reported"
 )
+THIN = (
+    "{name}'s {position} playstyle is {own}% their own evidence from {games} {noun} and {rest}% the"
+    " {position} corpus row, so this score says little about them"
+)
+
+
+def thin_warning(name: str, position: str, games: int, evidence: float | None) -> str | None:
+    if evidence is None or evidence >= 0.5:
+        return None
+    own = int(round(100.0 * evidence))
+    return THIN.format(
+        name=name, position=position, own=own, rest=100 - own, games=games, noun="game" if games == 1 else "games"
+    )
 
 
 class UnknownPlayer(LookupError):
@@ -208,14 +222,60 @@ class SynergyService:
             described.append(entry)
         return described
 
-    def pair_score(self, left: str, right: str) -> dict:
-        from .interaction import pair_between
+    def _positions(self, a: pd.Series, b: pd.Series, left: str | None, right: str | None, required: bool) -> dict | None:
+        chosen = {
+            "left": parse_position(left) if left else str(a.get("main_position") or ""),
+            "right": parse_position(right) if right else str(b.get("main_position") or ""),
+        }
+        if chosen["left"] and chosen["right"] and chosen["left"] != chosen["right"]:
+            return chosen
+        if not required:
+            return None
+        raise ValueError(
+            f"{riot_id(a)} and {riot_id(b)} are both given {chosen['left']}, a duo needs two different"
+            " positions, pass the position each will play"
+        )
 
+    def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None) -> dict | None:
+        from .interaction import pair_between, position_profile
+
+        if positions is None:
+            return None
+        for profile, side in ((a, "left"), (b, "right")):
+            known = position_profile(profile["puuid"], positions[side], self.settings)
+            if known is None:
+                return None
+            if known["games"] == 0:
+                raise ValueError(f"{riot_id(profile)} has no games as {positions[side]} in the corpus")
+        return pair_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
+
+    @staticmethod
+    def _warnings(a: pd.Series, b: pd.Series, interaction: dict | None) -> list[str]:
+        if not interaction:
+            return []
+        found = []
+        for profile, side in ((a, "left"), (b, "right")):
+            warning = thin_warning(
+                riot_id(profile), interaction["positions"][side], interaction[f"{side}_games"], interaction.get(f"{side}_evidence")
+            )
+            if warning:
+                found.append(warning)
+        return found
+
+    def pair_score(
+        self,
+        left: str,
+        right: str,
+        left_position: str | None = None,
+        right_position: str | None = None,
+        positions_required: bool = True,
+    ) -> dict:
         model, _ = self._require()
         a = self.resolve(left)
         b = self.resolve(right)
         if a["puuid"] == b["puuid"]:
             raise ValueError("a player cannot be paired with themselves")
+        positions = self._positions(a, b, left_position, right_position, positions_required)
         phi = self.build_phi(a, b.to_frame().T)
         synergy = float(model.synergy(phi)[0])
         score = float(model.score(synergy)[0])
@@ -223,16 +283,19 @@ class SynergyService:
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
         informative = model.informative
+        interaction = self._interaction(a, b, positions)
         return {
             "score": round(score, 1) if informative else None,
             "reliable": informative,
             "note": None if informative else UNINFORMATIVE,
+            "warnings": self._warnings(a, b, interaction),
             "synergy": round(synergy, 5),
             "projected_gold_at_15": round(synergy * float(model.report.advantage_sd), 0),
             "games_together": games,
             "winrate_together": round(wins / games, 4) if games else None,
+            "positions": positions,
             "hinge": hinge_between(a["puuid"], b["puuid"], self.settings),
-            "interaction": pair_between(a["puuid"], b["puuid"], self.settings),
+            "interaction": interaction,
             "drivers": self._describe(model.explain(phi), a, b) if informative else [],
             "players": [self.player_summary(a), self.player_summary(b)],
             "shared_play": {
@@ -286,7 +349,7 @@ class SynergyService:
             raise ValueError("at least two players are required")
         entries = []
         for left, right in combinations(range(len(profiles)), 2):
-            result = self.pair_score(profiles[left]["puuid"], profiles[right]["puuid"])
+            result = self.pair_score(profiles[left]["puuid"], profiles[right]["puuid"], positions_required=False)
             entries.append(
                 {
                     "a": profiles[left]["puuid"],
@@ -307,6 +370,34 @@ class SynergyService:
             "pairs": entries,
             "players": [self.player_summary(profile) for profile in profiles],
         }
+
+    def lineup(self, players: dict[str, str]) -> dict:
+        from .interaction import lineup_between, position_profile
+
+        self._require()
+        assignments = {parse_position(position): self.resolve(query) for position, query in players.items()}
+        if len(assignments) != len(players):
+            raise ValueError("each position may be given once")
+        if len({profile["puuid"] for profile in assignments.values()}) != len(assignments):
+            raise ValueError("a player cannot fill two positions")
+        names = {profile["puuid"]: riot_id(profile) for profile in assignments.values()}
+        summaries = {position: self.player_summary(profile) for position, profile in assignments.items()}
+        warnings = []
+        for position, profile in assignments.items():
+            known = position_profile(profile["puuid"], position, self.settings)
+            if known is None:
+                return {"reliable": False, "note": "the pair matrix is not fitted yet", "players": summaries}
+            if known["games"] == 0:
+                raise ValueError(f"{riot_id(profile)} has no games as {position} in the corpus")
+            warning = thin_warning(riot_id(profile), position, known["games"], known["evidence"])
+            if warning:
+                warnings.append(warning)
+        result = lineup_between({position: profile["puuid"] for position, profile in assignments.items()}, self.settings)
+        if result is None:
+            return {"reliable": False, "note": "the pair matrix is not fitted yet", "players": summaries}
+        for pair in result["pairs"]:
+            pair["left"], pair["right"] = names[pair["left"]], names[pair["right"]]
+        return {**result, "warnings": warnings, "players": summaries}
 
     def best_partners(self, query: str, limit: int = 10) -> dict:
         model, profiles = self._require()
@@ -339,12 +430,6 @@ class SynergyService:
             "best": frame.head(limit).to_dict(orient="records"),
             "worst": frame.tail(limit).sort_values("score").to_dict(orient="records"),
         }
-
-
-def _clean(value) -> float | None:
-    if value is None or pd.isna(value):
-        return None
-    return round(float(value), 4)
 
 
 _service: SynergyService | None = None

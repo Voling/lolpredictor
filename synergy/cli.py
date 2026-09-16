@@ -13,7 +13,7 @@ from .ml.score import SynergyService
 from .ml.train import train
 
 
-BLOCKS = ("movement", "embedding", "orphans", "tendency", "habit", "hinge")
+BLOCKS = ("movement", "embedding", "orphans", "reaction", "priority", "tendency", "habit", "hinge")
 
 
 def _report(payload) -> None:
@@ -24,17 +24,21 @@ def _build_blocks(settings, only: list[str] | None) -> dict:
     from .features.habit import build_habits
     from .features.hinge import build_hinge
     from .features.orphans import build_orphan_features
+    from .features.priority import build_priority
+    from .features.reaction import build_reaction
     from .features.tendency import build_tendencies
     from .ml.embedding import embedding_features
     from .ml.movement import movement_features
 
     makers = {
-        "movement": lambda: {"rows": int(len(movement_features(settings)))},
+        "movement": lambda: movement_features(settings),
         "embedding": lambda: embedding_features(settings),
         "orphans": lambda: build_orphan_features(settings),
+        "reaction": lambda: build_reaction(settings),
         "tendency": lambda: build_tendencies(settings),
         "habit": lambda: build_habits(settings),
         "hinge": lambda: build_hinge(settings),
+        "priority": lambda: build_priority(settings),
     }
     out = {}
     for name in only or BLOCKS:
@@ -110,9 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     interact_cmd = sub.add_parser(
         "interaction", help="does a pair term over in match behaviour beat its null"
     )
-    interact_cmd.add_argument("--components", type=int, default=16)
+    interact_cmd.add_argument("--rank", type=int, default=8)
     interact_cmd.add_argument("--steps", type=int, default=8000)
     interact_cmd.add_argument("--nulls", type=int, default=40)
+    interact_cmd.add_argument(
+        "--min-steps", type=int, default=0, help="run every rung at least this many steps"
+    )
     interact_cmd.add_argument("--source", choices=("style", "walk"), default="style")
     interact_cmd.add_argument(
         "--scores", action="store_true", help="write per player styles and every corpus pair score"
@@ -124,9 +131,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
 
-    pair_cmd = sub.add_parser("pair", help="score one pairing")
+    pair_cmd = sub.add_parser("pair", help="score one pairing, each player in the position they will play")
     pair_cmd.add_argument("left")
     pair_cmd.add_argument("right")
+    pair_cmd.add_argument("--left-position", default=None, help="top, jungle, mid, bot or support")
+    pair_cmd.add_argument("--right-position", default=None, help="top, jungle, mid, bot or support")
+
+    lineup_cmd = sub.add_parser("lineup", help="score a full five, one player per position")
+    for position in ("top", "jungle", "mid", "bot", "support"):
+        lineup_cmd.add_argument(f"--{position}", required=True)
 
     partners_cmd = sub.add_parser("partners", help="best and worst partners for a player")
     partners_cmd.add_argument("player")
@@ -289,10 +302,11 @@ def main(argv: list[str] | None = None) -> int:
             _report(
                 fit_interaction(
                     settings,
-                    components=args.components,
+                    rank=args.rank,
                     steps=args.steps,
                     nulls=args.nulls,
                     source=args.source,
+                    min_steps=args.min_steps,
                 )
             )
         if args.scores or args.skip_fit:
@@ -325,7 +339,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "pair":
         service = SynergyService(settings).load()
-        _report(service.pair_score(args.left, args.right))
+        _report(service.pair_score(args.left, args.right, args.left_position, args.right_position))
+        return 0
+
+    if args.command == "lineup":
+        service = SynergyService(settings).load()
+        _report(service.lineup({position: getattr(args, position) for position in ("top", "jungle", "mid", "bot", "support")}))
         return 0
 
     if args.command == "partners":

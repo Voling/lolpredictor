@@ -2,24 +2,32 @@
 
 Players are distinguishable by where they go next given where they are, and that predicts
 board advantage. [movement.py](../synergy/ml/movement.py) counts region transitions per
-player from the frames, shrinks each player's rows toward the global matrix, and scores the
-result on held-out player-games.
+player and position from the frames, skipping any frame that falls inside a death window so a
+corpse never counts as a step, shrinks each player's rows toward their position's matrix, and
+scores the result on held-out player-games. The signature R² rows at the bottom of the table were
+measured before the death masking and the per position split, and stand until that test is rerun.
 
 Shrinkage strength `kappa` comes from a bounded search on the closed-form
-Dirichlet-multinomial marginal likelihood over all 169,952 rows; NUTS runs on a 20,000 row
-subsample only for the interval. Sampling the full set is not worth it: one `kappa` gradient
-touches every row, and two attempts at it burned five hours each without finishing.
+Dirichlet-multinomial marginal likelihood over all 156,836 rows, and its interval from a Laplace
+approximation on log `kappa` under a log normal prior, mean 3 and sd 1.5 on the log scale. NUTS
+used to give that interval from a 20,000 row subsample; after the per position split it ran 48
+minutes without finishing one fit, and one `kappa` gradient touches every row, so it was replaced.
 
 Hold out whole player-games rather than single transitions. Steps inside one game are
 correlated, so splitting transitions leaks; here it inflated the lift from 0.0958 to 0.0999.
 
+Splitting by position changed the reading of the lift. Against one global matrix a player's own
+transitions were worth +0.102 nats per transition; against their position's matrix they are worth
++0.005, so most of what looked like personal movement was where junglers, laners and supports
+each go, and `kappa` rose from 28 to 307 because a position row is already close to its players.
+
 | measurement | value |
 |---|---|
-| `kappa` | 30.01, interval [29.85, 30.87], r̂ 1.0053, n_eff 652 |
-| held-out loglik, global matrix | -1.91590 |
-| held-out loglik, per player raw | -75.42687 |
-| held-out loglik, per player shrunk | **-1.82012** |
-| lift over the global matrix | **+0.09579 nats per transition** |
+| `kappa` | 307.10, Laplace interval [300.76, 313.48] |
+| held-out loglik, position matrix | -1.60732 |
+| held-out loglik, per player and position raw | -68.90624 |
+| held-out loglik, per player and position shrunk | **-1.60254** |
+| lift over the position matrix | **+0.00478 nats per transition**; the earlier +0.10195 was against one global matrix |
 | signature R², movement alone | +0.01027 |
 | signature R², rank alone | +0.01808 |
 | signature R², both | **+0.02628** |

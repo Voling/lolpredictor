@@ -15,6 +15,10 @@ class TeamRequest(BaseModel):
     players: list[str] = Field(min_length=2, max_length=5)
 
 
+class LineupRequest(BaseModel):
+    players: dict[str, str] = Field(min_length=5, max_length=5)
+
+
 def _ready():
     service = get_service()
     if not service.ready:
@@ -66,14 +70,19 @@ def create_app() -> FastAPI:
         return _handle(lambda: service.best_partners(query, limit=limit))
 
     @app.get("/api/pair")
-    def pair(a: str, b: str):
+    def pair(a: str, b: str, a_position: str | None = None, b_position: str | None = None):
         service = _ready()
-        return _handle(lambda: service.pair_score(a, b))
+        return _handle(lambda: service.pair_score(a, b, a_position, b_position))
 
     @app.post("/api/team")
     def team(request: TeamRequest):
         service = _ready()
         return _handle(lambda: service.team_report(request.players))
+
+    @app.post("/api/lineup")
+    def lineup(request: LineupRequest):
+        service = _ready()
+        return _handle(lambda: service.lineup(request.players))
 
     @app.get("/api/outsider/{riot_id}")
     def outsider(riot_id: str, refresh: bool = False):

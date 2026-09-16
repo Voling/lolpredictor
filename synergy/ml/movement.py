@@ -1,14 +1,8 @@
 import json
 from concurrent.futures import ProcessPoolExecutor
 
-import jax
-import jax.numpy as jnp
 import numpy as np
-import numpyro
-import numpyro.distributions as dist
 import pandas as pd
-from numpyro.diagnostics import summary as mcmc_summary
-from numpyro.infer import MCMC, NUTS
 from psycopg.rows import tuple_row
 from scipy.optimize import minimize_scalar
 from scipy.special import gammaln
@@ -18,26 +12,46 @@ from ..features.regions import REGIONS, regions_of
 from ..ingest.store import Store
 
 SPAN = 16
-WARMUP = 400
-SAMPLES = 800
-CHAINS = 2
 SEED = 0
 HOLDOUT = 0.25
 MIN_TRANSITIONS = 60
 WORKERS = 8
-SUBSAMPLE = 20000
 FOLDS = 5
+PRIOR_LOG_MEAN = 3.0
+PRIOR_LOG_SD = 1.5
 COMPONENTS = 12
 MOVEMENT_COLUMNS = [f"move_{index}" for index in range(COMPONENTS)]
 KAPPA_BOUNDS = (0.5, 4000.0)
 
 QUERY = (
-    "SELECT f.puuid, f.minute, f.x, f.y, p.team_id"
+    "SELECT f.puuid, f.minute, f.x, f.y, p.team_id, f.match_id, f.level, p.position"
     " FROM frames f JOIN participations p"
     " ON p.match_id = f.match_id AND p.puuid = f.puuid"
     " WHERE f.minute < %s AND f.x IS NOT NULL AND f.match_id = ANY(%s)"
     " ORDER BY f.match_id, f.puuid, f.minute"
 )
+DEATH_QUERY = (
+    "SELECT match_id, victim, timestamp_ms FROM events"
+    " WHERE type = 'CHAMPION_KILL' AND minute < %s AND victim IS NOT NULL AND match_id = ANY(%s)"
+)
+
+
+def _alive(rows: list[tuple], deaths: list[tuple]) -> np.ndarray:
+    from ..features.anchors import respawn_delay
+
+    level_at = {(row[5], row[0], int(row[1])): int(row[6] or 1) for row in rows}
+    spans: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for match_id, victim, stamp in deaths:
+        when = float(stamp or 0) / 60000.0
+        level = level_at.get((match_id, victim, int(when)), 1)
+        spans.setdefault((match_id, victim), []).append((when, when + respawn_delay(level)))
+    alive = np.ones(len(rows), bool)
+    for index, row in enumerate(rows):
+        for start, end in spans.get((row[5], row[0]), ()):
+            if start <= float(row[1]) < end:
+                alive[index] = False
+                break
+    return alive
 
 
 def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple:
@@ -46,20 +60,24 @@ def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple:
         with store.conn.cursor(row_factory=tuple_row) as cursor:
             cursor.execute(QUERY, (SPAN, match_ids))
             rows = cursor.fetchall()
+            cursor.execute(DEATH_QUERY, (SPAN, match_ids))
+            deaths = cursor.fetchall()
     finally:
         store.close()
+    if rows:
+        rows = [row for row, keep in zip(rows, _alive(rows, deaths)) if keep]
     if not rows:
         return [], np.zeros((0, len(REGIONS), len(REGIONS)), np.int32), np.zeros(
             (0, len(REGIONS), len(REGIONS)), np.int32
         )
-    puuid = np.array([row[0] for row in rows])
+    who = np.array([f"{row[0]}|{row[7] or 'UNKNOWN'}" for row in rows])
     minute = np.fromiter((row[1] for row in rows), np.int16, len(rows))
     x = np.fromiter((row[2] for row in rows), np.float64, len(rows))
     y = np.fromiter((row[3] for row in rows), np.float64, len(rows))
     team = np.fromiter((row[4] or 100 for row in rows), np.int16, len(rows))
 
     region = regions_of(x, y, team)
-    codes, players = pd.factorize(puuid)
+    codes, players = pd.factorize(who)
     seats = codes.astype(np.int64)
     step = (minute[1:] == minute[:-1] + 1) & (seats[1:] == seats[:-1])
     game = np.concatenate([[0], np.cumsum(~step)])
@@ -138,14 +156,31 @@ def best_kappa(counts: np.ndarray, totals: np.ndarray, world: np.ndarray) -> flo
     return float(np.exp(found.x))
 
 
-def model(counts, totals, world):
-    kappa = numpyro.sample("kappa", dist.LogNormal(3.0, 1.5))
-    with numpyro.plate("rows", counts.shape[0]):
-        numpyro.sample(
-            "counts",
-            dist.DirichletMultinomial(kappa * world, total_count=totals),
-            obs=counts,
-        )
+def log_posterior(log_kappa: float, counts: np.ndarray, totals: np.ndarray, world: np.ndarray) -> float:
+    prior = -0.5 * ((log_kappa - PRIOR_LOG_MEAN) / PRIOR_LOG_SD) ** 2
+    return marginal(float(np.exp(log_kappa)), counts, totals, world) + prior
+
+
+def kappa_interval(counts: np.ndarray, totals: np.ndarray, world: np.ndarray) -> dict:
+    found = minimize_scalar(
+        lambda log: -log_posterior(log, counts, totals, world),
+        bounds=(float(np.log(KAPPA_BOUNDS[0])), float(np.log(KAPPA_BOUNDS[1]))),
+        method="bounded",
+    )
+    mode, step = float(found.x), 1e-3
+    curvature = (
+        log_posterior(mode + step, counts, totals, world)
+        - 2.0 * log_posterior(mode, counts, totals, world)
+        + log_posterior(mode - step, counts, totals, world)
+    ) / step**2
+    spread = 1.0 / np.sqrt(max(-curvature, 1e-12))
+    return {
+        "mode": round(float(np.exp(mode)), 3),
+        "low": round(float(np.exp(mode - 1.96 * spread)), 3),
+        "high": round(float(np.exp(mode + 1.96 * spread)), 3),
+        "prior": "log normal on kappa, mean 3 and sd 1.5 on the log scale",
+        "approximation": "Laplace on log kappa",
+    }
 
 
 def loglik(probs: np.ndarray, counts: np.ndarray) -> float:
@@ -157,15 +192,22 @@ def loglik(probs: np.ndarray, counts: np.ndarray) -> float:
 
 def signatures(train: np.ndarray, world: np.ndarray, kappa: float) -> np.ndarray:
     prior = kappa * world
-    shrunk = (train + prior[None]) / (
-        train.sum(axis=2, keepdims=True) + prior.sum(axis=1)[None, :, None]
-    )
-    return np.log(shrunk) - np.log(world)[None]
+    shrunk = (train + prior) / (train.sum(axis=2, keepdims=True) + prior.sum(axis=2, keepdims=True))
+    return np.log(shrunk) - np.log(world)
+
+
+def world_by_position(counts: np.ndarray, positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    size = counts.shape[-1]
+    names = np.array(sorted(set(positions)))
+    worlds = np.zeros((len(names), size, size))
+    for index, name in enumerate(names):
+        pooled = counts[positions == name].sum(axis=0)
+        worlds[index] = (pooled + 1.0) / (pooled.sum(axis=1, keepdims=True) + size)
+    return names, worlds
 
 
 def fit_movement(
     settings: Settings | None = None,
-    samples: int = SAMPLES,
     workers: int = WORKERS,
     match_ids: list[str] | None = None,
     report_path: str = "movement_report.json",
@@ -174,54 +216,38 @@ def fit_movement(
     settings = settings or get_settings()
     train, test, players = player_counts(settings, workers, match_ids)
     size = len(REGIONS)
+    positions = np.array([key.rsplit("|", 1)[1] for key in players])
 
     every = train + test
-    pooled = train.sum(axis=0)
-    world = (pooled + 1.0) / (pooled.sum(axis=1, keepdims=True) + size)
-    whole = every.sum(axis=0)
-    shipped = (whole + 1.0) / (whole.sum(axis=1, keepdims=True) + size)
+    names, worlds = world_by_position(train, positions)
+    _, shipped = world_by_position(every, positions)
+    world = worlds[np.searchsorted(names, positions)]
 
     rich = train.sum(axis=(1, 2)) >= MIN_TRANSITIONS
     block = train[rich].reshape(-1, size)
     totals = block.sum(axis=1)
-    source = np.tile(np.arange(size), int(rich.sum()))
     alive = totals > 0
 
-    counts, weights, rows = block[alive], totals[alive], world[source[alive]]
+    counts, weights, rows = block[alive], totals[alive], world[rich].reshape(-1, size)[alive]
     kappa = best_kappa(counts, weights, rows)
 
-    picked = np.random.default_rng(SEED).choice(
-        len(counts), size=min(SUBSAMPLE, len(counts)), replace=False
-    )
-    mcmc = MCMC(
-        NUTS(model), num_warmup=WARMUP, num_samples=samples,
-        num_chains=CHAINS, progress_bar=False,
-    )
-    mcmc.run(
-        jax.random.PRNGKey(SEED),
-        jnp.asarray(counts[picked]),
-        jnp.asarray(weights[picked]),
-        jnp.asarray(rows[picked]),
-    )
-    draws = np.asarray(mcmc.get_samples()["kappa"])
-    extra = mcmc_summary(mcmc.get_samples(group_by_chain=True))
+    posterior = kappa_interval(counts, weights, rows)
 
     prior = kappa * world
-    shrunk = (train + prior[None]) / (
-        train.sum(axis=2, keepdims=True) + prior.sum(axis=1)[None, :, None]
-    )
+    shrunk = (train + prior) / (train.sum(axis=2, keepdims=True) + prior.sum(axis=2, keepdims=True))
     seen = train.sum(axis=2, keepdims=True)
     private = np.divide(train, seen, out=np.zeros(train.shape, float), where=seen > 0)
 
     check = rich & (test.sum(axis=(1, 2)) > 0)
     held = test[check]
     scores = {
-        "world": loglik(np.broadcast_to(world, held.shape), held),
+        "world": loglik(world[check], held),
         "player_mle": loglik(private[check], held),
         "player_shrunk": loglik(shrunk[check], held),
     }
     report = {
-        "players": int(len(players)),
+        "player_positions": int(len(players)),
+        "positions": [str(name) for name in names],
         "players_scored": int(check.sum()),
         "min_transitions": MIN_TRANSITIONS,
         "train_transitions": int(train.sum()),
@@ -229,28 +255,24 @@ def fit_movement(
         "rows_fitted": int(alive.sum()),
         "workers": workers,
         "kappa": round(kappa, 3),
-        "kappa_subsample": {
-            "rows": int(len(picked)),
-            "median": round(float(np.median(draws)), 3),
-            "low": round(float(np.quantile(draws, 0.025)), 3),
-            "high": round(float(np.quantile(draws, 0.975)), 3),
-        },
-        "r_hat": round(float(np.nanmax(extra["kappa"]["r_hat"])), 4),
-        "n_eff": round(float(np.nanmin(extra["kappa"]["n_eff"])), 1),
+        "kappa_posterior": posterior,
         "loglik": {name: round(value, 5) for name, value in scores.items()},
         "lift_over_world": round(scores["player_shrunk"] - scores["world"], 5),
-        "world_self_transition": round(float(np.diag(world).mean()), 4),
-        "world_entropy_bits": round(
-            float(-(world * np.log2(np.where(world > 0, world, 1.0))).sum(axis=1).mean()), 4
-        ),
+        "world_self_transition": {
+            str(name): round(float(np.diag(worlds[index]).mean()), 4) for index, name in enumerate(names)
+        },
+        "world_entropy_bits": {
+            str(name): round(float(-(worlds[index] * np.log2(worlds[index])).sum(axis=1).mean()), 4)
+            for index, name in enumerate(names)
+        },
     }
     settings.model_dir.mkdir(parents=True, exist_ok=True)
     with open(settings.model_dir / report_path, "w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
     np.savez(
         settings.model_dir / transitions_path,
-        world=shipped, kappa=np.array([kappa]), players=np.array(players),
-        signature=signatures(every, shipped, kappa)
+        world=shipped, positions=names, kappa=np.array([kappa]), players=np.array(players),
+        signature=signatures(every, shipped[np.searchsorted(names, positions)], kappa)
         .reshape(len(players), -1)
         .astype(np.float32),
         seen=every.sum(axis=(1, 2)),
@@ -260,7 +282,7 @@ def fit_movement(
 
 def movement_features(
     settings: Settings | None = None, folds: int = FOLDS, workers: int = WORKERS
-) -> pd.DataFrame:
+) -> dict:
     settings = settings or get_settings()
     matches = all_matches(settings)
     order = np.random.default_rng(SEED).permutation(len(matches))
@@ -289,7 +311,9 @@ def movement_features(
         rich = fold["seen"] >= MIN_TRANSITIONS
         scores = (fold["signature"][rich] - centre) @ basis.T
         frame = pd.DataFrame(scores, columns=MOVEMENT_COLUMNS)
-        frame["puuid"] = fold["players"][rich]
+        keys = pd.Series(fold["players"][rich]).str.rsplit("|", n=1, expand=True)
+        frame["puuid"] = keys[0].to_numpy()
+        frame["position"] = keys[1].to_numpy()
         frame["fold"] = index
         rows.append(frame)
 
@@ -301,12 +325,12 @@ def movement_features(
         }
     )
     seats = pd.read_parquet(
-        settings.processed_dir / "participations.parquet", columns=["match_id", "puuid"]
+        settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"]
     )
     joined = seats.merge(assignment, on="match_id", how="inner").merge(
-        table, on=["fold", "puuid"], how="inner"
+        table, on=["fold", "puuid", "position"], how="inner"
     )
-    joined.drop(columns=["fold"]).to_parquet(
+    joined.drop(columns=["fold", "position"]).to_parquet(
         settings.processed_dir / "movement.parquet", index=False
     )
     np.savez(

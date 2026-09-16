@@ -264,6 +264,31 @@ def test_backfill_names_players_without_touching_the_api(crawl_settings):
         assert store.get_player("puuid-0")["game_name"] == "late0"
 
 
+def test_backfill_opens_only_matches_that_can_still_name_somebody(crawl_settings):
+    # given
+    for suffix in ("NAMED", "STALE"):
+        match = make_match(f"NA1_{suffix}", [f"{suffix}-{i}" for i in range(10)])
+        for index, participant in enumerate(match["info"]["participants"]):
+            participant["riotIdGameName"] = f"{suffix.lower()}{index}"
+            participant["riotIdTagline"] = "NA1"
+        with Store(crawl_settings) as store:
+            store.save_match(match)
+    with Store(crawl_settings) as store:
+        store.conn.execute("UPDATE players SET game_name=NULL, tag_line=NULL WHERE puuid LIKE 'STALE-%'")
+        store.conn.commit()
+
+        # when
+        wanted = store.match_ids_missing_identities()
+        named = store.backfill_identities()
+
+        # then
+        assert wanted == ["NA1_STALE"]
+        assert named == 10
+        assert store.get_player("STALE-0")["game_name"] == "stale0"
+        assert store.match_ids_missing_identities() == []
+        assert store.backfill_identities() == 0
+
+
 def test_backfill_does_not_overwrite_an_existing_name(crawl_settings):
     match = make_match("NA1_KEEP", [f"puuid-{i}" for i in range(10)])
     for participant in match["info"]["participants"]:

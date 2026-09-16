@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
+from ..features.positions import KEY
 
 DIMS = 64
 COMPONENTS = 12
@@ -15,7 +16,9 @@ TABLE = "embedding.parquet"
 
 def _raw(settings: Settings) -> pd.DataFrame:
     columns = ["puuid", "match_id", *[f"e{index}" for index in range(DIMS)]]
-    return pd.read_parquet(settings.processed_dir / SOURCE, columns=columns)
+    games = pd.read_parquet(settings.processed_dir / SOURCE, columns=columns)
+    seated = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", *KEY])
+    return games.merge(seated, on=["match_id", "puuid"], how="inner")
 
 
 def embedding_features(
@@ -33,7 +36,7 @@ def embedding_features(
             fold_of[matches[position]] = index
     games["fold"] = games.match_id.map(fold_of)
 
-    whole = games.groupby("puuid")[dims].mean()
+    whole = games.groupby(KEY)[dims].mean()
     centre = whole.to_numpy(dtype=float).mean(axis=0)
     _, _, basis = np.linalg.svd(whole.to_numpy(dtype=float) - centre, full_matrices=False)
     basis = basis[:components]
@@ -41,26 +44,27 @@ def embedding_features(
     rows = []
     for index in range(folds):
         outside = games[games.fold != index]
-        signature = outside.groupby("puuid")[dims].mean()
-        counts = outside.groupby("puuid").size()
+        signature = outside.groupby(KEY)[dims].mean()
+        counts = outside.groupby(KEY).size()
         signature = signature[counts >= MIN_GAMES]
         if signature.empty:
             continue
         scores = (signature.to_numpy(dtype=float) - centre) @ basis.T
         frame = pd.DataFrame(scores, columns=EMBED_COLUMNS[:components])
-        frame["puuid"] = signature.index.to_numpy()
+        frame["puuid"] = signature.index.get_level_values("puuid").to_numpy()
+        frame["position"] = signature.index.get_level_values("position").to_numpy()
         frame["fold"] = index
         rows.append(frame)
 
     table = pd.concat(rows, ignore_index=True)
-    seats = games[["match_id", "puuid"]].drop_duplicates()
+    seats = games[["match_id", *KEY]].drop_duplicates()
     seats["fold"] = seats.match_id.map(fold_of)
-    joined = seats.merge(table, on=["fold", "puuid"], how="inner").drop(columns=["fold"])
+    joined = seats.merge(table, on=["fold", *KEY], how="inner").drop(columns=["fold", "position"])
     joined.to_parquet(settings.processed_dir / TABLE, index=False)
     np.savez(settings.model_dir / "embedding_basis.npz", basis=basis, centre=centre)
     return {
         "rows": int(len(joined)),
-        "players": int(joined.puuid.nunique()),
+        "player_positions": int(len(whole)),
         "components": components,
         "folds": folds,
         "min_games": MIN_GAMES,

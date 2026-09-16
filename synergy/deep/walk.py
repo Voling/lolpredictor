@@ -28,6 +28,7 @@ class MatchWalk(nn.Module):
         self.side = nn.Embedding(2, dim)
         self.scalars = nn.Sequential(nn.Linear(2, dim), nn.LayerNorm(dim))
         self.seat_region = nn.Embedding(regions, dim)
+        self.wave = nn.Linear(3, dim, bias=False)
         self.order = nn.Embedding(span, dim)
         self.blend = nn.LayerNorm(dim)
         layer = nn.TransformerEncoderLayer(
@@ -50,12 +51,15 @@ class MatchWalk(nn.Module):
         return self.champion(champion) + self.role(role) + self.side(side)
 
     def encode(
-        self, kind, actor, victim, region, seat_region, lead, clock, mask, champion, role, side
+        self, kind, actor, victim, region, seat_region_top, seat_region_p, wave, lead, clock,
+        mask, champion, role, side,
     ):
         roster = self.seats(champion, role, side)
         padded = torch.cat([torch.zeros_like(roster[:, :1]), roster], dim=1)
         who = torch.gather(padded, 1, actor.unsqueeze(-1).expand(-1, -1, padded.size(-1)))
         hurt = torch.gather(padded, 1, victim.unsqueeze(-1).expand(-1, -1, padded.size(-1)))
+        where = (self.seat_region(seat_region_top) * seat_region_p.unsqueeze(-1)).sum(dim=2)
+        where = where + self.seat_region.weight[0] * (1.0 - seat_region_p.sum(dim=-1, keepdim=True))
         token = (
             self.kind(kind)
             + self.region(region)
@@ -63,7 +67,8 @@ class MatchWalk(nn.Module):
             + self.victim_seat(victim)
             + who
             + hurt
-            + self.seat_region(seat_region)
+            + where
+            + self.wave(wave)
             + self.scalars(torch.stack([clock, lead], dim=-1))
             + self.order(torch.arange(kind.size(1), device=kind.device).unsqueeze(0))
         )
@@ -104,7 +109,9 @@ def batches(
             torch.as_tensor(data["actor"][rows].astype(np.int64), device=device),
             torch.as_tensor(data["victim"][rows].astype(np.int64), device=device),
             torch.as_tensor(data["region"][rows].astype(np.int64), device=device),
-            torch.as_tensor(data["seat_region"][rows].astype(np.int64), device=device),
+            torch.as_tensor(data["seat_region_top"][rows].astype(np.int64), device=device),
+            torch.as_tensor(data["seat_region_p"][rows].astype(np.float32), device=device),
+            torch.as_tensor(data["wave"][rows].astype(np.float32), device=device),
             torch.as_tensor(data["lead"][rows].astype(np.float32), device=device),
             torch.as_tensor(data["clock"][rows].astype(np.float32), device=device),
             torch.as_tensor(data["mask"][rows], device=device),

@@ -11,6 +11,7 @@ specific pairing adds.
 | Crawl | [ingest/seeder.py](ingest/seeder.py) | Walks a priority frontier from the apex ladders, stores match and timeline JSON, respects both Riot rate windows |
 | Window | [ingest/window.py](ingest/window.py) | Cuts every timeline to 0:00-15:00 so laning behaviour is comparable across games |
 | Features | [features/build.py](features/build.py) | Runs 15 extractors over each match in parallel, streaming 16 tables to parquet |
+| Posterior | [features/posterior.py](features/posterior.py) | Position between frames as a time weighted mixture over the bracketing known points, read as mass over regions; wave state derived from it |
 | Traits | [features/traits.py](features/traits.py) | Learns the style basis by maximising between-player over within-player variance |
 | Model | [ml/model.py](ml/model.py) | Ridge on rank and playstyle predicts advantage at 15, a second ridge on the residual uses pair terms only |
 
@@ -35,7 +36,9 @@ champions. Deaths open a window, from the level-based respawn timer, during whic
 position is a corpse rather than a player, and `alive_at` excludes those from proximity features.
 
 68.7% of accepted anchors land in a region neither surrounding frame shows, so most of this
-certainty is invisible to frame sampling alone.
+certainty is invisible to frame sampling alone. Where a position is needed between frames, the
+event walk reads a posterior over regions built from these anchors rather than a snapped point;
+the top level README's Match walk section carries the measurements behind its form.
 
 ## What it measures
 
@@ -62,7 +65,8 @@ style cross term is small and clear of its null.
 | `python -m synergy features --workers 8` | Extract every table, 8 processes |
 | `python -m synergy train` | Fit traits, profiles and the pair model |
 | `python -m synergy status` | Corpus counts, frontier state, model metrics |
-| `python -m synergy pair "a#tag" "b#tag"` | Score one pairing |
+| `python -m synergy pair "a#tag" "b#tag" --left-position top --right-position jungle` | Score one pairing in the positions they will play |
+| `python -m synergy lineup --top ... --jungle ... --mid ... --bot ... --support ...` | Score a full five |
 | `python -m synergy partners "a#tag"` | Best and worst modelled partners |
 | `python -m synergy sequences` / `deep-train` | The timeline encoder, see below |
 
