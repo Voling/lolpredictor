@@ -30,6 +30,27 @@ def test_responses_map_to_one_situation_and_one_ordered_outcome_each():
     assert counts.outcome.tolist() == ["converged", "left", "absent"]
 
 
+def test_an_unknown_distance_counts_as_far_and_any_side_but_ours_as_theirs():
+    # given
+    rows = pd.DataFrame(
+        {
+            "match_id": ["m"] * 3, "puuid": ["p", "q", "r"], "trigger": ["building", "ward", "objective"],
+            "ours": [2, 1, np.nan], "is_actor": [0, 0, 0], "is_victim": [0, 0, 0],
+            "approach": [np.nan, 1.0, 2.5], "present": [0.0, 1.0, 1.0], "converged": [0.0, 0.0, 0.0],
+            "left_after": [0.0, 0.0, 0.0], "held_ground": [0.0, 0.0, 1.0],
+        }
+    )
+
+    # when
+    counts = response_counts(rows)
+
+    # then
+    assert counts.puuid.tolist() == ["p", "r"]
+    assert counts.situation.tolist() == ["building_theirs_far", "objective_theirs_mid"]
+    assert counts.outcome.tolist() == ["absent", "held"]
+    assert counts.dtypes.astype(str).tolist() == ["object", "object", "object", "object", "float64"]
+
+
 def test_objective_ward_and_jungle_rows_land_in_declared_cells():
     # given
     objectives = pd.DataFrame({"match_id": ["m"], "puuid": ["p"], "objective": ["DRAGON"], "ours": [0], "o_approach_distance": [3.0],

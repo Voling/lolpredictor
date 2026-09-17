@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
 from .cells import cell_block, combine_shares, evidence_share
@@ -31,22 +32,50 @@ REACTION_COLUMNS = (
 )
 
 
+RESPONSE_READ = ["match_id", "puuid", "trigger", "ours", "is_actor", "is_victim", "approach", "present", "converged", "left_after", "held_ground"]
+OBJECTIVE_READ = [
+    "match_id", "puuid", "objective", "ours", "o_approach_distance", "o_died", "o_fought", "o_committed", "o_rotated_in", "o_approaching",
+]
+
+
+def _responses(settings: Settings) -> pd.DataFrame:
+    table = pq.read_table(
+        settings.processed_dir / "event_responses.parquet",
+        columns=RESPONSE_READ,
+        filters=[("is_actor", "==", 0), ("is_victim", "==", 0), ("trigger", "in", list(TRIGGERS))],
+        use_pandas_metadata=True,
+    )
+    return table.to_pandas(split_blocks=True, self_destruct=True)
+
+
+def _band_codes(values: np.ndarray, bands) -> np.ndarray:
+    return np.searchsorted([edge for edge, _ in bands], values, side="right").clip(max=len(bands) - 1)
+
+
 def _band(values: pd.Series, bands) -> pd.Series:
-    edges = [edge for edge, _ in bands]
     names = [name for _, name in bands]
-    return pd.Series(np.array(names)[np.searchsorted(edges, values.to_numpy(dtype=float), side="right").clip(max=len(names) - 1)], index=values.index)
+    return pd.Series(np.array(names)[_band_codes(values.to_numpy(dtype=float), bands)], index=values.index)
 
 
 def response_counts(responses: pd.DataFrame) -> pd.DataFrame:
-    rows = responses[(responses["is_actor"] == 0) & (responses["is_victim"] == 0) & responses["trigger"].isin(TRIGGERS)]
-    side = np.where(rows["ours"] == 1, "ours", "theirs")
-    situation = rows["trigger"].astype(str) + "_" + side + "_" + _band(rows["approach"], DISTANCE_BANDS).to_numpy()
-    outcome = np.select(
-        [rows["converged"] > 0, rows["held_ground"] > 0, rows["left_after"] > 0, rows["present"] > 0],
-        ["converged", "held", "left", "present"],
-        default="absent",
-    )
-    return pd.DataFrame({"match_id": rows["match_id"].to_numpy(), "puuid": rows["puuid"].to_numpy(), "situation": situation.to_numpy(), "outcome": outcome, "count": 1.0})
+    kept = ((responses["is_actor"] == 0) & (responses["is_victim"] == 0) & responses["trigger"].isin(TRIGGERS)).to_numpy()
+
+    def column(name: str) -> np.ndarray:
+        return responses[name].to_numpy()[kept]
+
+    bands = [band for _, band in DISTANCE_BANDS]
+    names = np.array([f"{t}_{side}_{band}" for t in TRIGGERS for side in ("ours", "theirs") for band in bands], dtype=object)
+    trigger = pd.Index(TRIGGERS).get_indexer(column("trigger")).astype(np.int64)
+    theirs = (column("ours") != 1).astype(np.int64)
+    situation = names[(trigger * 2 + theirs) * len(bands) + _band_codes(column("approach").astype(float), DISTANCE_BANDS)]
+    outcome = np.array(["converged", "held", "left", "present", "absent"], dtype=object)[
+        np.select(
+            [column("converged") > 0, column("held_ground") > 0, column("left_after") > 0, column("present") > 0],
+            [0, 1, 2, 3],
+            default=4,
+        )
+    ]
+    return pd.DataFrame({"match_id": column("match_id"), "puuid": column("puuid"), "situation": situation, "outcome": outcome, "count": 1.0})
 
 
 def objective_counts(objectives: pd.DataFrame) -> pd.DataFrame:
@@ -95,26 +124,31 @@ def jungle_counts(openings: pd.DataFrame) -> pd.DataFrame:
 def build_reaction(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"])
-    sources = (
-        ("rsp", response_counts(pd.read_parquet(settings.processed_dir / "event_responses.parquet",
-            columns=["match_id", "puuid", "trigger", "ours", "is_actor", "is_victim", "approach", "present", "converged", "left_after", "held_ground"])),
-         RESPONSE_SITUATIONS, list(RESPONSES)),
-        ("obj", objective_counts(pd.read_parquet(settings.processed_dir / "objectives.parquet")), OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES)),
-        ("ward", ward_counts(pd.read_parquet(settings.processed_dir / "wards.parquet", columns=["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES)),
-    )
     openings = jungle_counts(pd.read_parquet(settings.processed_dir / "jungle_openings.parquet"))
-    sources += (
-        ("jgl", openings[openings["situation"] != "sides"], OPENING_SITUATIONS, OPENING_OUTCOMES),
-        ("jgl", openings[openings["situation"] == "sides"], ["sides"], list(SIDES)),
+    sources = (
+        ("rsp", lambda: response_counts(_responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES)),
+        ("obj", lambda: objective_counts(pd.read_parquet(settings.processed_dir / "objectives.parquet", columns=OBJECTIVE_READ)),
+         OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES)),
+        ("ward", lambda: ward_counts(pd.read_parquet(settings.processed_dir / "wards.parquet", columns=["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES)),
+        ("jgl", lambda: openings[openings["situation"] != "sides"], OPENING_SITUATIONS, OPENING_OUTCOMES),
+        ("jgl", lambda: openings[openings["situation"] == "sides"], ["sides"], list(SIDES)),
     )
-    frames, report, shares = [], {}, []
-    for prefix, counts, situations, outcomes in sources:
+    keys, values, report, shares = None, None, {}, []
+    for prefix, load, situations, outcomes in sources:
+        counts = load()
         block, found = cell_block(counts, seats, situations, outcomes, prefix)
-        frames.append(block.set_index(["match_id", "puuid"]))
+        if values is None:
+            keys = block[["match_id", "puuid"]]
+            values = np.full((len(block), len(REACTION_COLUMNS)), np.nan)
+        values[:, [REACTION_COLUMNS.index(column) for column in block.columns[2:]]] = block.iloc[:, 2:].to_numpy(dtype=float)
+        del block
         shares.append((len(situations) * len(outcomes), evidence_share(counts, seats, situations, {s: found[s]["kappa"] for s in situations})))
         report[f"{prefix}:{situations[0]}" if prefix in report else prefix] = {"rows": int(counts["count"].sum()), "situations": len(situations), "outcomes": len(outcomes),
                           "kappa_range": [min(v["kappa"] for v in found.values()), max(v["kappa"] for v in found.values())]}
-    table = pd.concat(frames, axis=1).reindex(columns=REACTION_COLUMNS).reset_index()
+        del counts
+    table = pd.DataFrame(values, columns=REACTION_COLUMNS)
+    table.insert(0, "puuid", keys["puuid"].to_numpy())
+    table.insert(0, "match_id", keys["match_id"].to_numpy())
     table.to_parquet(settings.processed_dir / TABLE, index=False)
     evidence = combine_shares(shares)
     evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)

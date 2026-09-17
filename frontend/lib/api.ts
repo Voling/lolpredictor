@@ -9,10 +9,9 @@ export type Status = {
 
 export type PairScore = {
   score: number | null;
+  projected_gold_at_15: number | null;
   reliable: boolean;
   note: string | null;
-  synergy: number;
-  projected_gold_at_15: number;
   games_together: number;
   winrate_together: number | null;
   hinge: Record<
@@ -22,8 +21,12 @@ export type PairScore = {
   positions: { left: string; right: string } | null;
   warnings: string[];
   interaction: {
+    score: number;
+    projected_gold_at_15: number | null;
     synergy: number;
     percentile: number;
+    reliable: boolean;
+    note: string | null;
     positions: { left: string; right: string };
     left_games: number;
     right_games: number;
@@ -34,12 +37,21 @@ export type PairScore = {
 };
 
 export type Lineup = {
+  score: number;
+  projected_gold_at_15: number | null;
   synergy: number;
   percentile: number;
   reliable: boolean;
   note?: string;
   warnings: string[];
-  pairs: { left: string; right: string; synergy: number; percentile: number }[];
+  pairs: {
+    left: string;
+    right: string;
+    score: number;
+    projected_gold_at_15: number | null;
+    synergy: number;
+    percentile: number;
+  }[];
 };
 
 const base = process.env.API_URL ?? "http://localhost:8000";

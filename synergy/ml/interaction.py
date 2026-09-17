@@ -1,6 +1,5 @@
 import json
 import time
-from itertools import combinations
 
 import jax
 import jax.numpy as jnp
@@ -14,8 +13,9 @@ from numpyro.infer import SVI, Trace_ELBO, autoguide
 from ..config import Settings, get_settings
 from ..deep.stream import SEATS
 from ..deep.walk import MatchWalk, batches
-from ..features.positions import KEY, POSITIONS, UNKNOWN, combination
+from ..features.positions import KEY, UNKNOWN
 from .gold import team_advantage
+from .serving import TEAM_PAIRS, TEAM_SIZE
 
 SOURCES = ("style", "walk")
 RANK = 8
@@ -29,11 +29,7 @@ SEED = 0
 HOLDOUT = 0.2
 NULLS = 40
 BATCH = 128
-TEAM_SIZE = 5
-TEAM_PAIRS = TEAM_SIZE * (TEAM_SIZE - 1) // 2
 TERMS = ("linear", "solo", "pair")
-DRIVERS = 6
-DISTINCTIVE = 5
 
 
 def seat_matrix(settings: Settings, stream: str = "stream.npz", cache: bool = True) -> dict:
@@ -85,28 +81,46 @@ def style_matrix(settings: Settings, stream: str = "stream.npz") -> dict:
     seats = pd.DataFrame(
         {"match_id": np.repeat(raw["match_id"], SEATS), "puuid": raw["seat_puuid"].ravel()}
     )
-    blocks = (
-        (load_tendencies(settings), TENDENCY_COLUMNS),
-        (load_priority(settings), PRIORITY_COLUMNS),
-        (load_reaction(settings), REACTION_COLUMNS),
-        (load_habits(settings), HABIT_COLUMNS),
-        (load_movement(settings), MOVEMENT_COLUMNS),
-        (load_embedding(settings), EMBED_COLUMNS),
+    loaders = (
+        (load_tendencies, TENDENCY_COLUMNS),
+        (load_priority, PRIORITY_COLUMNS),
+        (load_reaction, REACTION_COLUMNS),
+        (load_habits, HABIT_COLUMNS),
+        (load_movement, MOVEMENT_COLUMNS),
+        (load_embedding, EMBED_COLUMNS),
     )
-    columns = []
-    for table, names in blocks:
-        if table.empty:
-            continue
-        seats = seats.merge(table[["match_id", "puuid", *names]], on=["match_id", "puuid"], how="left")
-        columns.extend(names)
-    values = seats[columns].to_numpy(dtype=float)
+    values = np.full((len(seats), sum(len(names) for _, names in loaders)), np.nan, dtype=np.float32)
+    covered = np.ones(len(seats), bool)
+    columns, filled, start = [], [], 0
+    for load, names in loaders:
+        table = load(settings)
+        if not table.empty:
+            slot = seats.merge(
+                table[["match_id", "puuid"]].assign(slot=np.arange(len(table))), on=["match_id", "puuid"], how="left"
+            )["slot"].to_numpy(dtype=float)
+            if len(slot) != len(seats):
+                raise ValueError(f"a style block repeats a seat, {len(slot):,} rows for {len(seats):,} seats")
+            seen = ~np.isnan(slot)
+            rows = slot[seen].astype(np.int64)
+            for offset, name in enumerate(names):
+                column = table[name].to_numpy(dtype=float)[rows]
+                values[seen, start + offset] = column
+                covered[seen] &= ~np.isnan(column)
+            if names:
+                covered &= seen
+            columns.extend(names)
+            filled.extend(range(start, start + len(names)))
+        start += len(names)
+        del table
+    if len(filled) < values.shape[1]:
+        values = values[:, filled]
     print(f"style blocks: {len(columns)} leave one out columns, "
-          f"{float(seats[columns].notna().all(axis=1).mean()):.3f} of seats fully covered", flush=True)
+          f"{float(covered.mean()):.3f} of seats fully covered", flush=True)
     return {
         "match_id": raw["match_id"],
         "seat_puuid": raw["seat_puuid"],
         "seat_side": raw["seat_side"],
-        "encoding": values.reshape(len(raw["match_id"]), SEATS, len(columns)).astype(np.float32),
+        "encoding": values.reshape(len(raw["match_id"]), SEATS, len(columns)),
         "columns": np.array(columns),
     }
 
@@ -122,13 +136,17 @@ def fully_seated(positions: np.ndarray) -> np.ndarray:
     return (positions != UNKNOWN).all(axis=1)
 
 
-def standardise(encoding: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _moments(encoding: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     seen = encoding[fit].reshape(-1, encoding.shape[-1])
-    centre = np.nanmean(seen, axis=0)
-    spread = np.nanstd(seen, axis=0).clip(min=1e-6)
-    flat = (encoding.reshape(-1, encoding.shape[-1]) - centre) / spread
-    flat = np.nan_to_num(flat, nan=0.0)
-    return flat.reshape(encoding.shape).astype(np.float32), centre, spread
+    return np.nanmean(seen, axis=0), np.nanstd(seen, axis=0).clip(min=1e-6)
+
+
+def standardise(encoding: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    centre, spread = _moments(encoding, fit)
+    flat = encoding.reshape(-1, encoding.shape[-1]) - centre
+    flat /= spread
+    np.nan_to_num(flat, copy=False, nan=0.0)
+    return flat.reshape(encoding.shape).astype(np.float32, copy=False), centre, spread
 
 
 def sides(seat_side: np.ndarray, reduced: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -139,6 +157,12 @@ def sides(seat_side: np.ndarray, reduced: np.ndarray) -> tuple[np.ndarray, np.nd
     blue = reduced[rows, np.argsort(~mine, axis=1, kind="stable")[:, :TEAM_SIZE]]
     red = reduced[rows, np.argsort(mine, axis=1, kind="stable")[:, :TEAM_SIZE]]
     return blue, red
+
+
+def shuffle_seats(team: np.ndarray, rng: np.random.Generator, out: np.ndarray) -> np.ndarray:
+    for seat in range(TEAM_SIZE):
+        out[:, seat] = team[rng.permutation(len(team)), seat]
+    return out
 
 
 def _selves(team, factor, dim):
@@ -274,7 +298,7 @@ def _basis(settings: Settings, stream: str, seed: int, source: str) -> dict:
     raw = gold.to_numpy(dtype=float)[keep]
     order = np.random.default_rng(seed).permutation(len(raw))
     cut = int(len(raw) * (1.0 - HOLDOUT))
-    reduced, centre, spread = standardise(seats["encoding"][keep], order[:cut])
+    reduced, centre, spread = standardise(seats.pop("encoding")[keep], order[:cut])
     return {
         "match_id": seats["match_id"][keep],
         "seat_puuid": seats["seat_puuid"][keep],
@@ -305,7 +329,7 @@ def fit_interaction(
     basis = _basis(settings, stream, seed, source)
     raw, fit, test = basis["raw"], basis["fit"], basis["test"]
     target = (raw - raw[fit].mean()) / raw[fit].std()
-    blue, red = sides(basis["seat_side"], basis["reduced"])
+    blue, red = sides(basis["seat_side"], basis.pop("reduced"))
     dim = blue.shape[-1]
 
     print(f"fitting {len(fit):,} matches, holding out {len(test):,}, {dim} named columns, rank {rank}", flush=True)
@@ -329,11 +353,13 @@ def fit_interaction(
         print(f"  gain {gain:.6f}, matrix saved, now {nulls} nulls", flush=True)
 
     draws = []
-    for draw in range(nulls if nested and gain > 0.0 else 0):
+    runs = nulls if nested and gain > 0.0 else 0
+    mixed_blue, mixed_red = (np.empty_like(blue), np.empty_like(red)) if runs > 0 else (None, None)
+    for draw in range(runs):
         clock = time.time()
         rng = np.random.default_rng(1000 + draw)
-        mixed_blue = np.stack([blue[rng.permutation(len(blue)), seat] for seat in range(TEAM_SIZE)], axis=1)
-        mixed_red = np.stack([red[rng.permutation(len(red)), seat] for seat in range(TEAM_SIZE)], axis=1)
+        shuffle_seats(blue, rng, mixed_blue)
+        shuffle_seats(red, rng, mixed_red)
         under = _rungs(
             mixed_blue, mixed_red, target, fit, test, rank, steps, seed, names=("solo", "pair"), floor=min_steps
         )
@@ -378,52 +404,52 @@ def fit_interaction(
     return report
 
 
-def _informative(settings: Settings) -> bool:
-    path = settings.model_dir / "interaction_report.json"
-    if not path.exists():
-        return False
-    with open(path, encoding="utf-8") as handle:
-        return bool(json.load(handle).get("informative", False))
-
-
-UNRELIABLE = "the pair term did not beat its nulls on this corpus, so the percentile is shown for inspection only"
-
-
 def _saved(settings: Settings) -> dict:
     stored = np.load(settings.model_dir / "interaction_matrix.npz", allow_pickle=True)
     return {key: stored[key] for key in stored.files}
 
 
 def pair_scores(
-    settings: Settings | None = None, stream: str = "stream.npz", source: str = "style"
+    settings: Settings | None = None, stream: str = "stream.npz", source: str = "style", basis: dict | None = None
 ) -> pd.DataFrame:
     settings = settings or get_settings()
-    saved = _saved(settings)
-    basis = _basis(settings, stream, SEED, source)
-    matrix, reduced = saved["matrix"], basis["reduced"]
+    matrix = _saved(settings)["matrix"]
+    basis = basis if basis is not None else _basis(settings, stream, SEED, source)
+    frames = [_side_pairs(basis, matrix, side) for side in (1, 0)]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _side_pairs(basis: dict, matrix: np.ndarray, side: int) -> pd.DataFrame:
+    reduced = basis["reduced"]
     dim = matrix.shape[0]
     left, right = np.triu_indices(TEAM_SIZE, k=1)
-    frames = []
-    for side, picks in ((1, basis["seat_side"] == 1), (0, basis["seat_side"] == 0)):
-        seated = np.argsort(~picks, axis=1, kind="stable")[:, :TEAM_SIZE]
-        rows = np.arange(len(reduced))[:, None]
-        team = reduced[rows, seated]
-        scored = np.einsum("bpi,ij,bqj->bpq", team, matrix, team) / (TEAM_PAIRS * dim)
-        puuids, positions = basis["seat_puuid"][rows, seated], basis["seat_position"][rows, seated]
-        frames.append(
-            pd.DataFrame(
-                {
-                    "match_id": np.repeat(basis["match_id"], len(left)),
-                    "side": side,
-                    "puuid_a": puuids[:, left].ravel(),
-                    "position_a": positions[:, left].ravel(),
-                    "puuid_b": puuids[:, right].ravel(),
-                    "position_b": positions[:, right].ravel(),
-                    "synergy": scored[:, left, right].ravel(),
-                }
-            )
-        )
-    return pd.concat(frames, ignore_index=True)
+    seated = np.argsort(~(basis["seat_side"] == side), axis=1, kind="stable")[:, :TEAM_SIZE]
+    rows = np.arange(len(reduced))[:, None]
+    team = reduced[rows, seated]
+    scored = np.einsum("bpi,ij,bqj->bpq", team, matrix, team) / (TEAM_PAIRS * dim)
+    del team
+    puuids, positions = basis["seat_puuid"][rows, seated], basis["seat_position"][rows, seated]
+    return pd.DataFrame(
+        {
+            "match_id": np.repeat(basis["match_id"], len(left)),
+            "side": side,
+            "puuid_a": puuids[:, left].ravel(),
+            "position_a": positions[:, left].ravel(),
+            "puuid_b": puuids[:, right].ravel(),
+            "position_b": positions[:, right].ravel(),
+            "synergy": scored[:, left, right].ravel(),
+        }
+    )
+
+
+def player_styles(basis: dict, columns: list[str]) -> pd.DataFrame:
+    flat = pd.DataFrame(basis["reduced"].reshape(-1, len(columns)), columns=columns)
+    flat["puuid"] = basis["seat_puuid"].ravel()
+    flat["position"] = basis["seat_position"].ravel()
+    grouped = flat.groupby(KEY)
+    styles = grouped.mean()
+    styles["seats"] = grouped.size()
+    return styles
 
 
 def write_scores(
@@ -432,15 +458,11 @@ def write_scores(
     settings = settings or get_settings()
     basis = _basis(settings, stream, SEED, source)
     columns = [str(c) for c in basis["columns"]]
-    flat = pd.DataFrame(basis["reduced"].reshape(-1, len(columns)), columns=columns)
-    flat["puuid"] = basis["seat_puuid"].ravel()
-    flat["position"] = basis["seat_position"].ravel()
-    grouped = flat.groupby(KEY)
-    styles = grouped.mean()
-    styles["seats"] = grouped.size()
-    styles = styles.join(evidence_table(settings))
+    styles = player_styles(basis, columns).join(evidence_table(settings))
     styles.reset_index().to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
-    pairs = pair_scores(settings, stream, source)
+    pairs = pair_scores(settings, stream, source, basis=basis)
+    gold_sd = float(basis["raw"][basis["fit"]].std())
+    del basis
     pairs.to_parquet(settings.processed_dir / "pair_synergy.parquet", index=False)
     grid = np.linspace(0.0, 1.0, 1001)
     combos = pairs.groupby(combination_keys(pairs["position_a"], pairs["position_b"]))["synergy"]
@@ -452,8 +474,10 @@ def write_scores(
         combos=np.array(names),
         combo_quantiles=np.stack([np.quantile(combos.get_group(name).to_numpy(), grid) for name in names]),
         team_quantiles=np.quantile(teams, grid),
+        gold_sd=gold_sd,
     )
     return {
+        "gold_sd": round(gold_sd, 1),
         "player_positions": int(len(styles)),
         "columns": len(columns),
         "pair_rows": int(len(pairs)),
@@ -465,22 +489,6 @@ def write_scores(
 def combination_keys(left: pd.Series, right: pd.Series) -> np.ndarray:
     a, b = left.astype(str).to_numpy(), right.astype(str).to_numpy()
     return np.where(a < b, np.char.add(np.char.add(a, "+"), b), np.char.add(np.char.add(b, "+"), a))
-
-
-class NoGamesInPosition(ValueError):
-    def __init__(self, puuid: str, position: str):
-        self.puuid, self.position = puuid, position
-        super().__init__(f"{puuid} has no games as {position} in the corpus")
-
-
-def _styles(settings: Settings) -> pd.DataFrame | None:
-    path = settings.processed_dir / "player_styles.parquet"
-    if not path.exists():
-        return None
-    styles = pd.read_parquet(path)
-    if "position" not in styles.columns:
-        return None
-    return styles.set_index(KEY)
 
 
 def evidence_table(settings: Settings) -> pd.Series:
@@ -501,128 +509,3 @@ def evidence_table(settings: Settings) -> pd.Series:
         scaled = frame.set_index(KEY)["share"] * (weight / total)
         merged = scaled if merged is None else merged.add(scaled, fill_value=0.0)
     return merged.rename("evidence")
-
-
-def position_profile(puuid: str, position: str, settings: Settings | None = None) -> dict | None:
-    styles = _styles(settings or get_settings())
-    if styles is None:
-        return None
-    if (puuid, position) not in styles.index:
-        return {"games": 0, "evidence": 0.0}
-    row = styles.loc[(puuid, position)]
-    evidence = float(row["evidence"]) if "evidence" in styles.columns and pd.notna(row["evidence"]) else None
-    return {"games": int(row["seats"]), "evidence": None if evidence is None else round(evidence, 3)}
-
-
-def _evidence(styles: pd.DataFrame, puuid: str, position: str) -> float | None:
-    if "evidence" not in styles.columns or pd.isna(styles.loc[(puuid, position), "evidence"]):
-        return None
-    return round(float(styles.loc[(puuid, position), "evidence"]), 3)
-
-
-def _percentile(value: float, scores: np.lib.npyio.NpzFile, key: str, combo: str | None) -> float:
-    if combo is not None and "combos" in scores.files and combo in list(scores["combos"]):
-        quantiles = scores["combo_quantiles"][list(scores["combos"]).index(combo)]
-    else:
-        quantiles = scores[key]
-    return round(float(np.searchsorted(quantiles, value) / 10.0), 1)
-
-
-def pair_between(
-    left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None
-) -> dict | None:
-    settings = settings or get_settings()
-    matrix_path = settings.model_dir / "interaction_matrix.npz"
-    scores_path = settings.model_dir / "interaction_scores.npz"
-    if left_position == right_position:
-        raise ValueError(f"both players are given {left_position}, a duo needs two different positions")
-    styles = _styles(settings)
-    if styles is None or not (matrix_path.exists() and scores_path.exists()):
-        return None
-    saved = _saved(settings)
-    if "columns" not in saved:
-        return None
-    matrix, columns = saved["matrix"], [str(c) for c in saved["columns"]]
-    if any(c not in styles.columns for c in columns):
-        return None
-    for puuid, position in ((left, left_position), (right, right_position)):
-        if (puuid, position) not in styles.index:
-            raise NoGamesInPosition(puuid, position)
-    a = styles.loc[(left, left_position), columns].to_numpy(dtype=float)
-    b = styles.loc[(right, right_position), columns].to_numpy(dtype=float)
-    dim = matrix.shape[0]
-    terms = np.outer(a, b) * matrix / (TEAM_PAIRS * dim)
-    value = float(terms.sum())
-    strongest = np.argsort(-np.abs(terms).ravel())[:DRIVERS]
-    reliable = _informative(settings)
-    return {
-        "synergy": round(value, 6),
-        "percentile": _percentile(value, np.load(scores_path), "quantiles", combination(left_position, right_position)),
-        "reliable": reliable,
-        "note": None if reliable else UNRELIABLE,
-        "positions": {"left": left_position, "right": right_position},
-        "left_games": int(styles.loc[(left, left_position), "seats"]),
-        "right_games": int(styles.loc[(right, right_position), "seats"]),
-        "left_evidence": _evidence(styles, left, left_position),
-        "right_evidence": _evidence(styles, right, right_position),
-        "drivers": [
-            {"left": columns[k // dim], "right": columns[k % dim], "contribution": round(float(terms.ravel()[k]), 6)}
-            for k in strongest
-        ],
-        "reading": {
-            "left": _reading(styles, left_position, columns, a, terms.sum(axis=1)),
-            "right": _reading(styles, right_position, columns, b, terms.sum(axis=0)),
-        },
-    }
-
-
-def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
-    from ..features.describe import describe, describe_situation, named, situation_of
-
-    peers = styles.xs(position, level="position")
-    keep = [index for index, cell in enumerate(columns) if named(cell)]
-    order = sorted(keep, key=lambda index: -abs(z[index]))[:DISTINCTIVE]
-    distinctive = [
-        {
-            "cell": columns[index],
-            "words": describe(columns[index]),
-            "z": round(float(z[index]), 3),
-            "percentile": round(float((peers[columns[index]].to_numpy(dtype=float) < z[index]).mean() * 100.0), 1),
-        }
-        for index in order
-    ]
-    by_situation: dict[str, float] = {}
-    for index in keep:
-        situation = situation_of(columns[index])
-        by_situation[situation] = by_situation.get(situation, 0.0) + float(contributions[index])
-    ranked = sorted(by_situation.items(), key=lambda item: item[1])
-    helping = [item for item in reversed(ranked) if item[1] > 0.0][:DISTINCTIVE]
-    hurting = [item for item in ranked if item[1] < 0.0][:DISTINCTIVE]
-    situations = [
-        {"situation": situation, "words": describe_situation(situation), "contribution": round(amount, 6)}
-        for situation, amount in [*helping, *hurting]
-    ]
-    return {"distinctive": distinctive, "situations": situations}
-
-
-def lineup_between(assignments: dict[str, str], settings: Settings | None = None) -> dict | None:
-    settings = settings or get_settings()
-    if set(assignments) != set(POSITIONS) or len(set(assignments.values())) != len(POSITIONS):
-        raise ValueError("a lineup names one distinct player for each of TOP, JUNGLE, MIDDLE, BOTTOM and UTILITY")
-    pairs = []
-    for (left_position, left), (right_position, right) in combinations(
-        [(position, assignments[position]) for position in POSITIONS], 2
-    ):
-        found = pair_between(left, left_position, right, right_position, settings)
-        if found is None:
-            return None
-        pairs.append({"left": left, "right": right, **{k: v for k, v in found.items() if k not in ("drivers", "reading")}})
-    total = float(sum(pair["synergy"] for pair in pairs))
-    reliable = _informative(settings)
-    return {
-        "synergy": round(total, 6),
-        "percentile": _percentile(total, np.load(settings.model_dir / "interaction_scores.npz"), "team_quantiles", None),
-        "reliable": reliable,
-        "note": None if reliable else UNRELIABLE,
-        "pairs": sorted(pairs, key=lambda pair: -pair["synergy"]),
-    }

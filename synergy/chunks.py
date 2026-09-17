@@ -12,6 +12,8 @@ class ChunkWriter:
         self.path = path
         self.chunk = chunk
         self.buffer: list[dict] = []
+        self.frames: list[pd.DataFrame] = []
+        self.framed = 0
         self.writer: pq.ParquetWriter | None = None
         self.schema: pa.Schema | None = None
         self.rows = 0
@@ -20,14 +22,30 @@ class ChunkWriter:
         if not records:
             return
         self.buffer.extend(records)
-        if len(self.buffer) >= self.chunk:
+        if len(self.buffer) + self.framed >= self.chunk:
             self.flush()
 
-    def flush(self) -> None:
-        if not self.buffer:
+    def add_frame(self, frame: pd.DataFrame) -> None:
+        if frame.empty:
             return
-        frame = pd.DataFrame(self.buffer)
-        self.buffer = []
+        if self.buffer:
+            self.frames.append(pd.DataFrame(self.buffer))
+            self.framed += len(self.buffer)
+            self.buffer = []
+        self.frames.append(frame)
+        self.framed += len(frame)
+        if self.framed >= self.chunk:
+            self.flush()
+
+    def _pending(self) -> pd.DataFrame:
+        frames = self.frames + ([pd.DataFrame(self.buffer)] if self.buffer else [])
+        self.buffer, self.frames, self.framed = [], [], 0
+        return frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+
+    def flush(self) -> None:
+        if not self.buffer and not self.frames:
+            return
+        frame = self._pending()
         if self.writer is None:
             table = pa.Table.from_pandas(frame, preserve_index=False)
             self.schema = table.schema

@@ -69,3 +69,41 @@ def corpus_settings(tmp_path_factory, database_url) -> Settings:
 @pytest.fixture(scope="session")
 def tables(corpus_settings):
     return build_tables(corpus_settings)
+
+
+@pytest.fixture
+def serving_settings(tmp_path) -> Settings:
+    import numpy as np
+    import pandas as pd
+
+    from synergy.ml.serving import TEAM_PAIRS
+
+    settings = Settings(data_dir=tmp_path)
+    settings.ensure_dirs()
+    np.savez(
+        settings.model_dir / "interaction_matrix.npz",
+        matrix=np.array([[1.0, 0.0], [0.0, -1.0]]),
+        columns=np.array(["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]),
+        centre=np.zeros(2),
+        spread=np.ones(2),
+    )
+    pd.DataFrame(
+        {
+            "puuid": ["a", "a", "b", "c", "d", "e"],
+            "position": ["TOP", "JUNGLE", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"],
+            "tend_dive_tmb_own": [1.0, 0.0, 1.0, 0.0, 1.0, 0.5],
+            "rsp_kill_ours_near_converged": [0.0, 1.0, 0.0, 1.0, 0.0, 0.5],
+            "seats": [5, 1, 7, 2, 3, 4],
+            "evidence": [0.8, 0.1, 0.9, 0.4, 0.6, 0.7],
+        }
+    ).to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
+    grid = np.linspace(-1.0, 1.0, 1001) / (TEAM_PAIRS * 2)
+    np.savez(
+        settings.model_dir / "interaction_scores.npz",
+        quantiles=grid,
+        combos=np.array(["JUNGLE+TOP", "MIDDLE+TOP"]),
+        combo_quantiles=np.stack([grid, grid * 4.0]),
+        team_quantiles=grid * 10.0,
+        gold_sd=5000.0,
+    )
+    return settings

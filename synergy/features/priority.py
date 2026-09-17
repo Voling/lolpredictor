@@ -154,8 +154,40 @@ def lane_counts(seat: dict, lane: dict, blue_of, roles, objective_ticks: np.ndar
     return rows
 
 
-def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) -> tuple[list[dict], list[dict]]:
-    seat_of = {puuid: index + 1 for index, puuid in enumerate(match["puuid"])}
+def _finite(values: np.ndarray) -> np.ndarray:
+    return np.where(np.isfinite(values), values, np.nan).astype(np.float64).ravel()
+
+
+def track_frame(match: dict, smoothed: dict, lane: dict, filtered: dict) -> pd.DataFrame:
+    ticks = len(TICKS)
+    return pd.DataFrame({
+        "match_id": np.full(SEATS * ticks, match["match_id"], dtype=object),
+        "puuid": np.repeat(np.array(match["puuid"], dtype=object), ticks),
+        "tick": np.tile(TICKS.astype(np.float64), SEATS),
+        "region": smoothed["region"].astype(np.int64).ravel() - 1,
+        "region_p": smoothed["region_p"].astype(np.float64).ravel(),
+        "u_mean": smoothed["u_mean"].astype(np.float64).ravel(),
+        "u_sd": np.sqrt(smoothed["u_var"]).astype(np.float64).ravel(),
+        "in_lane": smoothed["in_lane"].astype(np.float64).ravel(),
+        "prio": _finite(lane["prio"]),
+        "prio_filtered": _finite(filtered["prio"]),
+        "push": smoothed["push"].astype(np.float64).ravel(),
+        "defensive": smoothed["defensive"].astype(np.float64).ravel(),
+        "alive": smoothed["alive"].astype(bool).ravel(),
+    })
+
+
+def count_frame(match: dict, rows: list[tuple]) -> pd.DataFrame:
+    return pd.DataFrame({
+        "match_id": np.full(len(rows), match["match_id"], dtype=object),
+        "puuid": np.array(match["puuid"], dtype=object)[np.array([row[0] for row in rows], dtype=np.int64)],
+        "situation": np.array([row[1] for row in rows], dtype=object),
+        "outcome": np.array([row[2] for row in rows], dtype=object),
+        "count": np.array([row[3] for row in rows], dtype=np.float64),
+    })
+
+
+def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     blue_of = [1 if team == 100 else 0 for team in match["team"]]
     roles = match["position"]
     points, spans = _seat_points(match, spot, events)
@@ -169,29 +201,13 @@ def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) ->
             when = float(stamp or 0) / 60000.0
             objective_ticks |= (TICKS >= when - OBJECTIVE_WINDOW) & (TICKS < when)
 
-    track = []
-    for seat in range(SEATS):
-        puuid = match["puuid"][seat]
-        for index in range(len(TICKS)):
-            prio, held = lane["prio"][seat, index], filtered["prio"][seat, index]
-            track.append({
-                "match_id": match["match_id"], "puuid": puuid, "tick": float(TICKS[index]),
-                "region": int(smoothed["region"][seat, index]) - 1, "region_p": float(smoothed["region_p"][seat, index]),
-                "u_mean": float(smoothed["u_mean"][seat, index]), "u_sd": float(np.sqrt(smoothed["u_var"][seat, index])),
-                "in_lane": float(smoothed["in_lane"][seat, index]),
-                "prio": float(prio) if np.isfinite(prio) else None,
-                "prio_filtered": float(held) if np.isfinite(held) else None,
-                "push": float(smoothed["push"][seat, index]), "defensive": float(smoothed["defensive"][seat, index]),
-                "alive": bool(smoothed["alive"][seat, index]),
-            })
-    counts = [
-        {"match_id": match["match_id"], "puuid": match["puuid"][s], "situation": situation, "outcome": outcome, "count": count}
-        for s, situation, outcome, count in lane_counts(smoothed, lane, blue_of, roles, objective_ticks)
-    ]
-    return track, counts
+    return (
+        track_frame(match, smoothed, lane, filtered),
+        count_frame(match, lane_counts(smoothed, lane, blue_of, roles, objective_ticks)),
+    )
 
 
-def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, list[dict]]:
+def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, pd.DataFrame]:
     seats = seat_table(settings, match_ids)
     wanted = sorted(seats)
     tracks = frame_tracks(settings, wanted, seats)
@@ -200,17 +216,18 @@ def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, l
     shards = settings.processed_dir / "shards"
     shards.mkdir(parents=True, exist_ok=True)
     writer = ChunkWriter(shards / f"positions_10s.{shard:03d}.parquet")
-    counts: list[dict] = []
+    counts: list[pd.DataFrame] = []
     for match_id in wanted:
         spot = tracks.get(match_id)
         if spot is None:
             continue
         match = dict(seats[match_id], match_id=match_id)
         rows, found = match_priority(match, spot, grouped.get(match_id, []), sigma)
-        writer.add(rows)
-        counts.extend(found)
+        writer.add_frame(rows)
+        counts.append(found)
     writer.close()
-    return str(writer.path), counts
+    empty = count_frame({"match_id": None, "puuid": []}, [])
+    return str(writer.path), pd.concat(counts, ignore_index=True) if counts else empty
 
 
 def build_priority(settings: Settings | None = None, workers: int = WORKERS, limit: int | None = None) -> dict:
@@ -229,13 +246,14 @@ def build_priority(settings: Settings | None = None, workers: int = WORKERS, lim
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for path, found in pool.map(_shard, [settings] * len(chunks), chunks, range(len(chunks))):
             parts.append(path)
-            counts.extend(found)
+            counts.append(found)
     rows = merge([Path(p) for p in parts], settings.processed_dir / TRACK)
     for part in parts:
         Path(part).unlink(missing_ok=True)
     seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"])
     seats = seats[seats.match_id.isin(set(match_ids))]
-    counted = pd.DataFrame(counts)
+    counted = pd.concat(counts, ignore_index=True)
+    counts.clear()
     table, report = cell_block(counted, seats, SITUATIONS, OUTCOMES, "prio")
     table.to_parquet(settings.processed_dir / TABLE, index=False)
     evidence = evidence_share(counted, seats, SITUATIONS, {situation: report[situation]["kappa"] for situation in SITUATIONS})

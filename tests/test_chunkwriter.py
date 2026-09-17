@@ -94,3 +94,37 @@ def test_the_build_returns_frames_for_participations_and_pairs_not_counts(tables
     assert isinstance(tables["participations"], pd.DataFrame)
     assert isinstance(tables["pairs"], pd.DataFrame)
     assert isinstance(tables["policy"], int)
+
+
+def test_frames_write_the_same_file_as_the_records_they_hold(tmp_path):
+    # given
+    records = [{"m": "x", "v": float(i), "p": None if i % 3 else float(i), "n": i, "b": i % 2 == 0} for i in range(7)]
+    by_records, by_frames = ChunkWriter(tmp_path / "records.parquet", chunk=3), ChunkWriter(tmp_path / "frames.parquet", chunk=3)
+
+    # when
+    for start in range(0, 7, 2):
+        by_records.add(records[start : start + 2])
+        by_frames.add_frame(pd.DataFrame(records[start : start + 2]))
+    counted = (by_records.close(), by_frames.close())
+
+    # then
+    import pyarrow.parquet as pq
+
+    assert counted == (7, 7)
+    assert pq.read_schema(tmp_path / "records.parquet").equals(pq.read_schema(tmp_path / "frames.parquet"), check_metadata=True)
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "records.parquet"), pd.read_parquet(tmp_path / "frames.parquet"))
+
+
+def test_records_and_frames_mixed_keep_their_order(tmp_path):
+    # given
+    writer = ChunkWriter(tmp_path / "out.parquet", chunk=100)
+
+    # when
+    writer.add([{"a": 1.0}])
+    writer.add_frame(pd.DataFrame({"a": [2.0, 3.0]}))
+    writer.add([{"a": 4.0}])
+    writer.add_frame(pd.DataFrame({"a": [5.0]}))
+    writer.close()
+
+    # then
+    assert pd.read_parquet(tmp_path / "out.parquet")["a"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]

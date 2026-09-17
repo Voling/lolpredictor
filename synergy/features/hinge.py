@@ -62,17 +62,3 @@ def load_hinge(settings: Settings | None = None) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=["responder", "actor", *HINGE_COLUMNS])
     return pd.read_parquet(path)
-
-
-def hinge_between(left: str, right: str, settings: Settings | None = None) -> dict:
-    table = load_hinge(settings).set_index(["responder", "actor"])
-    out = {}
-    for responder, actor, label in ((left, right, "left_reacts_to_right"), (right, left, "right_reacts_to_left")):
-        if (responder, actor) in table.index:
-            row = table.loc[(responder, actor)]
-            out[label] = {name: round(float(row[f"hinge_{name}"]), 3) for name in RESPONSES} | {
-                "triggers": int(row.hinge_triggers)
-            }
-        else:
-            out[label] = None
-    return out

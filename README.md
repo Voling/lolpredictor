@@ -412,9 +412,9 @@ sustains roughly 50 requests a minute, and the defaults in `.env.example` fit a 
 | `GET /api/players/?q=&limit=` | Known players, most-seen first |
 | `GET /api/players/<riot id or puuid>/` | Profile, style percentiles, behavioural traits, dashboard series |
 | `GET /api/partners/<riot id or puuid>/?limit=` | Best and worst modelled partners |
-| `GET /api/pair/?a=&b=&a_position=&b_position=` | One pairing in the given positions: score, drivers, shared play, projected gold at 15, the hinge from shared games, the interaction percentile within that position pair |
+| `GET /api/pair/?a=&b=&a_position=&b_position=` | One pairing in the given positions: a 0 to 100 score where 50 is the average pair in that position pair, the synergy as gold at 15, and below them the interaction percentile, each player's reading, evidence warnings, games together and the hinge from shared games |
 | `POST /api/team/` | `{"players": [...]}` up to five, returns the pairwise matrix and group score |
-| `POST /api/lineup/` | `{"players": {"top": ..., "jungle": ..., "mid": ..., "bot": ..., "support": ...}}`, the ten pairs and the team's rank against every corpus team |
+| `POST /api/lineup/` | `{"players": {"top": ..., "jungle": ..., "mid": ..., "bot": ..., "support": ...}}`, the ten pairs with their scores, then the team's score, gold at 15 and rank against every corpus team |
 | `POST /api/reload/` | Reload profiles and model from disk after a retrain |
 
 ## Data on disk

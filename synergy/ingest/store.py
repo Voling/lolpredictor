@@ -415,6 +415,16 @@ class Store:
             )
             return cursor.fetchone()
 
+    def riot_ids(self) -> list[dict]:
+        with self.conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT puuid, game_name, tag_line, TRUE AS current FROM players"
+                " WHERE game_name IS NOT NULL AND tag_line IS NOT NULL"
+                " UNION ALL SELECT puuid, game_name, tag_line, FALSE AS current FROM player_names"
+                " WHERE game_name IS NOT NULL AND tag_line IS NOT NULL"
+            )
+            return cursor.fetchall()
+
     def players(self) -> list[dict]:
         with self.conn.cursor() as cursor:
             cursor.execute("SELECT * FROM players")

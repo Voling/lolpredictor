@@ -1,8 +1,17 @@
 import numpy as np
-import pandas as pd
 
 from synergy.features.posterior import DEFAULT_TABLE, bridge_at, progress_moments
-from synergy.features.priority import OUTCOMES, PRIORITY_COLUMNS, SITUATIONS, band_weights, lane_counts, lane_priority
+from synergy.features.priority import (
+    OUTCOMES,
+    PRIORITY_COLUMNS,
+    SITUATIONS,
+    TICKS,
+    band_weights,
+    count_frame,
+    lane_counts,
+    lane_priority,
+    track_frame,
+)
 
 
 def test_priority_goes_to_the_side_whose_lane_front_sits_on_the_enemy_half():
@@ -98,3 +107,42 @@ def test_lane_counts_spread_a_laners_ticks_over_the_joint_cells_and_sum_to_the_t
     assert np.isclose(top[("all", "off_lane")], 0.2 * ticks)
     assert not any(situation == "pre_objective" for (situation, _) in top)
     assert len(PRIORITY_COLUMNS) == len(SITUATIONS) * len(OUTCOMES) == 124
+
+
+def test_the_track_runs_seat_by_seat_then_tick_by_tick_and_leaves_unknown_priority_missing():
+    # given
+    ticks = len(TICKS)
+    rng = np.random.default_rng(2)
+    smoothed = {
+        "u_mean": rng.random((10, ticks)), "u_var": rng.random((10, ticks)), "in_lane": rng.random((10, ticks)),
+        "alive": rng.random((10, ticks)) > 0.2, "push": rng.random((10, ticks)), "defensive": rng.random((10, ticks)),
+        "region": rng.integers(0, 20, (10, ticks)).astype(np.int8), "region_p": rng.random((10, ticks)).astype(np.float16),
+    }
+    lane = {"prio": np.where(rng.random((10, ticks)) > 0.5, rng.random((10, ticks)), np.nan)}
+    filtered = {"prio": np.full((10, ticks), np.nan)}
+    match = {"match_id": "m", "puuid": [f"p{seat}" for seat in range(10)]}
+
+    # when
+    track = track_frame(match, smoothed, lane, filtered)
+
+    # then
+    assert len(track) == 10 * ticks
+    assert track["puuid"].iloc[ticks] == "p1" and track["tick"].iloc[ticks + 1] == TICKS[1]
+    assert track["region"].iloc[5] == int(smoothed["region"][0, 5]) - 1
+    assert track["prio"].isna().tolist() == np.isnan(lane["prio"]).ravel().tolist()
+    assert track["prio_filtered"].isna().all()
+    assert track.dtypes.astype(str).tolist() == ["object", "object", "float64", "int64"] + ["float64"] * 8 + ["bool"]
+
+
+def test_counts_name_the_seat_player_for_every_row():
+    # given
+    match = {"match_id": "m", "puuid": [f"p{seat}" for seat in range(10)]}
+    rows = [(0, "all", "off_lane", 3.0), (7, "pre_objective", "dead", 1.5)]
+
+    # when
+    counts = count_frame(match, rows)
+
+    # then
+    assert counts["puuid"].tolist() == ["p0", "p7"]
+    assert counts["count"].dtype == np.float64
+    assert list(counts.columns) == ["match_id", "puuid", "situation", "outcome", "count"]

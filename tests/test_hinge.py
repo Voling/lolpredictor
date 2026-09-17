@@ -1,7 +1,8 @@
 import pandas as pd
 
 from synergy.config import Settings
-from synergy.features.hinge import build_hinge, hinge_between
+from synergy.features.hinge import build_hinge
+from synergy.ml.serving import hinge_between
 
 
 def _responses(rows: list[tuple]) -> pd.DataFrame:

@@ -1,18 +1,13 @@
 import numpy as np
-import pandas as pd
-import pytest
 
 from synergy.ml.interaction import (
     TEAM_PAIRS,
     TEAM_SIZE,
-    NoGamesInPosition,
     _crossed,
     _dense,
     _selves,
     fully_seated,
-    lineup_between,
-    pair_between,
-    position_profile,
+    shuffle_seats,
     sides,
     standardise,
 )
@@ -89,6 +84,34 @@ def test_sides_splits_blue_and_red_in_seat_order():
     assert red[0, :, 0].tolist() == [2, 6, 10, 14, 18]
 
 
+def test_shuffling_seats_into_a_buffer_draws_the_same_permutations_as_stacking():
+    # given
+    team = np.random.default_rng(3).normal(size=(9, TEAM_SIZE, 4)).astype(np.float32)
+    stacked_rng, buffered_rng = np.random.default_rng(7), np.random.default_rng(7)
+
+    # when
+    stacked = np.stack([team[stacked_rng.permutation(len(team)), seat] for seat in range(TEAM_SIZE)], axis=1)
+    buffered = shuffle_seats(team, buffered_rng, np.empty_like(team))
+
+    # then
+    assert np.array_equal(stacked, buffered)
+    assert stacked_rng.random() == buffered_rng.random()
+
+
+def test_standardise_leaves_its_input_untouched():
+    # given
+    encoding = np.array([[[1.0, np.nan]], [[3.0, 4.0]]], dtype=np.float32)
+    before = encoding.copy()
+
+    # when
+    reduced, _, _ = standardise(encoding, np.array([0, 1]))
+
+    # then
+    assert reduced.dtype == np.float32
+    assert np.array_equal(encoding, before, equal_nan=True)
+    assert not np.shares_memory(encoding, reduced)
+
+
 def test_a_match_with_any_seat_missing_a_position_is_dropped_from_the_fit():
     # given
     positions = np.array(
@@ -104,99 +127,3 @@ def test_a_match_with_any_seat_missing_a_position_is_dropped_from_the_fit():
 
     # then
     assert keep.tolist() == [True, False, False]
-
-
-def _fitted(tmp_path):
-    from synergy.config import Settings
-
-    settings = Settings(data_dir=tmp_path)
-    settings.ensure_dirs()
-    np.savez(
-        settings.model_dir / "interaction_matrix.npz",
-        matrix=np.array([[1.0, 0.0], [0.0, -1.0]]),
-        columns=np.array(["tend_dive_high_own", "rsp_kill_ours_near_converged"]),
-        centre=np.zeros(2), spread=np.ones(2),
-    )
-    pd.DataFrame(
-        {
-            "puuid": ["a", "a", "b", "c", "d", "e"],
-            "position": ["TOP", "JUNGLE", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"],
-            "tend_dive_high_own": [1.0, 0.0, 1.0, 0.0, 1.0, 0.5],
-            "rsp_kill_ours_near_converged": [0.0, 1.0, 0.0, 1.0, 0.0, 0.5],
-            "seats": [5, 1, 7, 2, 3, 4],
-            "evidence": [0.8, 0.1, 0.9, 0.4, 0.6, 0.7],
-        }
-    ).to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
-    grid = np.linspace(-1.0, 1.0, 1001) / (TEAM_PAIRS * 2)
-    np.savez(
-        settings.model_dir / "interaction_scores.npz",
-        quantiles=grid, combos=np.array(["JUNGLE+TOP", "MIDDLE+TOP"]),
-        combo_quantiles=np.stack([grid, grid * 4.0]), team_quantiles=grid * 10.0,
-    )
-    return settings
-
-
-def test_pair_between_reads_each_player_in_the_given_position_and_ranks_within_the_position_pair(tmp_path):
-    # given
-    settings = _fitted(tmp_path)
-
-    # when
-    alike = pair_between("a", "TOP", "b", "JUNGLE", settings)
-    unrelated = pair_between("a", "TOP", "c", "MIDDLE", settings)
-    off_role = pair_between("a", "JUNGLE", "c", "MIDDLE", settings)
-
-    # then
-    assert alike["synergy"] > 0 and alike["percentile"] > 50
-    assert alike["drivers"][0]["left"] == "tend_dive_high_own" and alike["drivers"][0]["right"] == "tend_dive_high_own"
-    assert alike["left_games"] == 5 and alike["right_games"] == 7
-    assert alike["positions"] == {"left": "TOP", "right": "JUNGLE"}
-    assert unrelated["synergy"] == 0.0
-    assert off_role["synergy"] < 0 and off_role["left_games"] == 1
-    assert alike["reliable"] is False and "inspection only" in alike["note"]
-    reading = alike["reading"]["left"]
-    assert reading["distinctive"][0]["cell"] == "tend_dive_high_own" and "dives" in reading["distinctive"][0]["words"]
-    assert reading["distinctive"][0]["percentile"] == 0.0
-    assert np.isclose(sum(item["contribution"] for item in reading["situations"]), alike["synergy"], atol=1e-5)
-    assert reading["situations"][0]["words"] == "diving"
-    (settings.model_dir / "interaction_report.json").write_text('{"informative": true}', encoding="utf-8")
-    assert pair_between("a", "TOP", "b", "JUNGLE", settings)["reliable"] is True
-
-
-def test_pair_between_refuses_a_shared_position_and_a_position_never_played(tmp_path):
-    # given
-    from synergy.config import Settings
-
-    settings = _fitted(tmp_path)
-
-    # when
-    with pytest.raises(ValueError) as shared:
-        pair_between("a", "TOP", "b", "TOP", settings)
-    with pytest.raises(NoGamesInPosition) as never:
-        pair_between("a", "TOP", "b", "UTILITY", settings)
-
-    # then
-    assert "two different positions" in str(shared.value)
-    assert never.value.position == "UTILITY" and "no games as UTILITY" in str(never.value)
-    assert position_profile("b", "UTILITY", settings) == {"games": 0, "evidence": 0.0}
-    assert position_profile("b", "JUNGLE", settings) == {"games": 7, "evidence": 0.9}
-    assert position_profile("b", "JUNGLE", Settings(data_dir=tmp_path / "empty")) is None
-    assert pair_between("a", "TOP", "b", "JUNGLE", settings)["right_evidence"] == 0.9
-
-
-def test_a_lineup_sums_its_ten_pairs_and_ranks_against_corpus_teams(tmp_path):
-    # given
-    settings = _fitted(tmp_path)
-    five = {"TOP": "a", "JUNGLE": "b", "MIDDLE": "c", "BOTTOM": "d", "UTILITY": "e"}
-
-    # when
-    result = lineup_between(five, settings)
-    with pytest.raises(ValueError):
-        lineup_between({**five, "UTILITY": "a"}, settings)
-    with pytest.raises(ValueError):
-        lineup_between({key: value for key, value in five.items() if key != "UTILITY"}, settings)
-
-    # then
-    assert len(result["pairs"]) == 10
-    assert np.isclose(result["synergy"], sum(pair["synergy"] for pair in result["pairs"]), atol=1e-5)
-    assert 0.0 <= result["percentile"] <= 100.0
-    assert result["pairs"][0]["synergy"] >= result["pairs"][-1]["synergy"]

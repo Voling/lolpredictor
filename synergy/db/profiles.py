@@ -1,5 +1,8 @@
+import pandas as pd
+
 from ..config import Settings, get_settings
 from ..ingest.store import Store
+from ..ml.serving import NAMES_TABLE
 
 TOP_CHAMPIONS = 5
 
@@ -131,7 +134,11 @@ def build_profiles(settings: Settings | None = None) -> dict:
                 " FROM player_profiles"
             )
             summary = dict(cursor.fetchone())
+        names = pd.DataFrame(store.riot_ids(), columns=["puuid", "game_name", "tag_line", "current"])
     finally:
         store.close()
+    settings.processed_dir.mkdir(parents=True, exist_ok=True)
+    names.to_parquet(settings.processed_dir / NAMES_TABLE, index=False)
     summary["written"] = int(written)
+    summary["riot_ids"] = int(len(names))
     return summary

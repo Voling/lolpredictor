@@ -6,38 +6,23 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
-from ..features.hinge import hinge_between
 from ..features.positions import parse_position
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
+from .serving import hinge_between, known_names, lineup_between, pair_between, position_profile
 
 logger = logging.getLogger(__name__)
 
-AXIS_LABELS = {
-    "invading": "invading the enemy jungle",
-    "jungle_support": "covering the ally jungle",
-    "aggression": "damage traded",
-    "frontline": "damage absorbed",
-    "teamfighting": "fighting in numbers",
-    "vision": "vision control",
-    "farming": "farming",
-    "tempo": "recall and item tempo",
-    "lane_focus": "staying in lane",
-    "shared_history": "games played together",
-    "initiate": "starts invades",
-    "follow": "follows invades",
-    "defend": "answers invasions",
-    "dive": "dives under turret",
-    "fight_join": "shows up to fights",
-}
 STYLE_COLUMNS = [f"style_{name}" for name in STYLE_NAMES]
 STYLE_SUFFIXES = ("_pct", "_var")
 UNINFORMATIVE = (
     "the pair model found no usable synergy signal in this corpus, so no score is reported"
 )
+NOT_FITTED = "the pair matrix is not fitted yet"
+NO_POSITIONS = "the two players share a main position, so no position pair was read"
 THIN = (
     "{name}'s {position} playstyle is {own}% their own evidence from {games} {noun} and {rest}% the"
     " {position} corpus row, so this score says little about them"
@@ -139,20 +124,25 @@ class SynergyService:
         return found.iloc[0]
 
     def _resolve_alias(self, query: str) -> pd.Series:
-        from ..ingest.store import Store
-
         _, profiles = self._require()
         if "#" not in query:
             raise UnknownPlayer(query)
         name, tag = split_riot_id(query)
+        names = known_names(self.settings)
+        puuid = names.get((name.lower(), tag.lower())) if names is not None else self._alias_in_database(name, tag)
+        if puuid is None or puuid not in profiles.index:
+            raise UnknownPlayer(query)
+        return profiles.loc[puuid]
+
+    def _alias_in_database(self, name: str, tag: str) -> str | None:
+        from ..ingest.store import Store
+
         store = Store(self.settings)
         try:
             player = store.find_player_by_riot_id(name, tag)
         finally:
             store.close()
-        if not player or player["puuid"] not in profiles.index:
-            raise UnknownPlayer(query)
-        return profiles.loc[player["puuid"]]
+        return player["puuid"] if player else None
 
     def search(self, term: str = "", limit: int = 25) -> list[dict]:
         _, profiles = self._require()
@@ -206,22 +196,6 @@ class SynergyService:
         history = self._history_rows(anchor["puuid"], others["puuid"].tolist())
         return phi_from_styles(left, right, history)
 
-    def _describe(self, contributions: list[dict], a: pd.Series, b: pd.Series) -> list[dict]:
-        described = []
-        for item in contributions:
-            axis = item["axis"]
-            entry = {
-                "axis": axis,
-                "label": AXIS_LABELS.get(axis, axis),
-                "impact": round(item["impact"], 4),
-                "direction": "positive" if item["impact"] >= 0 else "negative",
-            }
-            if axis in STYLE_NAMES:
-                entry["player_a"] = round(float(a.get(f"style_{axis}_pct", 50.0)), 1)
-                entry["player_b"] = round(float(b.get(f"style_{axis}_pct", 50.0)), 1)
-            described.append(entry)
-        return described
-
     def _positions(self, a: pd.Series, b: pd.Series, left: str | None, right: str | None, required: bool) -> dict | None:
         chosen = {
             "left": parse_position(left) if left else str(a.get("main_position") or ""),
@@ -236,9 +210,7 @@ class SynergyService:
             " positions, pass the position each will play"
         )
 
-    def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None) -> dict | None:
-        from .interaction import pair_between, position_profile
-
+    def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True) -> dict | None:
         if positions is None:
             return None
         for profile, side in ((a, "left"), (b, "right")):
@@ -246,6 +218,8 @@ class SynergyService:
             if known is None:
                 return None
             if known["games"] == 0:
+                if not required:
+                    return None
                 raise ValueError(f"{riot_id(profile)} has no games as {positions[side]} in the corpus")
         return pair_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
 
@@ -270,33 +244,27 @@ class SynergyService:
         right_position: str | None = None,
         positions_required: bool = True,
     ) -> dict:
-        model, _ = self._require()
+        self._require()
         a = self.resolve(left)
         b = self.resolve(right)
         if a["puuid"] == b["puuid"]:
             raise ValueError("a player cannot be paired with themselves")
         positions = self._positions(a, b, left_position, right_position, positions_required)
-        phi = self.build_phi(a, b.to_frame().T)
-        synergy = float(model.synergy(phi)[0])
-        score = float(model.score(synergy)[0])
         history = self._pair_history(a["puuid"], b["puuid"])
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
-        informative = model.informative
-        interaction = self._interaction(a, b, positions)
+        interaction = self._interaction(a, b, positions, positions_required)
         return {
-            "score": round(score, 1) if informative else None,
-            "reliable": informative,
-            "note": None if informative else UNINFORMATIVE,
+            "score": interaction["score"] if interaction else None,
+            "projected_gold_at_15": interaction["projected_gold_at_15"] if interaction else None,
+            "reliable": bool(interaction and interaction["reliable"]),
+            "note": interaction["note"] if interaction else (NOT_FITTED if positions else NO_POSITIONS),
             "warnings": self._warnings(a, b, interaction),
-            "synergy": round(synergy, 5),
-            "projected_gold_at_15": round(synergy * float(model.report.advantage_sd), 0),
             "games_together": games,
             "winrate_together": round(wins / games, 4) if games else None,
             "positions": positions,
             "hinge": hinge_between(a["puuid"], b["puuid"], self.settings),
             "interaction": interaction,
-            "drivers": self._describe(model.explain(phi), a, b) if informative else [],
             "players": [self.player_summary(a), self.player_summary(b)],
             "shared_play": {
                 key: round(float(history[key]), 4)
@@ -350,30 +318,34 @@ class SynergyService:
         entries = []
         for left, right in combinations(range(len(profiles)), 2):
             result = self.pair_score(profiles[left]["puuid"], profiles[right]["puuid"], positions_required=False)
+            interaction = result["interaction"]
             entries.append(
                 {
                     "a": profiles[left]["puuid"],
                     "b": profiles[right]["puuid"],
                     "a_riot_id": riot_id(profiles[left]),
                     "b_riot_id": riot_id(profiles[right]),
+                    "positions": result["positions"],
                     "score": result["score"],
+                    "projected_gold_at_15": result["projected_gold_at_15"],
+                    "percentile": interaction["percentile"] if interaction else None,
+                    "reliable": result["reliable"],
                     "games_together": result["games_together"],
-                    "drivers": result["drivers"][:3],
                 }
             )
-        scores = [entry["score"] for entry in entries if entry["score"] is not None]
+        scored = [entry for entry in entries if entry["score"] is not None]
+        complete = bool(scored) and len(scored) == len(entries)
+        reliable = complete and all(entry["reliable"] for entry in scored)
         return {
-            "team_score": round(float(np.mean(scores)), 1) if scores else None,
-            "reliable": bool(scores),
-            "strongest": max(entries, key=lambda item: item["score"] or 0) if scores else None,
-            "weakest": min(entries, key=lambda item: item["score"] or 0) if scores else None,
+            "team_score": round(float(np.mean([entry["score"] for entry in scored])), 1) if complete else None,
+            "reliable": reliable,
+            "strongest": max(scored, key=lambda item: item["score"]) if complete else None,
+            "weakest": min(scored, key=lambda item: item["score"]) if complete else None,
             "pairs": entries,
             "players": [self.player_summary(profile) for profile in profiles],
         }
 
     def lineup(self, players: dict[str, str]) -> dict:
-        from .interaction import lineup_between, position_profile
-
         self._require()
         assignments = {parse_position(position): self.resolve(query) for position, query in players.items()}
         if len(assignments) != len(players):
@@ -386,7 +358,7 @@ class SynergyService:
         for position, profile in assignments.items():
             known = position_profile(profile["puuid"], position, self.settings)
             if known is None:
-                return {"reliable": False, "note": "the pair matrix is not fitted yet", "players": summaries}
+                return {"reliable": False, "note": NOT_FITTED, "players": summaries}
             if known["games"] == 0:
                 raise ValueError(f"{riot_id(profile)} has no games as {position} in the corpus")
             warning = thin_warning(riot_id(profile), position, known["games"], known["evidence"])
@@ -394,7 +366,7 @@ class SynergyService:
                 warnings.append(warning)
         result = lineup_between({position: profile["puuid"] for position, profile in assignments.items()}, self.settings)
         if result is None:
-            return {"reliable": False, "note": "the pair matrix is not fitted yet", "players": summaries}
+            return {"reliable": False, "note": NOT_FITTED, "players": summaries}
         for pair in result["pairs"]:
             pair["left"], pair["right"] = names[pair["left"]], names[pair["right"]]
         return {**result, "warnings": warnings, "players": summaries}
