@@ -27,6 +27,7 @@ DEAD_SPREAD = 1e-3
 EVENT_VALUES = {"kill": 450.0, "plate": 175.0, "building": 300.0}
 TARGETS = ("gold", "events")
 SEATS_FILE = "seat_weights.npz"
+SEAT_REPORT_FILE = "seat_report.json"
 GOLD_QUERY = (
     "SELECT f.match_id, p.puuid, sum(f.total_gold) AS gold FROM frames f"
     " JOIN participations p ON p.match_id = f.match_id AND p.puuid = f.puuid"
@@ -487,4 +488,11 @@ def fit_positions(
         columns=np.array(columns),
         positions=np.array(list(POSITIONS)),
     )
-    return {"held_out": held, "matches": int(sound.sum()), "columns": len(columns)}
+    report = {
+        "held_out": held,
+        "scale": {name: round(float(scale[index]), 3) for index, name in enumerate(POSITIONS)},
+        "matches": int(sound.sum()),
+        "columns": len(columns),
+    }
+    (settings.model_dir / SEAT_REPORT_FILE).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report

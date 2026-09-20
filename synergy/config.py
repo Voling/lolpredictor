@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,6 +121,36 @@ class Settings:
     @property
     def model_dir(self) -> Path:
         return self.data_dir / "models"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.data_dir / "runs"
+
+    @property
+    def pointer_path(self) -> Path:
+        return self.data_dir / "serve" / "current.json"
+
+    def served_run(self) -> str | None:
+        try:
+            return json.loads(self.pointer_path.read_text(encoding="utf-8")).get("run")
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def _served(self, kind: str, fallback: Path) -> Path:
+        run = self.served_run()
+        if run:
+            path = self.runs_dir / run / "serve" / kind
+            if path.is_dir():
+                return path
+        return fallback
+
+    @property
+    def served_model_dir(self) -> Path:
+        return self._served("models", self.model_dir)
+
+    @property
+    def served_processed_dir(self) -> Path:
+        return self._served("processed", self.processed_dir)
 
     @property
     def tier_floor(self) -> int:

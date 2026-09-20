@@ -72,7 +72,7 @@ def _name_index(path: Path) -> dict[tuple[str, str], str]:
 
 
 def _styles(settings: Settings) -> pd.DataFrame | None:
-    return cached(settings.processed_dir / "player_styles.parquet", "styles", _indexed_styles)
+    return cached(settings.served_processed_dir / "player_styles.parquet", "styles", _indexed_styles)
 
 
 def _style_rows(path: Path, columns: list[str]) -> dict:
@@ -85,28 +85,28 @@ def _style_rows(path: Path, columns: list[str]) -> dict:
 
 def _vectors(settings: Settings, columns: list[str]) -> dict | None:
     kind = f"vectors:{len(columns)}:{hash(tuple(columns))}"
-    return cached(settings.processed_dir / "player_styles.parquet", kind, lambda path: _style_rows(path, columns))
+    return cached(settings.served_processed_dir / "player_styles.parquet", kind, lambda path: _style_rows(path, columns))
 
 
 def _matrix(settings: Settings) -> dict | None:
-    return cached(settings.model_dir / MATRIX_FILE, "npz", _npz)
+    return cached(settings.served_model_dir / MATRIX_FILE, "npz", _npz)
 
 
 def _scores(settings: Settings) -> dict | None:
-    return cached(settings.model_dir / SCORES_FILE, "npz", _npz)
+    return cached(settings.served_model_dir / SCORES_FILE, "npz", _npz)
 
 
 def _seats(settings: Settings) -> dict | None:
-    return cached(settings.model_dir / SEATS_FILE, "npz", _npz)
+    return cached(settings.served_model_dir / SEATS_FILE, "npz", _npz)
 
 
 def _informative(settings: Settings) -> bool:
-    report = cached(settings.model_dir / REPORT_FILE, "json", _json)
+    report = cached(settings.served_model_dir / REPORT_FILE, "json", _json)
     return bool(report and report.get("informative", False))
 
 
 def known_names(settings: Settings) -> dict[tuple[str, str], str] | None:
-    return cached(settings.processed_dir / NAMES_TABLE, "names", _name_index)
+    return cached(settings.served_processed_dir / NAMES_TABLE, "names", _name_index)
 
 
 class NoGamesInPosition(ValueError):
@@ -116,7 +116,7 @@ class NoGamesInPosition(ValueError):
 
 
 def hinge_between(left: str, right: str, settings: Settings | None = None) -> dict:
-    table = cached((settings or get_settings()).processed_dir / HINGE_TABLE, "hinge", _indexed_hinge)
+    table = cached((settings or get_settings()).served_processed_dir / HINGE_TABLE, "hinge", _indexed_hinge)
     out = {}
     for responder, actor, label in ((left, right, "left_reacts_to_right"), (right, left, "right_reacts_to_left")):
         if table is not None and (responder, actor) in table.index:
@@ -173,7 +173,7 @@ def _significant(value: float) -> float:
 def seat_reading(seats: dict, z: np.ndarray, position: str) -> dict:
     k = [str(name) for name in seats["positions"]].index(position)
     scale = float(seats["scale"][k]) if "scale" in seats else 1.0
-    gold = float(scale * ((z - seats["centres"][k]) @ seats["weights"][k]))
+    gold = scale * float((z - seats["centres"][k]) @ seats["weights"][k])
     quantiles = seats["quantiles"][k]
     return {"gold": round(gold, 1), "score": _score(gold, quantiles), "percentile": _percentile(gold, quantiles)}
 

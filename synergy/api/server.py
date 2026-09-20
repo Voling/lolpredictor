@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from ..cache import get_cache
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml.score import UnknownPlayer, get_service, reload_service
+from ..pipeline import served_summary
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     def status():
         service = get_service()
-        return {**service.status(), "cache": get_cache().ready}
+        return {**service.status(), "cache": get_cache().ready, "run": served_summary()}
 
     @app.post("/api/reload")
     def reload():

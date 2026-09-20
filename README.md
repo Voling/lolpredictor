@@ -364,6 +364,9 @@ Run from the repo root with the virtualenv active. Copy `.env.example` to `.env`
 
 | Command | What it does |
 |---|---|
+| `python -m synergy pipeline` | Window, features, stream, profiles, blocks, mirrored and scores in order as separate processes, one run directory with a manifest and logs, then the run's artifacts are copied aside and served; `--from`, `--until`, `--network`, `--no-promote` |
+| `python -m synergy runs` | Every run with its status, git sha, corpus size, held out metrics and which one is served |
+| `python -m synergy promote --id RUN` | Serve another run's artifacts; without `--id`, snapshot the working artifacts as a new served run |
 | `python -m synergy crawl` | Seeded crawl from `SEED_RIOT_ID` against the Riot API, resumable, budget capped |
 | `python -m synergy window` | Cut raw timelines down to the first 15 minutes |
 | `python -m synergy features` | Extract participation, pair and opportunity tables from the windows |

@@ -34,7 +34,7 @@ class Cache:
         if self._build is None:
             digest = hashlib.sha1()
             for name in MODEL_ARTEFACTS:
-                path = self.settings.model_dir / name
+                path = self.settings.served_model_dir / name
                 digest.update(str(int(path.stat().st_mtime) if path.exists() else 0).encode())
             self._build = digest.hexdigest()[:10]
         return self._build

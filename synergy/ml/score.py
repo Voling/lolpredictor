@@ -74,8 +74,8 @@ class SynergyService:
         }
 
     def load(self) -> "SynergyService":
-        model_path = self.settings.model_dir / "synergy_model.pkl"
-        profile_path = self.settings.processed_dir / "player_profiles.parquet"
+        model_path = self.settings.served_model_dir / "synergy_model.pkl"
+        profile_path = self.settings.served_processed_dir / "player_profiles.parquet"
         if not model_path.exists() or not profile_path.exists():
             logger.warning("model or profiles missing, service not ready")
             return self
@@ -88,14 +88,14 @@ class SynergyService:
             and not column.endswith(STYLE_SUFFIXES)
             and column != "style_confidence"
         ] or list(STYLE_COLUMNS)
-        history_path = self.settings.processed_dir / "pair_history.parquet"
+        history_path = self.settings.served_processed_dir / "pair_history.parquet"
         if history_path.exists():
             self.history = pd.read_parquet(history_path).set_index("pair_key", drop=False)
-        propensity_path = self.settings.processed_dir / "propensity_report.json"
+        propensity_path = self.settings.served_processed_dir / "propensity_report.json"
         if propensity_path.exists():
             with open(propensity_path, encoding="utf-8") as handle:
                 self.propensity_report = json.load(handle)
-        report_path = self.settings.model_dir / "training_report.json"
+        report_path = self.settings.served_model_dir / "training_report.json"
         if report_path.exists():
             with open(report_path, encoding="utf-8") as handle:
                 self.report = json.load(handle)

@@ -67,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
         "breadth", help="queue every Master and above player who already has depth in a position"
     )
     breadth_cmd.add_argument("--min-games", type=int, default=10, help="games in one position to qualify")
+    pipeline_cmd = sub.add_parser("pipeline", help="rebuild the tables and models in order, then serve the run")
+    pipeline_cmd.add_argument("--from", dest="start", default=None, help="first step to run")
+    pipeline_cmd.add_argument("--until", dest="stop", default=None, help="last step to run")
+    pipeline_cmd.add_argument("--network", action="store_true", help="also write the pair network report")
+    pipeline_cmd.add_argument("--no-promote", action="store_true", help="build without switching what is served")
+    sub.add_parser("runs", help="list pipeline runs and which one is served")
+    promote_cmd = sub.add_parser("promote", help="serve a run's artifacts, or snapshot the working artifacts as a new run")
+    promote_cmd.add_argument("--id", default=None, help="run to serve, default snapshots the working artifacts")
     premades_cmd = sub.add_parser(
         "premades", help="queue Master and above players who queue together, the strongest duo first"
     )
@@ -231,6 +239,32 @@ def main(argv: list[str] | None = None) -> int:
         from .ingest.premades import enqueue
 
         _report(enqueue(settings, needed=args.least_shared, limit=args.limit))
+        return 0
+
+    if args.command == "pipeline":
+        from .pipeline import run_pipeline
+
+        manifest = run_pipeline(settings, start=args.start, stop=args.stop, network=args.network, promote_after=not args.no_promote)
+        _report({key: manifest.get(key) for key in ("id", "status", "steps", "served", "metrics")})
+        return 0 if manifest["status"] in ("built", "served") else 1
+
+    if args.command == "runs":
+        from .pipeline import list_runs
+
+        _report(
+            [
+                {key: run.get(key) for key in ("id", "status", "current", "started", "promoted", "git")}
+                | {"matches": (run.get("corpus") or {}).get("matches"), "metrics": run.get("metrics")}
+                for run in list_runs(settings)
+            ]
+        )
+        return 0
+
+    if args.command == "promote":
+        from .pipeline import promote
+
+        manifest = promote(settings, args.id)
+        _report({key: manifest.get(key) for key in ("id", "status", "served", "metrics")})
         return 0
 
     if args.command == "synthetic":

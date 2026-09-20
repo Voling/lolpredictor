@@ -37,6 +37,7 @@ export default async function Home() {
             <tr><th>metric</th><th className="num">value</th></tr>
           </thead>
           <tbody>
+            <tr><td>served run</td><td className="num">{status.run ? `${status.run.id} at ${status.run.git?.sha ?? "?"}${status.run.git?.dirty ? " with local changes" : ""}` : "working artifacts, no run promoted"}</td></tr>
             <tr><td>players profiled</td><td className="num">{status.players.toLocaleString()}</td></tr>
             <tr><td>known pairs</td><td className="num">{status.known_pairs.toLocaleString()}</td></tr>
             <tr><td>cache</td><td className="num">{status.cache ? "connected" : "off"}</td></tr>

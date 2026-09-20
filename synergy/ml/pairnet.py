@@ -9,7 +9,7 @@ from ..config import Settings, get_settings
 from ..features.positions import POSITIONS
 from ..ingest.premades import premade_pairs
 from .interaction import SEED, _basis
-from .mirrored import seat_games, seat_gold, seats_by_position
+from .mirrored import SEATS_FILE, seat_games, seat_gold, seats_by_position
 
 HIDDEN = 256
 EPOCHS = 12
@@ -19,7 +19,7 @@ WEIGHT_DECAY = 1e-3
 DROPOUT = 0.1
 VALIDATION = 0.1
 PENALTIES = (1e2, 1e3, 1e4)
-PLANTED_GOLD = 50.0
+PLANTED_GOLD = 100.0
 SEEDS = 5
 DEPTHS = (20, 50)
 REPORT_FILE = "pairnet_report.json"
@@ -115,6 +115,19 @@ def linear_predict(reduced: torch.Tensor, index: torch.Tensor, weights: torch.Te
     return torch.cat([additive(gather(reduced, rows)) @ weights for rows in batches(index)]) + middle
 
 
+def seat_ridge_predict(reduced: torch.Tensor, index: torch.Tensor, weights: torch.Tensor, combo: torch.Tensor, middle: float) -> torch.Tensor:
+    first = torch.as_tensor([a for a, _ in COMBINATIONS], device=reduced.device)[combo]
+    second = torch.as_tensor([b for _, b in COMBINATIONS], device=reduced.device)[combo]
+    out = []
+    for start in range(0, len(index), BATCH * 4):
+        stop = start + BATCH * 4
+        cells = gather(reduced, index[start:stop])
+        own = ((cells[:, 0] - cells[:, 2]) * weights[first[start:stop]]).sum(dim=1)
+        partner = ((cells[:, 1] - cells[:, 3]) * weights[second[start:stop]]).sum(dim=1)
+        out.append(own + partner)
+    return torch.cat(out) + middle
+
+
 def train_interaction(
     reduced: torch.Tensor,
     index: torch.Tensor,
@@ -204,8 +217,15 @@ def fit_pairnet(
         flush=True,
     )
 
-    weights, middle = linear_weights(reduced, index["learn"], target["learn"], index["check"], target["check"])
-    linear = {name: linear_predict(reduced, index[name], weights, middle) for name in index}
+    shared_weights, shared_middle = linear_weights(reduced, index["learn"], target["learn"], index["check"], target["check"])
+    shared = explained(held_values, linear_predict(reduced, index["held"], shared_weights, shared_middle).cpu().numpy())
+    with np.load(settings.model_dir / SEATS_FILE, allow_pickle=True) as saved:
+        if [str(name) for name in saved["columns"]] != [str(name) for name in basis["columns"]]:
+            raise ValueError("seat_weights.npz was fitted on different columns, run mirrored --positions-only first")
+        seat_weights = torch.as_tensor(saved["weights"], dtype=torch.float32, device=device)
+    combo = {name: torch.as_tensor(np.repeat(np.arange(len(COMBINATIONS)), len(raw[name]) // len(COMBINATIONS)), device=device) for name in raw}
+    middle = float((target["learn"] - seat_ridge_predict(reduced, index["learn"], seat_weights, combo["learn"], 0.0)).mean())
+    linear = {name: seat_ridge_predict(reduced, index[name], seat_weights, combo[name], middle) for name in index}
     residual = {name: target[name] - linear[name] for name in index}
     ridge_held = linear["held"].cpu().numpy()
     alone = explained(held_values, ridge_held)
@@ -216,9 +236,10 @@ def fit_pairnet(
         "target_spread": round(spread, 1),
         "epochs": epochs,
         "seeds": seeds,
+        "shared_ridge": round(shared, 5),
         "cells_alone": round(alone, 5),
     }
-    print(f"  linear ridge held out r2 {alone:+.5f}", flush=True)
+    print(f"  one ridge for every position held out r2 {shared:+.5f}, the seat ridge per position {alone:+.5f}", flush=True)
 
     def run(name, build, learn_residual, check_residual, held_truth, draw):
         clock = time.time()

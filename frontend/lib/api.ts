@@ -5,6 +5,13 @@ export type Status = {
   known_pairs: number;
   cache: boolean;
   model: Record<string, unknown>;
+  run: {
+    id: string;
+    promoted: string | null;
+    git: { sha: string | null; dirty: boolean | null } | null;
+    matches: number | null;
+    metrics: Record<string, unknown> | null;
+  } | null;
 };
 
 export type Reading = { gold: number; score: number; percentile: number };
