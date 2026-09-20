@@ -4,6 +4,7 @@ import pandas as pd
 from synergy.features.positions import POSITIONS
 from synergy.ml.mirrored import (
     Board,
+    calibration,
     directions,
     explained,
     pair_design,
@@ -59,6 +60,19 @@ def _board(rng, matches=4, swings=None, premade=None):
         premade=premade or set(),
         swings=swings,
     )
+
+
+def test_calibration_is_the_slope_of_the_realised_edge_on_the_predicted_one():
+    # given
+    predicted = np.array([-200.0, -50.0, 0.0, 80.0, 300.0])
+    realised = 1.25 * predicted + 40.0
+
+    # when
+    slope = calibration(predicted, realised)
+
+    # then
+    assert np.isclose(slope, 1.25)
+    assert calibration(np.zeros(3), realised[:3]) == 1.0
 
 
 def test_pair_rows_carry_the_two_seats_against_their_mirrors():

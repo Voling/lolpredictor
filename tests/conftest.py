@@ -91,39 +91,28 @@ def serving_settings(tmp_path) -> Settings:
             "evidence": [0.8, 0.1, 0.9, 0.4, 0.6, 0.7],
         }
     ).to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
-    combos = [f"{POSITIONS[a]}+{POSITIONS[b]}" for a in range(5) for b in range(a + 1, 5)]
-    grid = np.linspace(-1.0, 1.0, 1001)
-    reference = np.tile(np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]], dtype=np.float32), (5, 1, 1))
     np.savez(
-        settings.model_dir / "pairnet.npz",
-        first_weight=np.array([[[0.0, 0.0, 0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]], dtype=np.float32),
-        first_bias=np.array([[10.0, 10.0]], dtype=np.float32),
-        second_weight=np.array([np.eye(2)], dtype=np.float32),
-        second_bias=np.zeros((1, 2), dtype=np.float32),
-        third_weight=np.array([[1.0, -1.0]], dtype=np.float32),
-        third_bias=np.zeros(1, dtype=np.float32),
-        scale=np.ones(1),
+        settings.model_dir / "interaction_matrix.npz",
+        matrix=np.array([[1.0, 0.0], [0.0, -1.0]]),
         columns=columns,
         centre=np.zeros(2),
         spread=np.ones(2),
-        reference=reference,
-        positions=np.array(list(POSITIONS)),
-        combos=np.array(combos),
-        grand=np.zeros(len(combos)),
-        grand_seeds=np.zeros((len(combos), 1)),
-        families=np.array(["rsp", "tend"]),
-        grand_without=np.zeros((len(combos), 2)),
-        fit_quantiles=np.tile(grid, (len(combos), 5, 1)),
-        evidence_bands=np.array([0.0, 0.02, 0.08, 0.2, 0.35]),
-        team_quantiles=grid * 10.0,
-        ridge_weights=np.zeros(2),
-        ridge_middle=0.0,
         units=np.array("gold at 15"),
+    )
+    grid = np.linspace(-1.0, 1.0, 1001) / 20.0
+    np.savez(
+        settings.model_dir / "interaction_scores.npz",
+        quantiles=grid,
+        combos=np.array(["JUNGLE+TOP", "MIDDLE+TOP"]),
+        combo_quantiles=np.stack([grid, grid * 4.0]),
+        team_quantiles=grid * 10.0,
+        gold_sd=100.0,
     )
     np.savez(
         settings.model_dir / "seat_weights.npz",
         weights=np.array([[100.0, 0.0], [50.0, 0.0], [0.0, 40.0], [30.0, 0.0], [0.0, 20.0]]),
         centres=np.zeros((5, 2)),
+        scale=np.ones(5),
         quantiles=np.tile(np.linspace(-200.0, 200.0, 1001), (5, 1)),
         columns=columns,
         positions=np.array(list(POSITIONS)),

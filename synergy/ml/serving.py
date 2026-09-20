@@ -4,35 +4,25 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.special import erf
 
 from ..config import Settings, get_settings
-from ..features.describe import describe, named
+from ..features.describe import describe, describe_situation, named, situation_of
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
-from ..features.positions import KEY, POSITIONS
+from ..features.positions import KEY, POSITIONS, combination
 
+TEAM_SIZE = 5
+TEAM_PAIRS = TEAM_SIZE * (TEAM_SIZE - 1) // 2
 DRIVERS = 6
-DRIVER_REFERENCE = 32
 DISTINCTIVE = 5
 SCORE_SPAN = 6.0
 SIGNIFICANT = 4
 NAMES_TABLE = "player_names.parquet"
-NETWORK_FILE = "pairnet.npz"
+MATRIX_FILE = "interaction_matrix.npz"
+SCORES_FILE = "interaction_scores.npz"
 SEATS_FILE = "seat_weights.npz"
-REPORT_FILE = "pairnet_report.json"
-UNRELIABLE = "the pair network did not beat its shuffled partners on this corpus, so the fit is shown for inspection only"
-FAMILY_WORDS = {
-    "tend": "fight and lane tendencies",
-    "prio": "lane state",
-    "rsp": "reactions after kills, plates and buildings",
-    "obj": "play at dragons and void grubs",
-    "ward": "warding",
-    "jgl": "jungle openings",
-    "habit": "habit components",
-    "move": "movement components",
-    "style": "embedding components",
-}
+REPORT_FILE = "interaction_report.json"
+UNRELIABLE = "the pair term did not beat its shuffled partners on this corpus, so the fit is shown for inspection only"
 
 _held: dict[tuple[str, str], tuple[tuple[int, int], object]] = {}
 
@@ -98,8 +88,12 @@ def _vectors(settings: Settings, columns: list[str]) -> dict | None:
     return cached(settings.processed_dir / "player_styles.parquet", kind, lambda path: _style_rows(path, columns))
 
 
-def _network(settings: Settings) -> dict | None:
-    return cached(settings.model_dir / NETWORK_FILE, "npz", _npz)
+def _matrix(settings: Settings) -> dict | None:
+    return cached(settings.model_dir / MATRIX_FILE, "npz", _npz)
+
+
+def _scores(settings: Settings) -> dict | None:
+    return cached(settings.model_dir / SCORES_FILE, "npz", _npz)
 
 
 def _seats(settings: Settings) -> dict | None:
@@ -152,6 +146,11 @@ def _evidence(styles: pd.DataFrame, puuid: str, position: str) -> float | None:
     return round(float(styles.loc[(puuid, position), "evidence"]), 3)
 
 
+def _quantiles(scores: dict, key: str, combo: str | None) -> np.ndarray:
+    combos = [str(name) for name in scores["combos"]] if "combos" in scores else []
+    return scores["combo_quantiles"][combos.index(combo)] if combo in combos else scores[key]
+
+
 def _percentile(value: float, quantiles: np.ndarray) -> float:
     return round(float(np.searchsorted(quantiles, value) / 10.0), 1)
 
@@ -163,82 +162,30 @@ def _score(value: float, quantiles: np.ndarray) -> float:
     return round(float(50.0 + 50.0 * np.tanh((value - float(quantiles.mean())) / (SCORE_SPAN * spread))), 1)
 
 
+def _gold(value: float, scores: dict) -> float:
+    return float(value * float(scores["gold_sd"])) if "gold_sd" in scores else float(value)
+
+
 def _significant(value: float) -> float:
     return float(f"{value:.{SIGNIFICANT}g}")
 
 
-def _gelu(values: np.ndarray) -> np.ndarray:
-    return 0.5 * values * (1.0 + erf(values / np.sqrt(2.0)))
-
-
-def network_sides(net: dict, first: np.ndarray, second: np.ndarray) -> np.ndarray:
-    rows = np.concatenate([first, second, first * second], axis=1).astype(np.float32)
-    out = np.zeros((len(net["scale"]), len(rows)))
-    for seed in range(len(net["scale"])):
-        hidden = _gelu(rows @ net["first_weight"][seed].T + net["first_bias"][seed])
-        hidden = _gelu(hidden @ net["second_weight"][seed].T + net["second_bias"][seed])
-        out[seed] = (hidden @ net["third_weight"][seed] + net["third_bias"][seed]) * float(net["scale"][seed])
-    return out
-
-
-def network_side(net: dict, first: np.ndarray, second: np.ndarray) -> np.ndarray:
-    return network_sides(net, first, second).mean(axis=0)
-
-
-def _combo(net: dict, first_index: int, second_index: int) -> int:
-    return [str(name) for name in net["combos"]].index(f"{POSITIONS[first_index]}+{POSITIONS[second_index]}")
-
-
-def _band(net: dict, known: float) -> int:
-    return int(np.searchsorted(net["evidence_bands"], known, side="right") - 1)
-
-
-def fits_between(net: dict, first: np.ndarray, second: np.ndarray, first_index: int, second_index: int) -> tuple[dict[str, float], float]:
-    columns = [str(name) for name in net["columns"]]
-    families = [str(name) for name in net["families"]]
-    combo = _combo(net, first_index, second_index)
-    reference_first, reference_second = net["reference"][first_index], net["reference"][second_index]
-    blocks = [("all", None, len(reference_first), float(net["grand"][combo]))]
-    for family, grand in zip(families, net["grand_without"][combo]):
-        mask = np.array([0.0 if name.split("_")[0] == family else 1.0 for name in columns], dtype=np.float32)
-        blocks.append((family, mask, min(DRIVER_REFERENCE, len(reference_first)), float(grand)))
-    firsts, seconds = [], []
-    for _, mask, count, _ in blocks:
-        a, b = (first, second) if mask is None else (first * mask, second * mask)
-        others_a, others_b = reference_first[:count], reference_second[:count]
-        if mask is not None:
-            others_a, others_b = others_a * mask, others_b * mask
-        firsts += [a[None], np.repeat(a[None], count, axis=0), others_a]
-        seconds += [b[None], others_b, np.repeat(b[None], count, axis=0)]
-    seeds = network_sides(net, np.concatenate(firsts), np.concatenate(seconds))
-    values = seeds.mean(axis=0)
-    out, start, error = {}, 0, 0.0
-    for name, _, count, grand in blocks:
-        block = values[start : start + 1 + 2 * count]
-        out[name] = float(block[0] - block[1 : 1 + count].mean() - block[1 + count :].mean() + grand)
-        if name == "all" and len(seeds) > 1:
-            each = seeds[:, start : start + 1 + 2 * count]
-            by_seed = each[:, 0] - each[:, 1 : 1 + count].mean(axis=1) - each[:, 1 + count :].mean(axis=1) + net["grand_seeds"][combo]
-            error = float(by_seed.std(ddof=1))
-        start += 1 + 2 * count
-    return out, error
-
-
 def seat_reading(seats: dict, z: np.ndarray, position: str) -> dict:
     k = [str(name) for name in seats["positions"]].index(position)
-    gold = float((z - seats["centres"][k]) @ seats["weights"][k])
+    scale = float(seats["scale"][k]) if "scale" in seats else 1.0
+    gold = float(scale * ((z - seats["centres"][k]) @ seats["weights"][k]))
     quantiles = seats["quantiles"][k]
     return {"gold": round(gold, 1), "score": _score(gold, quantiles), "percentile": _percentile(gold, quantiles)}
 
 
-def _loaded(settings: Settings) -> tuple[pd.DataFrame, dict, dict, list[str], dict] | None:
-    styles, net, seats = _styles(settings), _network(settings), _seats(settings)
-    if styles is None or net is None or seats is None:
+def _loaded(settings: Settings) -> tuple[pd.DataFrame, dict, dict, dict, list[str], dict] | None:
+    styles, saved, scores, seats = _styles(settings), _matrix(settings), _scores(settings), _seats(settings)
+    if styles is None or saved is None or scores is None or seats is None or "columns" not in saved:
         return None
-    columns = [str(name) for name in net["columns"]]
+    columns = [str(name) for name in saved["columns"]]
     if any(name not in styles.columns for name in columns) or [str(name) for name in seats["columns"]] != columns:
         return None
-    return styles, net, seats, columns, _vectors(settings, columns)
+    return styles, saved, scores, seats, columns, _vectors(settings, columns)
 
 
 def pair_between(
@@ -250,60 +197,52 @@ def pair_between(
     loaded = _loaded(settings)
     if loaded is None:
         return None
-    styles, net, seats, columns, vectors = loaded
+    styles, saved, scores, seats, columns, vectors = loaded
     for puuid, position in ((left, left_position), (right, right_position)):
         if (puuid, position) not in vectors["at"]:
             raise NoGamesInPosition(puuid, position)
-    a = vectors["matrix"][vectors["at"][(left, left_position)]]
-    b = vectors["matrix"][vectors["at"][(right, right_position)]]
-    i, j = POSITIONS.index(left_position), POSITIONS.index(right_position)
-    fits, error = fits_between(net, a, b, i, j) if i < j else fits_between(net, b, a, j, i)
-    value = fits["all"]
-    left_games = int(styles.loc[(left, left_position), "seats"])
-    right_games = int(styles.loc[(right, right_position), "seats"])
-    left_evidence, right_evidence = _evidence(styles, left, left_position), _evidence(styles, right, right_position)
-    band = _band(net, (left_evidence or 0.0) * (right_evidence or 0.0))
-    quantiles = net["fit_quantiles"][_combo(net, min(i, j), max(i, j))][band]
+    a = vectors["matrix"][vectors["at"][(left, left_position)]].astype(float)
+    b = vectors["matrix"][vectors["at"][(right, right_position)]].astype(float)
+    matrix = saved["matrix"]
+    dim = matrix.shape[0]
+    terms = np.outer(a, b) * matrix / (TEAM_PAIRS * dim)
+    value = float(terms.sum())
+    strongest = np.argsort(-np.abs(terms).ravel())[:DRIVERS]
     reliable = _informative(settings)
+    quantiles = _quantiles(scores, "quantiles", combination(left_position, right_position))
     left_edge, right_edge = seat_reading(seats, a, left_position), seat_reading(seats, b, right_position)
-    fit = {
-        "gold": round(value, 1),
-        "score": _score(value, quantiles),
-        "percentile": _percentile(value, quantiles),
-        "error": round(error, 1),
-        "known": float(net["evidence_bands"][band]),
-    }
-    drivers = sorted(((family, value - fits[family]) for family in fits if family != "all"), key=lambda item: -abs(item[1]))
+    gold = _gold(value, scores)
+    fit = {"gold": round(gold, 1), "score": _score(value, quantiles), "percentile": _percentile(value, quantiles)}
     return {
         "score": fit["score"],
-        "projected_gold_at_15": round(value, 2),
+        "projected_gold_at_15": round(gold, 2),
         "synergy": value,
         "percentile": fit["percentile"],
         "reliable": reliable,
         "note": None if reliable else UNRELIABLE,
         "positions": {"left": left_position, "right": right_position},
-        "left_games": left_games,
-        "right_games": right_games,
-        "left_evidence": left_evidence,
-        "right_evidence": right_evidence,
+        "left_games": int(styles.loc[(left, left_position), "seats"]),
+        "right_games": int(styles.loc[(right, right_position), "seats"]),
+        "left_evidence": _evidence(styles, left, left_position),
+        "right_evidence": _evidence(styles, right, right_position),
         "edge": {
             "left": left_edge,
             "right": right_edge,
             "fit": fit,
-            "total": round(left_edge["gold"] + right_edge["gold"] + value, 1),
+            "total": round(left_edge["gold"] + right_edge["gold"] + gold, 1),
         },
         "drivers": [
-            {"family": family, "words": FAMILY_WORDS.get(family, family), "contribution": _significant(amount)}
-            for family, amount in drivers[:DRIVERS]
+            {"left": columns[k // dim], "right": columns[k % dim], "contribution": _significant(float(terms.ravel()[k]))}
+            for k in strongest
         ],
         "reading": {
-            "left": _reading(styles, left_position, columns, a),
-            "right": _reading(styles, right_position, columns, b),
+            "left": _reading(styles, left_position, columns, a, terms.sum(axis=1)),
+            "right": _reading(styles, right_position, columns, b, terms.sum(axis=0)),
         },
     }
 
 
-def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndarray) -> dict:
+def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
     peers = styles.index.get_level_values("position") == position
     keep = [index for index, cell in enumerate(columns) if named(cell)]
     order = sorted(keep, key=lambda index: -abs(z[index]))[:DISTINCTIVE]
@@ -316,7 +255,18 @@ def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndar
         }
         for index in order
     ]
-    return {"distinctive": distinctive}
+    by_situation: dict[str, float] = {}
+    for index in keep:
+        situation = situation_of(columns[index])
+        by_situation[situation] = by_situation.get(situation, 0.0) + float(contributions[index])
+    ranked = sorted(by_situation.items(), key=lambda item: item[1])
+    helping = [item for item in reversed(ranked) if item[1] > 0.0][:DISTINCTIVE]
+    hurting = [item for item in ranked if item[1] < 0.0][:DISTINCTIVE]
+    situations = [
+        {"situation": situation, "words": describe_situation(situation), "contribution": _significant(amount)}
+        for situation, amount in [*helping, *hurting]
+    ]
+    return {"distinctive": distinctive, "situations": situations}
 
 
 def lineup_between(assignments: dict[str, str], settings: Settings | None = None) -> dict | None:
@@ -326,7 +276,7 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
     loaded = _loaded(settings)
     if loaded is None:
         return None
-    _, net, seats, _, vectors = loaded
+    _, _, scores, seats, _, vectors = loaded
     pairs = []
     for (left_position, left), (right_position, right) in combinations(
         [(position, assignments[position]) for position in POSITIONS], 2
@@ -337,18 +287,18 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
         pairs.append({"left": left, "right": right, **{k: v for k, v in found.items() if k not in ("drivers", "reading")}})
     total = float(sum(pair["synergy"] for pair in pairs))
     parts = {
-        position: seat_reading(seats, vectors["matrix"][vectors["at"][(puuid, position)]], position)["gold"]
+        position: seat_reading(seats, vectors["matrix"][vectors["at"][(puuid, position)]].astype(float), position)["gold"]
         for position, puuid in assignments.items()
     }
     reliable = _informative(settings)
-    quantiles = net["team_quantiles"]
+    gold = _gold(total, scores)
     return {
-        "score": _score(total, quantiles),
-        "projected_gold_at_15": round(total, 2),
+        "score": _score(total, scores["team_quantiles"]),
+        "projected_gold_at_15": round(gold, 2),
         "synergy": total,
-        "percentile": _percentile(total, quantiles),
+        "percentile": _percentile(total, scores["team_quantiles"]),
         "reliable": reliable,
         "note": None if reliable else UNRELIABLE,
-        "edge": {"seats": parts, "fit": round(total, 1), "total": round(sum(parts.values()) + total, 1)},
+        "edge": {"seats": parts, "fit": round(gold, 1), "total": round(sum(parts.values()) + gold, 1)},
         "pairs": sorted(pairs, key=lambda pair: -pair["synergy"]),
     }

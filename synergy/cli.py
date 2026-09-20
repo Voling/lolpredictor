@@ -157,8 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         "pairnet", help="fit a network on the four seats of each pair against the pair's own gold at 15"
     )
     pairnet_cmd.add_argument("--epochs", type=int, default=12)
-    pairnet_cmd.add_argument("--seeds", type=int, default=5, help="repeat the network and its null this many times")
-    pairnet_cmd.add_argument("--family-seeds", type=int, default=3, help="repeat each family ablation this many times")
+    pairnet_cmd.add_argument("--seeds", type=int, default=5, help="repeat the network and its curved null this many times")
     sub.add_parser("validate", help="check the corpus for integrity problems")
     sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
@@ -342,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pairnet":
         from .ml.pairnet import fit_pairnet
 
-        _report(fit_pairnet(settings, epochs=args.epochs, seeds=args.seeds, family_seeds=args.family_seeds))
+        _report(fit_pairnet(settings, epochs=args.epochs, seeds=args.seeds))
         return 0
     if args.command == "mirrored":
         from .ml.mirrored import fit_mirrored, fit_positions

@@ -131,6 +131,29 @@ def joint_swings(settings: Settings) -> dict:
     return pair_swings(frame, objective_prices(settings))
 
 
+def player_means(basis: dict, rows: np.ndarray) -> dict:
+    reduced = basis["reduced"]
+    dim = reduced.shape[-1]
+    names = pd.Series(basis["seat_puuid"][rows].ravel()) + "|" + pd.Series(basis["seat_position"][rows].ravel())
+    codes, keys = pd.factorize(names)
+    order = np.argsort(codes, kind="stable")
+    starts = np.flatnonzero(np.r_[True, np.diff(codes[order]) > 0])
+    counts = np.diff(np.r_[starts, len(order)])
+    sums = np.add.reduceat(reduced[rows].reshape(-1, dim)[order].astype(np.float64), starts, axis=0)
+    return {
+        "means": (sums / counts[:, None]).astype(np.float32),
+        "positions": np.array([str(key).split("|")[1] for key in keys]),
+        "counts": counts,
+        "at": {str(key): index for index, key in enumerate(keys)},
+    }
+
+
+def calibration(predicted: np.ndarray, realised: np.ndarray) -> float:
+    centred = predicted - predicted.mean()
+    spread = float((centred**2).sum())
+    return float((centred * (realised - realised.mean())).sum() / spread) if spread > 0.0 else 1.0
+
+
 def directions(reduced: np.ndarray, rows: np.ndarray, components: int) -> np.ndarray:
     sample = reduced[rows[: min(len(rows), 20000)]].reshape(-1, reduced.shape[-1]).astype(np.float64)
     sample = sample - sample.mean(axis=0)
@@ -413,8 +436,11 @@ def fit_positions(
     fit = np.array(sorted(set(basis["fit"]) & set(np.nonzero(sound)[0])))
     test = np.array(sorted(set(basis["test"]) & set(np.nonzero(sound)[0])))
     grid = np.linspace(0.0, 1.0, 1001)
+    table = player_means(basis, np.array(sorted(set(fit) | set(test))))
+    names = basis["seat_puuid"]
     held, weights = {}, np.zeros((len(POSITIONS), len(columns)))
     centres, quantiles = np.zeros((len(POSITIONS), len(columns))), np.zeros((len(POSITIONS), len(grid)))
+    scale = np.ones(len(POSITIONS))
     for index, name in enumerate(POSITIONS):
         design_fit = reduced[fit, blue[fit, index]].astype(np.float32) - reduced[fit, red[fit, index]].astype(np.float32)
         design_test = reduced[test, blue[test, index]].astype(np.float32) - reduced[test, red[test, index]].astype(np.float32)
@@ -438,17 +464,25 @@ def fit_positions(
         weights[index] = np.where(dead, 0.0, chosen[1])
         seats = np.concatenate([reduced[fit, blue[fit, index]], reduced[fit, red[fit, index]]]).astype(np.float64)
         centres[index] = seats.mean(axis=0)
-        readings = (seats - centres[index]) @ weights[index]
+
+        def served(rows, side):
+            picked = [table["at"][f"{names[row, seat]}|{name}"] for row, seat in zip(rows, side[rows, index])]
+            return (table["means"][picked] - centres[index]) @ weights[index]
+
+        scale[index] = calibration(served(test, blue) - served(test, red), values_test)
+        readings = scale[index] * np.concatenate([served(fit, blue), served(fit, red)])
         quantiles[index] = np.quantile(readings, grid)
         print(
             f"  {name:8} seat edge at 15, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f},"
-            f" {int(dead.sum())} dead cells, reading spread {readings.std():,.0f} gold over {len(readings):,} seats",
+            f" {int(dead.sum())} dead cells, served readings scaled by {scale[index]:.3f},"
+            f" spread {readings.std():,.0f} gold over {len(readings):,} seats",
             flush=True,
         )
     np.savez(
         settings.model_dir / SEATS_FILE,
         weights=weights,
         centres=centres,
+        scale=scale,
         quantiles=quantiles,
         columns=np.array(columns),
         positions=np.array(list(POSITIONS)),

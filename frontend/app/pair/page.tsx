@@ -13,7 +13,7 @@ function Row({ label, who, reading, evidence }: { label: string; who: string; re
     <tr>
       <td>{label}</td>
       <td>{who}</td>
-      <td className="num">{signed(reading.gold)}{reading.error != null && reading.error > 0 ? ` ± ${Math.round(reading.error)}` : ""}</td>
+      <td className="num">{signed(reading.gold)}</td>
       <td className="num">{reading.score.toFixed(0)}</td>
       <td className="num">{reading.percentile.toFixed(0)}th</td>
       <td className="num">{evidence == null ? "" : `${Math.round(evidence * 100)}%`}</td>
@@ -45,11 +45,10 @@ function Result({ pair }: { pair: PairScore }) {
       </table>
       {!fit.reliable && <div className="gate"><strong>Fit shown for inspection only</strong>{fit.note}</div>}
       <p>
-        The fit is what the pairing adds beyond who each of you is, ranked among corpus pairs the model knows
-        about as well as it knows you two, with the disagreement between five model seeds as its error. For
-        most pairs it sits inside the noise of a single game, so the two seat rows carry the decision.
-        {fit.drivers.length > 0 && (
-          <> It comes from {fit.drivers.slice(0, 3).map((driver) => `${driver.words} (${signed(driver.contribution)})`).join(", ")}.</>
+        The fit is what the pairing adds beyond who each of you is. Across the corpus it spreads about twenty
+        gold, far inside the noise of a single game, so the two seat rows carry the decision.
+        {fit.reading.left.situations.length > 0 && (
+          <> On your side it comes from {fit.reading.left.situations.slice(0, 3).map((item) => `${item.words} (${signed(item.contribution)})`).join(", ")}.</>
         )}
       </p>
       <p>

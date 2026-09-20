@@ -33,7 +33,7 @@ def test_a_pair_carries_its_position_score_on_top_and_keeps_the_reading_stats_be
     # then
     interaction = result["interaction"]
     assert result["score"] == interaction["score"] == 64.0
-    assert result["projected_gold_at_15"] == interaction["projected_gold_at_15"] == 1.0
+    assert result["projected_gold_at_15"] == interaction["projected_gold_at_15"] == 5.0
     assert {"synergy", "percentile", "drivers", "reading", "edge", "left_evidence"} <= set(interaction)
     assert not {"synergy", "drivers"} & set(result)
     assert interaction["positions"] == {"left": "TOP", "right": "JUNGLE"}
