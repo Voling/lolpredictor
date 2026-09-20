@@ -67,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         "breadth", help="queue every Master and above player who already has depth in a position"
     )
     breadth_cmd.add_argument("--min-games", type=int, default=10, help="games in one position to qualify")
+    premades_cmd = sub.add_parser(
+        "premades", help="queue Master and above players who queue together, the strongest duo first"
+    )
+    premades_cmd.add_argument("--least-shared", type=int, default=2, help="shared games within three hours to count as a duo")
+    premades_cmd.add_argument("--limit", type=int, default=None, help="queue at most this many players")
 
     synth_cmd = sub.add_parser("synthetic", help="generate a synthetic match corpus")
     synth_cmd.add_argument("--matches", type=int, default=400)
@@ -221,6 +226,12 @@ def main(argv: list[str] | None = None) -> int:
         from .ingest.breadth import enqueue
 
         _report(enqueue(settings, min_games=args.min_games))
+        return 0
+
+    if args.command == "premades":
+        from .ingest.premades import enqueue
+
+        _report(enqueue(settings, needed=args.least_shared, limit=args.limit))
         return 0
 
     if args.command == "synthetic":

@@ -8,8 +8,9 @@ from torch import nn
 
 from ..config import Settings, get_settings
 from ..features.positions import POSITIONS
+from ..ingest.premades import premade_pairs
 from .interaction import SEED, _basis, evidence_table
-from .mirrored import premade_pairs, seat_games, seat_gold, seats_by_position
+from .mirrored import seat_games, seat_gold, seats_by_position
 
 HIDDEN = 256
 EPOCHS = 12

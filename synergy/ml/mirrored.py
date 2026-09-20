@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
 from ..features.positions import POSITIONS
+from ..ingest.premades import premade_pairs
 from ..ingest.store import Store
 from .gold import objective_prices
 from .interaction import SEED, TEAM_PAIRS, _basis
@@ -20,8 +21,6 @@ PLANTED = (50.0, 100.0)
 NULLS = 3
 FLOOR = 10.0
 DEPTHS = (20, 50)
-SESSION_HOURS = 3.0
-SESSION_GAMES = 2
 SMALLEST_SLICE = 2000
 SMALLEST_REFIT = 20000
 DEAD_SPREAD = 1e-3
@@ -32,10 +31,6 @@ GOLD_QUERY = (
     "SELECT f.match_id, p.puuid, sum(f.total_gold) AS gold FROM frames f"
     " JOIN participations p ON p.match_id = f.match_id AND p.puuid = f.puuid"
     " WHERE f.minute = %s GROUP BY 1,2"
-)
-TEAMMATE_QUERY = (
-    "SELECT p.match_id, p.puuid, p.team_id, m.game_creation FROM participations p"
-    " JOIN matches m USING (match_id)"
 )
 
 
@@ -103,26 +98,6 @@ def seat_games(seat_puuid: np.ndarray, seat_position: np.ndarray) -> np.ndarray:
     keys = pd.Series(seat_puuid.ravel().astype(str)) + "|" + pd.Series(seat_position.ravel().astype(str))
     codes = pd.factorize(keys)[0]
     return np.bincount(codes)[codes].reshape(seat_puuid.shape)
-
-
-def sessions(frame: pd.DataFrame, hours: float = SESSION_HOURS, needed: int = SESSION_GAMES) -> set:
-    pairs = frame.merge(frame, on=["match_id", "team_id"])
-    pairs = pairs[pairs.puuid_x < pairs.puuid_y][["puuid_x", "puuid_y", "game_creation_x"]]
-    pairs = pairs.sort_values(["puuid_x", "puuid_y", "game_creation_x"])
-    gaps = pairs.groupby(["puuid_x", "puuid_y"])["game_creation_x"].diff().dt.total_seconds() / 3600.0
-    close = (gaps <= hours).groupby([pairs.puuid_x, pairs.puuid_y]).sum()
-    return set(close[close >= needed].index)
-
-
-def premade_pairs(settings: Settings) -> set:
-    store = Store(settings)
-    try:
-        with store.conn.cursor() as cursor:
-            cursor.execute(TEAMMATE_QUERY)
-            frame = pd.DataFrame(cursor.fetchall())
-    finally:
-        store.close()
-    return sessions(frame)
 
 
 def pair_swings(frame: pd.DataFrame, prices: dict) -> dict:

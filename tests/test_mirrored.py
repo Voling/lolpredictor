@@ -11,8 +11,8 @@ from synergy.ml.mirrored import (
     ridge,
     seat_games,
     seats_by_position,
-    sessions,
 )
+from synergy.ingest.premades import sessions
 
 
 def test_each_seat_is_matched_with_the_same_position_on_the_other_side():
