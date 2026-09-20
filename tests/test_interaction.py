@@ -3,8 +3,10 @@ import numpy as np
 from synergy.ml.interaction import (
     TEAM_PAIRS,
     TEAM_SIZE,
+    _across,
     _crossed,
     _dense,
+    _dense_across,
     _selves,
     fully_seated,
     shuffle_seats,
@@ -31,6 +33,35 @@ def test_cross_term_equals_the_explicit_sum_over_pairs_through_the_dense_matrix(
             for b in range(a + 1, TEAM_SIZE):
                 explicit[row] += team[row, a] @ matrix @ team[row, b]
     assert np.allclose(closed, explicit / (TEAM_PAIRS * 4), atol=1e-4)
+
+
+def test_the_across_term_sums_every_cross_team_pair_and_flips_when_the_sides_swap():
+    # given
+    rng = np.random.default_rng(4)
+    blue = rng.normal(size=(3, TEAM_SIZE, 4)).astype(np.float32)
+    red = rng.normal(size=(3, TEAM_SIZE, 4)).astype(np.float32)
+    drawn = {
+        "a_first": rng.normal(size=(2, 4)).astype(np.float32),
+        "a_second": rng.normal(size=(2, 4)).astype(np.float32),
+        "a_weight": rng.normal(size=2).astype(np.float32),
+    }
+    factor = (drawn["a_first"], drawn["a_second"], drawn["a_weight"])
+    matrix = np.asarray(_dense_across(drawn, "a"))
+
+    # when
+    closed = np.asarray(_across(blue, red, factor, 4))
+    mirrored = np.asarray(_across(red, blue, factor, 4))
+
+    # then
+    explicit = np.zeros(3)
+    for row in range(3):
+        for ours in range(TEAM_SIZE):
+            for theirs in range(TEAM_SIZE):
+                explicit[row] += blue[row, ours] @ matrix @ red[row, theirs]
+    assert np.allclose(closed, explicit / (TEAM_SIZE * TEAM_SIZE * 4), atol=1e-4)
+    assert np.allclose(closed, -mirrored, atol=1e-6)
+    assert np.allclose(matrix, -matrix.T, atol=1e-6)
+    assert np.allclose(np.diag(matrix), 0.0, atol=1e-6)
 
 
 def test_self_term_sums_each_seat_alone():

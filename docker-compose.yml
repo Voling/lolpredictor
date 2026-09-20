@@ -69,5 +69,30 @@ services:
     command: ["status"]
     profiles: ["tools"]
 
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /app/data
+      DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./synergy:/app/synergy
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["tools"]
+
 volumes:
   postgres:

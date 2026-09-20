@@ -188,6 +188,23 @@ def _factored(name, dim, rank, scale):
     return loading, weight
 
 
+def _paired(name, dim, rank, scale):
+    with numpyro.plate(f"{name}_rows", dim):
+        with numpyro.plate(f"{name}_rank", rank):
+            first = numpyro.sample(f"{name}_first", dist.Normal(0.0, 1.0))
+            second = numpyro.sample(f"{name}_second", dist.Normal(0.0, 1.0))
+    with numpyro.plate(f"{name}_axes", rank):
+        weight = numpyro.sample(f"{name}_weight", dist.Normal(0.0, scale))
+    return first, second, weight
+
+
+def _across(blue, red, factor, dim):
+    first, second, weight = factor
+    ours, theirs = blue.sum(axis=1), red.sum(axis=1)
+    mixed = (ours @ first.T) * (theirs @ second.T) - (ours @ second.T) * (theirs @ first.T)
+    return (mixed * weight).sum(axis=1) / (TEAM_SIZE * TEAM_SIZE * dim)
+
+
 def model(blue, red, dim, rank: int = RANK, terms: str = "pair", gold=None):
     mean = numpyro.sample("mean", dist.Normal(0.0, 1.0))
     main_scale = numpyro.sample("main_scale", dist.HalfNormal(1.0))
@@ -195,12 +212,15 @@ def model(blue, red, dim, rank: int = RANK, terms: str = "pair", gold=None):
     with numpyro.plate("axes", dim):
         weight = numpyro.sample("weight", dist.Normal(0.0, main_scale))
     centre = mean + (blue.sum(axis=1) - red.sum(axis=1)) @ weight / dim
-    if terms in ("solo", "pair"):
+    if terms in ("solo", "pair", "matchup"):
         solo = _factored("solo", dim, rank, numpyro.sample("solo_scale", dist.HalfNormal(1.0)))
         centre = centre + _selves(blue, solo, dim) - _selves(red, solo, dim)
-    if terms == "pair":
+    if terms in ("pair", "matchup"):
         cross = _factored("cross", dim, rank, numpyro.sample("cross_scale", dist.HalfNormal(1.0)))
         centre = centre + _crossed(blue, cross, dim) - _crossed(red, cross, dim)
+    if terms == "matchup":
+        across = _paired("across", dim, rank, numpyro.sample("across_scale", dist.HalfNormal(1.0)))
+        centre = centre + _across(blue, red, across, dim)
     with numpyro.plate("matches", centre.shape[0]):
         numpyro.sample("gold", dist.Normal(centre, residual), obs=gold)
 
@@ -208,6 +228,12 @@ def model(blue, red, dim, rank: int = RANK, terms: str = "pair", gold=None):
 def _dense(drawn: dict, name: str) -> jnp.ndarray:
     loading, weight = drawn[f"{name}_loading"], drawn[f"{name}_weight"]
     return (loading * weight[:, None]).T @ loading
+
+
+def _dense_across(drawn: dict, name: str) -> jnp.ndarray:
+    first, second = drawn[f"{name}_first"], drawn[f"{name}_second"]
+    weighted = first * drawn[f"{name}_weight"][:, None]
+    return weighted.T @ second - second.T @ weighted
 
 
 def _settled(losses: np.ndarray) -> float:
@@ -220,15 +246,19 @@ def _settled(losses: np.ndarray) -> float:
 
 def _predict(drawn, blue, red, dim, terms):
     centre = drawn["mean"] + (blue.sum(axis=1) - red.sum(axis=1)) @ drawn["weight"] / dim
-    cross = None
-    if terms in ("solo", "pair"):
+    cross, across = None, None
+    if terms in ("solo", "pair", "matchup"):
         solo = (drawn["solo_loading"], drawn["solo_weight"])
         centre = centre + _selves(blue, solo, dim) - _selves(red, solo, dim)
-    if terms == "pair":
+    if terms in ("pair", "matchup"):
         factor = (drawn["cross_loading"], drawn["cross_weight"])
         centre = centre + _crossed(blue, factor, dim) - _crossed(red, factor, dim)
         cross = _dense(drawn, "cross")
-    return centre, cross
+    if terms == "matchup":
+        opposed = (drawn["across_first"], drawn["across_second"], drawn["across_weight"])
+        centre = centre + _across(blue, red, opposed, dim)
+        across = _dense_across(drawn, "across")
+    return centre, cross, across
 
 
 def _fit(blue, red, target, fit, test, rank, terms, steps, seed, max_steps=MAX_STEPS, min_steps=0):
@@ -241,7 +271,7 @@ def _fit(blue, red, target, fit, test, rank, terms, steps, seed, max_steps=MAX_S
     baseline = float(((seen - seen.mean()) ** 2).sum())
 
     def fit_r2(params):
-        fitted, _ = _predict(guide.median(params), *arguments, terms)
+        fitted, _, _ = _predict(guide.median(params), *arguments, terms)
         return 1.0 - float(((np.asarray(fitted) - seen) ** 2).sum()) / baseline
 
     result = svi.run(jax.random.PRNGKey(seed), steps, *arguments, **options)
@@ -256,7 +286,7 @@ def _fit(blue, red, target, fit, test, rank, terms, steps, seed, max_steps=MAX_S
         blocks.append(fit_r2(result.params))
 
     drawn = guide.median(result.params)
-    centre, cross = _predict(drawn, jnp.asarray(blue[test]), jnp.asarray(red[test]), dim, terms)
+    centre, cross, across = _predict(drawn, jnp.asarray(blue[test]), jnp.asarray(red[test]), dim, terms)
     held = target[test]
     error = float(((np.asarray(centre) - held) ** 2).sum())
     return {
@@ -268,6 +298,7 @@ def _fit(blue, red, target, fit, test, rank, terms, steps, seed, max_steps=MAX_S
         "drift": round(_settled(losses), 7),
         "settled": bool(_settled(losses) <= TOLERANCE),
         "matrix": np.asarray(cross) if cross is not None else None,
+        "across": np.asarray(across) if across is not None else None,
     }
 
 
@@ -323,6 +354,7 @@ def fit_interaction(
     seed: int = SEED,
     source: str = "style",
     min_steps: int = 0,
+    matchup: bool = False,
     report_path: str = "interaction_report.json",
 ) -> dict:
     settings = settings or get_settings()
@@ -332,19 +364,21 @@ def fit_interaction(
     blue, red = sides(basis["seat_side"], basis.pop("reduced"))
     dim = blue.shape[-1]
 
+    names = (*TERMS, "matchup") if matchup else TERMS
+    top, below = names[-1], names[-2]
     print(f"fitting {len(fit):,} matches, holding out {len(test):,}, {dim} named columns, rank {rank}", flush=True)
-    rungs = _rungs(blue, red, target, fit, test, rank, steps, seed, floor=min_steps)
-    nested = bool(rungs["pair"]["fit_r2"] >= rungs["solo"]["fit_r2"] - NESTING_TOLERANCE)
-    gain = rungs["pair"]["r2"] - rungs["solo"]["r2"]
+    rungs = _rungs(blue, red, target, fit, test, rank, steps, seed, names=names, floor=min_steps)
+    nested = bool(rungs[top]["fit_r2"] >= rungs[below]["fit_r2"] - NESTING_TOLERANCE)
+    gain = rungs[top]["r2"] - rungs[below]["r2"]
     settings.model_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        settings.model_dir / "interaction_matrix.npz",
-        matrix=rungs["pair"]["matrix"], columns=basis["columns"], centre=basis["centre"], spread=basis["spread"],
-    )
+    saved = {"matrix": rungs["pair"]["matrix"], "columns": basis["columns"], "centre": basis["centre"], "spread": basis["spread"]}
+    if rungs[top]["across"] is not None:
+        saved["across"] = rungs[top]["across"]
+    np.savez(settings.model_dir / "interaction_matrix.npz", **saved)
     if not nested:
         print(
-            f"  pair fits the training matches worse than solo, {rungs['pair']['fit_r2']:.6f} against"
-            f" {rungs['solo']['fit_r2']:.6f}: the cross term is shrunk away and adds noise, no nulls run",
+            f"  {top} fits the training matches worse than {below}, {rungs[top]['fit_r2']:.6f} against"
+            f" {rungs[below]['fit_r2']:.6f}: the term is shrunk away and adds noise, no nulls run",
             flush=True,
         )
     elif gain <= 0.0:
@@ -361,9 +395,9 @@ def fit_interaction(
         shuffle_seats(blue, rng, mixed_blue)
         shuffle_seats(red, rng, mixed_red)
         under = _rungs(
-            mixed_blue, mixed_red, target, fit, test, rank, steps, seed, names=("solo", "pair"), floor=min_steps
+            mixed_blue, mixed_red, target, fit, test, rank, steps, seed, names=(below, top), floor=min_steps
         )
-        draws.append(under["pair"]["r2"] - under["solo"]["r2"])
+        draws.append(under[top]["r2"] - under[below]["r2"])
         print(
             f"  null {draw + 1}/{nulls} gain {draws[-1]:.6f}"
             f"  above {int(np.sum(np.array(draws) >= gain))}  {time.time() - clock:.0f}s",
@@ -379,9 +413,11 @@ def fit_interaction(
         "columns": int(dim),
         "rank": rank,
         "rungs": {
-            name: {key: value for key, value in rung.items() if key != "matrix"}
+            name: {key: value for key, value in rung.items() if key not in ("matrix", "across")}
             for name, rung in rungs.items()
         },
+        "ladder": list(names),
+        "gained_over": below,
         "min_steps": min_steps,
         "solo_over_linear": round(rungs["solo"]["r2"] - rungs["linear"]["r2"], 6),
         "gain": round(gain, 6),
@@ -461,7 +497,7 @@ def write_scores(
     styles = player_styles(basis, columns).join(evidence_table(settings))
     styles.reset_index().to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
     pairs = pair_scores(settings, stream, source, basis=basis)
-    gold_sd = float(basis["raw"][basis["fit"]].std())
+    gold_sd = 1.0 if "units" in _saved(settings) else float(basis["raw"][basis["fit"]].std())
     del basis
     pairs.to_parquet(settings.processed_dir / "pair_synergy.parquet", index=False)
     grid = np.linspace(0.0, 1.0, 1001)

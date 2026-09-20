@@ -1,0 +1,13 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DATA_DIR=/app/data
+
+WORKDIR /app
+
+COPY requirements.txt requirements-deep.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -r requirements-deep.txt
+
+COPY synergy ./synergy
+
+ENTRYPOINT ["python", "-m", "synergy"]
+CMD ["status"]

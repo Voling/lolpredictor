@@ -127,11 +127,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     interact_cmd.add_argument("--source", choices=("style", "walk"), default="style")
     interact_cmd.add_argument(
+        "--matchup", action="store_true", help="add a rung for the term across the net"
+    )
+    interact_cmd.add_argument(
         "--scores", action="store_true", help="write per player styles and every corpus pair score"
     )
     interact_cmd.add_argument(
         "--skip-fit", action="store_true", help="reuse the saved matrix, only write the scores"
     )
+    mirrored_cmd = sub.add_parser(
+        "mirrored", help="fit the cells and their interaction against each pair's own gold at 15"
+    )
+    mirrored_cmd.add_argument("--components", type=int, default=24)
+    mirrored_cmd.add_argument(
+        "--positions-only", action="store_true", help="only refit the per position seat weights"
+    )
+    mirrored_cmd.add_argument(
+        "--target",
+        choices=("gold", "events"),
+        default="gold",
+        help="gold at 15, or the gold swung by events both players were present at",
+    )
+    pairnet_cmd = sub.add_parser(
+        "pairnet", help="fit a network on the four seats of each pair against the pair's own gold at 15"
+    )
+    pairnet_cmd.add_argument("--epochs", type=int, default=12)
+    pairnet_cmd.add_argument("--seeds", type=int, default=5, help="repeat the network and its null this many times")
     sub.add_parser("validate", help="check the corpus for integrity problems")
     sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
@@ -306,6 +327,19 @@ def main(argv: list[str] | None = None) -> int:
         pairs = attach_dyads(tables["pairs"], tables.get("dyads"))
         _report(fit_gold(pairs, settings, min_games=args.min_games))
         return 0
+    if args.command == "pairnet":
+        from .ml.pairnet import fit_pairnet
+
+        _report(fit_pairnet(settings, epochs=args.epochs, seeds=args.seeds))
+        return 0
+    if args.command == "mirrored":
+        from .ml.mirrored import fit_mirrored, fit_positions
+
+        if args.target == "gold":
+            _report(fit_positions(settings))
+        if not args.positions_only:
+            _report(fit_mirrored(settings, components=args.components, target=args.target))
+        return 0
     if args.command == "interaction":
         from .ml.interaction import fit_interaction, write_scores
 
@@ -318,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                     nulls=args.nulls,
                     source=args.source,
                     min_steps=args.min_steps,
+                    matchup=args.matchup,
                 )
             )
         if args.scores or args.skip_fit:

@@ -28,3 +28,5 @@ frontend/build/
 frontend/.next/
 backups/
 frontend/tsconfig.tsbuildinfo
+.claude/worktrees/
+logs/

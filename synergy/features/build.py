@@ -24,7 +24,6 @@ from .propensity import opportunity_rows
 from .match import participant_rows
 from .tempo import tempo_rows
 from .timeline import ParsedTimeline, pair_rows
-from .champions import champion_profiles
 from .duo import fit_duo_effect
 from .traits import fit_traits
 from .valuesurface import fit_value_model, fit_value_surface
@@ -235,7 +234,6 @@ def build_tables(
             fit_traits(participations, feature_columns(participations), settings)
             fit_duo_effect(participations, settings=settings)
             _refresh_axes()
-            champion_profiles(participations, settings)
         if reports:
             fit_reports(settings, counts)
         logger.info("built %s participations and %s pair rows", len(participations), len(pairs))
