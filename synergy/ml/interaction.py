@@ -14,8 +14,7 @@ from ..config import Settings, get_settings
 from ..deep.stream import SEATS
 from ..deep.walk import MatchWalk, batches
 from ..features.positions import KEY, UNKNOWN
-from .gold import team_advantage
-from .serving import TEAM_PAIRS, TEAM_SIZE
+from .gold import TEAM_PAIRS, TEAM_SIZE, team_advantage
 
 SOURCES = ("style", "walk")
 RANK = 8

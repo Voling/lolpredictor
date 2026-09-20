@@ -7,6 +7,8 @@ export type Status = {
   model: Record<string, unknown>;
 };
 
+export type Reading = { gold: number; score: number; percentile: number; error?: number; known?: number };
+
 export type PairScore = {
   score: number | null;
   projected_gold_at_15: number | null;
@@ -32,6 +34,9 @@ export type PairScore = {
     right_games: number;
     left_evidence: number | null;
     right_evidence: number | null;
+    edge: { left: Reading; right: Reading; fit: Reading; total: number };
+    drivers: { family: string; words: string; contribution: number }[];
+    reading: Record<string, { distinctive: { cell: string; words: string; z: number; percentile: number }[] }>;
   } | null;
   players: { riot_id: string; main_position: string; games: number; winrate: number }[];
 };

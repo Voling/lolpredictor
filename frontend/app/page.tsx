@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getStatus } from "@/lib/api";
 
 export default async function Home() {
@@ -18,15 +19,15 @@ export default async function Home() {
     <main>
       <h1>lolpredictor</h1>
       <p className="sub">Player compatibility from the first fifteen minutes.</p>
+      <p><Link href="/pair">Read a pair</Link></p>
 
       {error && <div className="gate"><strong>API unreachable</strong>{error}</div>}
 
       {status && !informative && (
         <div className="gate">
-          <strong>Scores are withheld</strong>
+          <strong>Pair fit shown for inspection only</strong>
           The pair block adds {gain?.toFixed(6)} R² on advantage at 15 and {nullsAbove ?? "?"} of 20
-          permutation nulls reached it, so the model reports no usable pair signal and pair scores
-          return null.
+          permutation nulls reached it, so the model reports no usable pair signal at the team level.
         </div>
       )}
 

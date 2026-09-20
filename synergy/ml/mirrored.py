@@ -24,6 +24,7 @@ SESSION_HOURS = 3.0
 SESSION_GAMES = 2
 SMALLEST_SLICE = 2000
 SMALLEST_REFIT = 20000
+DEAD_SPREAD = 1e-3
 EVENT_VALUES = {"kill": 450.0, "plate": 175.0, "building": 300.0}
 TARGETS = ("gold", "events")
 SEATS_FILE = "seat_weights.npz"
@@ -436,13 +437,20 @@ def fit_positions(
     sound = (blue >= 0).all(axis=1) & (red >= 0).all(axis=1) & np.isfinite(gold).all(axis=1)
     fit = np.array(sorted(set(basis["fit"]) & set(np.nonzero(sound)[0])))
     test = np.array(sorted(set(basis["test"]) & set(np.nonzero(sound)[0])))
+    grid = np.linspace(0.0, 1.0, 1001)
     held, weights = {}, np.zeros((len(POSITIONS), len(columns)))
+    centres, quantiles = np.zeros((len(POSITIONS), len(columns))), np.zeros((len(POSITIONS), len(grid)))
     for index, name in enumerate(POSITIONS):
         design_fit = reduced[fit, blue[fit, index]].astype(np.float32) - reduced[fit, red[fit, index]].astype(np.float32)
         design_test = reduced[test, blue[test, index]].astype(np.float32) - reduced[test, red[test, index]].astype(np.float32)
         values_fit = gold[fit, blue[fit, index]] - gold[fit, red[fit, index]]
         values_test = gold[test, blue[test, index]] - gold[test, red[test, index]]
-        design_fit, design_test, spread = _scaled(design_fit, design_test)
+        spread = design_fit.std(axis=0)
+        dead = spread < DEAD_SPREAD
+        spread[dead] = 1.0
+        design_fit[:, dead] = 0.0
+        design_test[:, dead] = 0.0
+        design_fit, design_test = design_fit / spread, design_test / spread
         middle = float(values_fit.mean())
         left, right = _gram(design_fit, values_fit - middle, np.arange(len(values_fit)))
         chosen = None
@@ -452,11 +460,21 @@ def fit_positions(
             if chosen is None or score > chosen[0]:
                 chosen = (score, found / spread)
         held[name] = round(chosen[0], 5)
-        weights[index] = chosen[1]
-        print(f"  {name:8} seat edge at 15, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f}", flush=True)
+        weights[index] = np.where(dead, 0.0, chosen[1])
+        seats = np.concatenate([reduced[fit, blue[fit, index]], reduced[fit, red[fit, index]]]).astype(np.float64)
+        centres[index] = seats.mean(axis=0)
+        readings = (seats - centres[index]) @ weights[index]
+        quantiles[index] = np.quantile(readings, grid)
+        print(
+            f"  {name:8} seat edge at 15, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f},"
+            f" {int(dead.sum())} dead cells, reading spread {readings.std():,.0f} gold over {len(readings):,} seats",
+            flush=True,
+        )
     np.savez(
         settings.model_dir / SEATS_FILE,
         weights=weights,
+        centres=centres,
+        quantiles=quantiles,
         columns=np.array(columns),
         positions=np.array(list(POSITIONS)),
     )

@@ -21,7 +21,7 @@ STYLE_SUFFIXES = ("_pct", "_var")
 UNINFORMATIVE = (
     "the pair model found no usable synergy signal in this corpus, so no score is reported"
 )
-NOT_FITTED = "the pair matrix is not fitted yet"
+NOT_FITTED = "the pair network is not fitted yet"
 NO_POSITIONS = "the two players share a main position, so no position pair was read"
 THIN = (
     "{name}'s {position} playstyle is {own}% their own evidence from {games} {noun} and {rest}% the"
