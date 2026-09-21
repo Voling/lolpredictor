@@ -254,7 +254,7 @@ def build_priority(settings: Settings | None = None, workers: int = WORKERS, lim
     seats = seats[seats.match_id.isin(set(match_ids))]
     counted = pd.concat(counts, ignore_index=True)
     counts.clear()
-    table, report = cell_block(counted, seats, SITUATIONS, OUTCOMES, "prio")
+    table, report = cell_block(counted, seats, SITUATIONS, OUTCOMES, "prio", scale=settings.cell_prior_scale)
     table.to_parquet(settings.processed_dir / TABLE, index=False)
     evidence = evidence_share(counted, seats, SITUATIONS, {situation: report[situation]["kappa"] for situation in SITUATIONS})
     evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)

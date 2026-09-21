@@ -60,6 +60,7 @@ def cell_block(
     situations: list[str],
     outcomes: list[str],
     prefix: str,
+    scale: float = 1.0,
 ) -> tuple[pd.DataFrame, dict]:
     columns = [f"{prefix}_{situation}_{outcome}" for situation in situations for outcome in outcomes]
     table = (
@@ -75,7 +76,7 @@ def cell_block(
     report = {}
     for step, situation in enumerate(situations):
         report[situation] = _situation_cells(
-            table, situation, out.index, who, positions, len(outcomes), posterior[:, step * len(outcomes) : (step + 1) * len(outcomes)]
+            table, situation, out.index, who, positions, len(outcomes), posterior[:, step * len(outcomes) : (step + 1) * len(outcomes)], scale
         )
     del table
     frame = pd.DataFrame(posterior, columns=columns)
@@ -85,7 +86,14 @@ def cell_block(
 
 
 def _situation_cells(
-    table: pd.DataFrame, situation: str, seated: pd.MultiIndex, who: pd.MultiIndex, positions: np.ndarray, outcomes: int, target: np.ndarray
+    table: pd.DataFrame,
+    situation: str,
+    seated: pd.MultiIndex,
+    who: pd.MultiIndex,
+    positions: np.ndarray,
+    outcomes: int,
+    target: np.ndarray,
+    scale: float = 1.0,
 ) -> dict:
     here = table.xs(situation, level="situation") if situation in table.index.get_level_values("situation") else table.iloc[0:0].droplevel("situation")
     values = here.reindex(seated, fill_value=0.0).to_numpy(dtype=float)
@@ -93,7 +101,7 @@ def _situation_cells(
     frame = pd.DataFrame(values, index=who)
     per_who = frame.groupby(level=KEY).sum()
     worlds = position_worlds(frame, outcomes)
-    kappa = _kappa(
+    kappa = scale * _kappa(
         per_who.to_numpy(dtype=float),
         np.stack([worlds[position] for position in per_who.index.get_level_values("position")]),
     )

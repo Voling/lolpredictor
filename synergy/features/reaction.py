@@ -136,7 +136,7 @@ def build_reaction(settings: Settings | None = None) -> dict:
     keys, values, report, shares = None, None, {}, []
     for prefix, load, situations, outcomes in sources:
         counts = load()
-        block, found = cell_block(counts, seats, situations, outcomes, prefix)
+        block, found = cell_block(counts, seats, situations, outcomes, prefix, scale=settings.cell_prior_scale)
         if values is None:
             keys = block[["match_id", "puuid"]]
             values = np.full((len(block), len(REACTION_COLUMNS)), np.nan)

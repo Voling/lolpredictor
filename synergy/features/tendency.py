@@ -91,7 +91,7 @@ def build_tendencies(settings: Settings | None = None) -> dict:
             }
         )
         pooled = frame.groupby(KEY)[["observed", "expected", "variance"]].sum()
-        prior = _gamma_prior(pooled["observed"].to_numpy(), pooled["expected"].to_numpy(), pooled["variance"].to_numpy())
+        prior = settings.cell_prior_scale * _gamma_prior(pooled["observed"].to_numpy(), pooled["expected"].to_numpy(), pooled["variance"].to_numpy())
         expected = pooled["expected"].reindex(everyone.index, fill_value=0.0)
         shares.append((float(expected.mean()), (expected / (expected + prior)).rename("share").reset_index()))
         ratios = leave_one_out_ratio(frame, seats, prior, column)
