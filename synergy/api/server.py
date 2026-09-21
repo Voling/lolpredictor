@@ -75,6 +75,11 @@ def create_app() -> FastAPI:
         service = _ready()
         return _handle(lambda: service.pair_score(a, b, a_position, b_position))
 
+    @app.get("/api/friends")
+    def friends(me: str, friends: list[str] = Query(...), me_position: str | None = None):
+        service = _ready()
+        return _handle(lambda: service.friends(me, friends, me_position))
+
     @app.post("/api/team")
     def team(request: TeamRequest):
         service = _ready()

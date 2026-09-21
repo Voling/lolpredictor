@@ -54,6 +54,24 @@ export type PairScore = {
   players: { riot_id: string; main_position: string; games: number; winrate: number }[];
 };
 
+export type FriendRow = {
+  riot_id: string;
+  note: string | null;
+  position?: string;
+  reading?: Reading;
+  fit?: Reading;
+  total?: number;
+  games?: number;
+  evidence?: number | null;
+  games_together?: number;
+  thin?: boolean;
+};
+
+export type Friends = {
+  me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number };
+  friends: FriendRow[];
+};
+
 export type Lineup = {
   score: number;
   projected_gold_at_15: number | null;
@@ -88,6 +106,12 @@ export const getPair = (a: string, b: string, aPosition?: string, bPosition?: st
   if (aPosition) query.set("a_position", aPosition);
   if (bPosition) query.set("b_position", bPosition);
   return get<PairScore>(`/api/pair?${query.toString()}`);
+};
+export const getFriends = (me: string, friends: string[], mePosition?: string) => {
+  const query = new URLSearchParams({ me });
+  if (mePosition) query.set("me_position", mePosition);
+  for (const friend of friends) query.append("friends", friend);
+  return get<Friends>(`/api/friends?${query.toString()}`);
 };
 export const postLineup = async (players: Record<string, string>) => {
   const response = await fetch(`${base}/api/lineup`, {

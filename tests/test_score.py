@@ -93,3 +93,21 @@ def test_an_old_riot_id_resolves_through_the_exported_name_table(service):
 
     # then
     assert profile["puuid"] == "a"
+
+
+def test_friends_are_ranked_by_the_projected_edge_and_a_refused_pair_keeps_its_reason(service):
+    # given
+    me, friends = "Alpha#NA1", ["Beta#NA1", "Gamma#NA1:top", "Nobody#NA1", " "]
+
+    # when
+    found = service.friends(me, friends)
+
+    # then
+    assert found["me"]["riot_id"] == "Alpha#NA1" and found["me"]["position"] == "TOP"
+    assert found["me"]["reading"]["gold"] == 100.0
+    assert [row["riot_id"] for row in found["friends"]] == ["Beta#NA1", "Gamma#NA1", "Nobody#NA1"]
+    beta = found["friends"][0]
+    assert beta["position"] == "JUNGLE" and beta["reading"]["gold"] == 50.0 and beta["total"] == 155.0
+    assert beta["fit"]["gold"] == 5.0 and beta["games_together"] == 4 and beta["thin"] is False
+    assert "both given TOP" in found["friends"][1]["note"]
+    assert found["friends"][2]["note"] == "not in the corpus"

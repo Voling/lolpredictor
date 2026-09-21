@@ -415,7 +415,8 @@ sustains roughly 50 requests a minute, and the defaults in `.env.example` fit a 
 | `GET /api/players/?q=&limit=` | Known players, most-seen first |
 | `GET /api/players/<riot id or puuid>/` | Profile, style percentiles, behavioural traits, dashboard series |
 | `GET /api/partners/<riot id or puuid>/?limit=` | Best and worst modelled partners |
-| `GET /api/pair/?a=&b=&a_position=&b_position=` | One pairing in the given positions: a 0 to 100 score where 50 is the average pair in that position pair, the synergy as gold at 15, and below them the interaction percentile, each player's reading, evidence warnings, games together and the hinge from shared games |
+| `GET /api/pair/?a=&b=&a_position=&b_position=` | One pairing in the given positions: `edge` splits the projected gold edge at 15 into each player's calibrated seat reading and the fit between them, each with a 0 to 100 score and a rank; above it the fit alone as the score and gold at 15 of the old contract, below it evidence warnings, games together and the hinge from shared games |
+| `GET /api/friends/?me=&friends=&friends=&me_position=` | You against several friends, one row each with the friend's projected gold at 15 in their position, rank, evidence share, games known, the fit and games together, ranked by what the two of you project; `name#tag:jungle` picks a friend's position, and a friend the model cannot place keeps the reason in `note` |
 | `POST /api/team/` | `{"players": [...]}` up to five, returns the pairwise matrix and group score |
 | `POST /api/lineup/` | `{"players": {"top": ..., "jungle": ..., "mid": ..., "bot": ..., "support": ...}}`, the ten pairs with their scores, then the team's score, gold at 15 and rank against every corpus team |
 | `POST /api/reload/` | Reload profiles and model from disk after a retrain |

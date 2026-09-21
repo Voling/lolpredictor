@@ -23,3 +23,5 @@ form.pair { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; margi
 form.pair label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; opacity: 0.8; }
 form.pair input, form.pair select, form.pair button { font: inherit; padding: 0.4rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 form.pair button { cursor: pointer; }
+form.pair textarea { font: inherit; padding: 0.4rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; min-width: 18rem; }
+tr.thin td { opacity: 0.55; }

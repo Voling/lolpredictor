@@ -371,6 +371,46 @@ class SynergyService:
             pair["left"], pair["right"] = names[pair["left"]], names[pair["right"]]
         return {**result, "warnings": warnings, "players": summaries}
 
+    def friends(self, me: str, friends: list[str], me_position: str | None = None) -> dict:
+        self._require()
+        anchor = self.resolve(me)
+        rows, own = [], None
+        for entry in friends:
+            name, _, wanted = entry.strip().partition(":")
+            name = name.strip()
+            if not name:
+                continue
+            try:
+                found = self.pair_score(me, name, me_position, wanted.strip() or None)
+            except UnknownPlayer:
+                rows.append({"riot_id": name, "note": "not in the corpus"})
+                continue
+            except ValueError as error:
+                rows.append({"riot_id": name, "note": str(error)})
+                continue
+            friend, interaction = found["players"][1], found["interaction"]
+            if interaction is None:
+                rows.append({"riot_id": friend["riot_id"], "note": found["note"]})
+                continue
+            if own is None:
+                own = {"position": interaction["positions"]["left"], "reading": interaction["edge"]["left"], "evidence": interaction["left_evidence"], "games": interaction["left_games"]}
+            rows.append(
+                {
+                    "riot_id": friend["riot_id"],
+                    "position": interaction["positions"]["right"],
+                    "reading": interaction["edge"]["right"],
+                    "fit": interaction["edge"]["fit"],
+                    "total": interaction["edge"]["total"],
+                    "games": interaction["right_games"],
+                    "evidence": interaction["right_evidence"],
+                    "games_together": found["games_together"],
+                    "thin": any(friend["riot_id"] in warning for warning in found["warnings"]),
+                    "note": None,
+                }
+            )
+        ranked = sorted(rows, key=lambda row: -row["total"] if row.get("total") is not None else float("inf"))
+        return {"me": {"riot_id": riot_id(anchor), **(own or {})}, "friends": ranked}
+
     def best_partners(self, query: str, limit: int = 10) -> dict:
         model, profiles = self._require()
         target = self.resolve(query)

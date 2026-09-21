@@ -19,7 +19,7 @@ export default async function Home() {
     <main>
       <h1>lolpredictor</h1>
       <p className="sub">Player compatibility from the first fifteen minutes.</p>
-      <p><Link href="/pair">Read a pair</Link></p>
+      <p><Link href="/friends">Rank your friends</Link> · <Link href="/pair">Read a pair</Link></p>
 
       {error && <div className="gate"><strong>API unreachable</strong>{error}</div>}
 
