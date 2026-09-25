@@ -1,14 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { getStatus } from "@/lib/api";
+import { useRemote } from "@/lib/remote";
 
-export default async function Home() {
-  let status: Awaited<ReturnType<typeof getStatus>> | null = null;
-  let error: string | null = null;
-  try {
-    status = await getStatus();
-  } catch (exception) {
-    error = String(exception);
-  }
+export default function Home() {
+  const { data: status, error } = useRemote(getStatus, "status");
 
   const model = (status?.model ?? {}) as Record<string, number>;
   const gain = model.advantage_gain;
@@ -18,15 +15,15 @@ export default async function Home() {
   return (
     <main>
       <h1>lolpredictor</h1>
-      <p className="sub">Player compatibility from the first fifteen minutes.</p>
-      <p><Link href="/friends">Rank your friends</Link> · <Link href="/pair">Read a pair</Link></p>
+      <p className="sub">Your score with each friend when you duo.</p>
+      <p><Link href="/friends/">Rank your friends</Link> · <Link href="/pair/">Read a pair</Link></p>
 
       {error && <div className="gate"><strong>API unreachable</strong>{error}</div>}
 
       {status && !informative && (
         <div className="gate">
           <strong>Pair fit shown for inspection only</strong>
-          The pair block adds {gain?.toFixed(6)} R² on advantage at 15 and {nullsAbove ?? "?"} of 20
+          The pair block adds {gain?.toFixed(6)} R² on the early advantage and {nullsAbove ?? "?"} of 20
           permutation nulls reached it, so the model reports no usable pair signal at the team level.
         </div>
       )}

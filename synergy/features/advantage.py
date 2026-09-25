@@ -17,9 +17,11 @@ STATE_COLUMNS = [
     "turret_diff",
     "dragon_diff",
     "grub_diff",
+    "herald_diff",
 ]
 GRUB = "HORDE"
 DRAGON = "DRAGON"
+HERALD = "RIFTHERALD"
 
 
 def state_rows(
@@ -33,7 +35,7 @@ def state_rows(
         int(p.get("teamId", 0)): int(bool(p.get("win")))
         for p in match["info"]["participants"]
     }
-    running = {team: {"kills": 0, "plates": 0, "turrets": 0, "dragons": 0, "grubs": 0}
+    running = {team: {"kills": 0, "plates": 0, "turrets": 0, "dragons": 0, "grubs": 0, "heralds": 0}
                for team in (100, 200)}
     schedule: dict[int, list[tuple[int, str]]] = {}
     for event in parsed.events:
@@ -53,7 +55,7 @@ def state_rows(
             field = "turrets"
         elif kind == "ELITE_MONSTER_KILL":
             monster = str(event.get("monsterType") or "")
-            field = "dragons" if monster == DRAGON else "grubs" if monster == GRUB else ""
+            field = {DRAGON: "dragons", GRUB: "grubs", HERALD: "heralds"}.get(monster, "")
         else:
             field = ""
         if field:
@@ -86,6 +88,7 @@ def state_rows(
                     "turret_diff": float(running[team]["turrets"] - running[enemy]["turrets"]),
                     "dragon_diff": float(running[team]["dragons"] - running[enemy]["dragons"]),
                     "grub_diff": float(running[team]["grubs"] - running[enemy]["grubs"]),
+                    "herald_diff": float(running[team]["heralds"] - running[enemy]["heralds"]),
                 }
             )
     return rows
@@ -93,6 +96,9 @@ def state_rows(
 
 def fit_evaluation(states: pd.DataFrame, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
+    for name in STATE_COLUMNS:
+        if name not in states.columns:
+            states = states.assign(**{name: 0.0})
     frame = states.dropna(subset=STATE_COLUMNS + ["win"])
     if len(frame) < 2000:
         return {}
@@ -109,6 +115,7 @@ def fit_evaluation(states: pd.DataFrame, settings: Settings | None = None) -> di
         "intercept": round(float(model.intercept_[0]), 5),
         "rows": int(len(frame)),
         "matches": int(frame["match_id"].nunique()),
+        "span": int(frame["minute"].max()),
     }
     settings.processed_dir.mkdir(parents=True, exist_ok=True)
     with open(settings.processed_dir / "evaluation.json", "w", encoding="utf-8") as handle:

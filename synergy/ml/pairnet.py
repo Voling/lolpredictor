@@ -75,6 +75,24 @@ def pair_target(gold: np.ndarray, index: np.ndarray) -> np.ndarray:
     return picked[:, 0] + picked[:, 1] - picked[:, 2] - picked[:, 3]
 
 
+def split_rows(
+    all_raw: np.ndarray,
+    combo_all: np.ndarray,
+    match_all: np.ndarray,
+    ours_all: np.ndarray,
+    learn: np.ndarray,
+    check: np.ndarray,
+    test: np.ndarray,
+    hold_premade: bool,
+) -> tuple[dict, dict, np.ndarray]:
+    in_learn, in_check, in_test = np.isin(match_all, learn), np.isin(match_all, check), np.isin(match_all, test)
+    if hold_premade:
+        picks = {"learn": in_learn & ~ours_all, "check": in_check & ~ours_all, "held": in_test | ours_all}
+    else:
+        picks = {"learn": in_learn, "check": in_check, "held": in_test}
+    return {name: all_raw[mask] for name, mask in picks.items()}, {name: combo_all[mask] for name, mask in picks.items()}, ours_all[picks["held"]]
+
+
 def gather(reduced: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     return torch.stack([reduced[index[:, 2 * k], index[:, 2 * k + 1]] for k in range(4)], dim=1)
 
@@ -189,6 +207,7 @@ def fit_pairnet(
     source: str = "style",
     epochs: int = EPOCHS,
     seeds: int = SEEDS,
+    hold_premade: bool = False,
 ) -> dict:
     settings = settings or get_settings()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -206,14 +225,22 @@ def fit_pairnet(
     order = rng.permutation(len(fit))
     cut = int(len(order) * (1.0 - VALIDATION))
     learn, check = fit[np.sort(order[:cut])], fit[np.sort(order[cut:])]
-    raw = {name: pair_index(blue, red, rows) for name, rows in (("learn", learn), ("check", check), ("held", test))}
+    everyone = np.array(sorted(set(fit) | set(test)))
+    names = basis["seat_puuid"]
+    all_raw = pair_index(blue, red, everyone)
+    combo_all = np.repeat(np.arange(len(COMBINATIONS)), len(everyone))
+    match_all = np.tile(everyone, len(COMBINATIONS))
+    ours_all = np.array([tuple(sorted((names[row[0], row[1]], names[row[2], row[3]]))) in premade for row in all_raw])
+    raw, combo_rows, ours = split_rows(all_raw, combo_all, match_all, ours_all, learn, check, test, hold_premade)
     index = {name: torch.as_tensor(rows, device=device) for name, rows in raw.items()}
     target = {name: torch.as_tensor(pair_target(gold, raw[name]), dtype=torch.float32, device=device) for name in index}
     held_values = target["held"].cpu().numpy()
     spread = float(target["learn"].std())
     print(
         f"pair network on {device}: {len(index['learn']):,} pair rows to learn, {len(index['check']):,} to check,"
-        f" {len(index['held']):,} held out, spread {spread:,.0f} gold, {len(premade):,} premade pairs, basis ready in {time.time() - clock:.0f}s",
+        f" {len(index['held']):,} held out, spread {spread:,.0f} gold, {len(premade):,} premade pairs,"
+        f" {int(ours.sum()):,} premade rows held out{' with every premade row held out' if hold_premade else ''},"
+        f" basis ready in {time.time() - clock:.0f}s",
         flush=True,
     )
 
@@ -223,7 +250,7 @@ def fit_pairnet(
         if [str(name) for name in saved["columns"]] != [str(name) for name in basis["columns"]]:
             raise ValueError("seat_weights.npz was fitted on different columns, run mirrored --positions-only first")
         seat_weights = torch.as_tensor(saved["weights"], dtype=torch.float32, device=device)
-    combo = {name: torch.as_tensor(np.repeat(np.arange(len(COMBINATIONS)), len(raw[name]) // len(COMBINATIONS)), device=device) for name in raw}
+    combo = {name: torch.as_tensor(combo_rows[name], device=device) for name in raw}
     middle = float((target["learn"] - seat_ridge_predict(reduced, index["learn"], seat_weights, combo["learn"], 0.0)).mean())
     linear = {name: seat_ridge_predict(reduced, index[name], seat_weights, combo[name], middle) for name in index}
     residual = {name: target[name] - linear[name] for name in index}
@@ -236,6 +263,7 @@ def fit_pairnet(
         "target_spread": round(spread, 1),
         "epochs": epochs,
         "seeds": seeds,
+        "held_premade": hold_premade,
         "shared_ridge": round(shared, 5),
         "cells_alone": round(alone, 5),
     }
@@ -311,10 +339,9 @@ def fit_pairnet(
     report["tails"] = shape(interaction_guess)
     report["tails_curved"] = shape(curved_guess)
 
-    per = len(raw["held"]) // len(COMBINATIONS)
     report["combinations"] = {}
     for block, (first, second) in enumerate(COMBINATIONS):
-        rows = slice(block * per, (block + 1) * per)
+        rows = combo_rows["held"] == block
         name = f"{POSITIONS[first]}+{POSITIONS[second]}"
         with_network = explained(held_values[rows], ridge_held[rows] + network_guess[rows])
         with_curved = explained(held_values[rows], ridge_held[rows] + curved_guess[rows])
@@ -331,8 +358,6 @@ def fit_pairnet(
 
     held_raw = raw["held"]
     depth = np.minimum.reduce([games[held_raw[:, 2 * k], held_raw[:, 2 * k + 1]] for k in range(4)])
-    names = basis["seat_puuid"]
-    ours = np.array([tuple(sorted((names[row[0], row[1]], names[row[2], row[3]]))) in premade for row in held_raw])
     report["slices"] = {}
     for name, mask in (
         *((f"both pairs {d}+ games in position", depth >= d) for d in DEPTHS),

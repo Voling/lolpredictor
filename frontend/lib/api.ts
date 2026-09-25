@@ -16,9 +16,12 @@ export type Status = {
 
 export type Reading = { gold: number; score: number; percentile: number };
 
+export type Together = { gold: number; games: number };
+
 export type PairScore = {
   score: number | null;
-  projected_gold_at_15: number | null;
+  projected_gold: number | null;
+  minute: number | null;
   reliable: boolean;
   note: string | null;
   games_together: number;
@@ -31,7 +34,8 @@ export type PairScore = {
   warnings: string[];
   interaction: {
     score: number;
-    projected_gold_at_15: number | null;
+    projected_gold: number | null;
+    minute: number;
     synergy: number;
     percentile: number;
     reliable: boolean;
@@ -41,7 +45,7 @@ export type PairScore = {
     right_games: number;
     left_evidence: number | null;
     right_evidence: number | null;
-    edge: { left: Reading; right: Reading; fit: Reading; total: number };
+    edge: { left: Reading; right: Reading; fit: Reading; record?: Together; total: number };
     drivers: { left: string; right: string; contribution: number }[];
     reading: Record<
       string,
@@ -58,6 +62,9 @@ export type FriendRow = {
   riot_id: string;
   note: string | null;
   position?: string;
+  score?: number;
+  projected_gold?: number | null;
+  record?: Together | null;
   reading?: Reading;
   fit?: Reading;
   total?: number;
@@ -68,13 +75,14 @@ export type FriendRow = {
 };
 
 export type Friends = {
-  me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number };
+  me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number; minute?: number };
   friends: FriendRow[];
 };
 
 export type Lineup = {
   score: number;
-  projected_gold_at_15: number | null;
+  projected_gold: number | null;
+  minute: number;
   synergy: number;
   percentile: number;
   reliable: boolean;
@@ -84,13 +92,13 @@ export type Lineup = {
     left: string;
     right: string;
     score: number;
-    projected_gold_at_15: number | null;
+    projected_gold: number | null;
     synergy: number;
     percentile: number;
   }[];
 };
 
-const base = process.env.API_URL ?? "http://localhost:8000";
+const base = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${base}${path}`, { cache: "no-store" });

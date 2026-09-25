@@ -5,7 +5,7 @@ import numpy as np
 from scipy.stats import norm
 
 from ..config import Settings, get_settings
-from .anchors import FOUNTAIN, PLACE_EVENTS, SHOP_EVENTS, plausible, respawn_delay
+from .anchors import FOUNTAIN, FRAME_SECONDS, PLACE_EVENTS, SHOP_EVENTS, plausible, respawn_delay
 from .regions import MAP_SPAN, REGION_INDEX, REGIONS, regions_of
 from .wave import DEFENSIVE_PROGRESS, LANE_PREFIX, PUSH_PROGRESS, WAVE_CS
 
@@ -17,6 +17,9 @@ TOP = 3
 CHUNK = 4096
 ROLES = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
 MIN_PER_BIN = 100
+FRAME, ANCHOR, FOUNTAIN_POINT = 0, 1, 2
+EXIT_SPEED = 500.0 * FRAME_SECONDS
+BASE_SIGMA = 400.0
 
 _centres = (np.arange(GRID) + 0.5) * MAP_SPAN / GRID
 _cell_x, _cell_y = (axis.ravel() for axis in np.meshgrid(_centres, _centres, indexing="xy"))
@@ -71,16 +74,16 @@ def known_points(
 ) -> np.ndarray:
     minutes = np.arange(len(frames), dtype=float)
     alive = known & ~dead_mask(spans, minutes)
-    points = [(float(minute), float(frames[minute, 0]), float(frames[minute, 1])) for minute in np.flatnonzero(alive)]
-    points.extend(certain)
     fountain = FOUNTAIN[team]
-    points.extend((end, fountain[0], fountain[1]) for _, end in spans)
+    points = [(float(minute), float(frames[minute, 0]), float(frames[minute, 1]), FRAME) for minute in np.flatnonzero(alive)]
+    points.extend((when, x, y, FOUNTAIN_POINT if (x, y) == fountain else ANCHOR) for when, x, y in certain)
+    points.extend((end, fountain[0], fountain[1], FOUNTAIN_POINT) for _, end in spans)
     points.sort()
     for when, x, y in claimed:
         if plausible(points, when, (x, y)):
-            points.append((when, x, y))
+            points.append((when, x, y, ANCHOR))
     points.sort()
-    return np.array(points, dtype=float).reshape(-1, 3)
+    return np.array(points, dtype=float).reshape(-1, 4)
 
 
 def bracket(points: np.ndarray, minutes: np.ndarray) -> dict:
@@ -90,10 +93,12 @@ def bracket(points: np.ndarray, minutes: np.ndarray) -> dict:
         "p0": np.zeros((n, 2)), "p1": np.zeros((n, 2)),
         "tau0": np.full(n, np.inf), "tau1": np.full(n, np.inf),
         "left": np.zeros(n, bool), "right": np.zeros(n, bool), "exact": np.zeros(n, bool),
+        "k0": np.full(n, -1), "k1": np.full(n, -1),
     }
     if len(points) == 0:
         return out
     times = points[:, 0]
+    kinds = points[:, 3].astype(int) if points.shape[1] > 3 else np.full(len(points), FRAME)
     right = np.searchsorted(times, minutes, side="left")
     clipped = np.clip(right, 0, len(points) - 1)
     exact = (right < len(points)) & (times[clipped] == minutes)
@@ -101,12 +106,12 @@ def bracket(points: np.ndarray, minutes: np.ndarray) -> dict:
     has_left = left >= 0
     has_right = (right < len(points)) & ~exact
     out["exact"] = exact
-    out["p1"][exact] = points[clipped[exact], 1:]
+    out["p1"][exact], out["k1"][exact] = points[clipped[exact], 1:3], kinds[clipped[exact]]
     out["left"], out["right"] = has_left & ~exact, has_right
     lo = np.clip(left, 0, len(points) - 1)
-    out["p0"][has_left] = points[lo[has_left], 1:]
+    out["p0"][has_left], out["k0"][has_left] = points[lo[has_left], 1:3], kinds[lo[has_left]]
     out["tau0"][has_left] = minutes[has_left] - times[lo[has_left]]
-    out["p1"][has_right] = points[clipped[has_right], 1:]
+    out["p1"][has_right], out["k1"][has_right] = points[clipped[has_right], 1:3], kinds[clipped[has_right]]
     out["tau1"][has_right] = times[clipped[has_right]] - minutes[has_right]
     return out
 
@@ -115,15 +120,23 @@ def bridge_at(points: np.ndarray, minutes: np.ndarray, table: list[float], filte
     span = bracket(points, minutes)
     if filtered:
         span["right"] = np.zeros_like(span["right"])
+    leaving = span["left"] & (span["k0"] == FOUNTAIN_POINT)
+    recalling = span["right"] & (span["k1"] == FOUNTAIN_POINT)
+    span["right"] = span["right"] & ~recalling
     n = len(span["exact"])
     weight = np.zeros(n)
     s0 = np.full(n, np.inf)
     s1 = np.full(n, np.inf)
     both = span["left"] & span["right"]
     weight[both] = span["tau0"][both] / (span["tau0"][both] + span["tau1"][both])
+    out = leaving & both
+    distance = np.hypot(*(span["p1"][out] - span["p0"][out]).T)
+    walked = span["tau0"][out] * EXIT_SPEED / np.where(distance > 0.0, distance, 1.0)
+    weight[out] = np.maximum(weight[out], np.clip(walked, 0.0, 1.0))
     weight[span["right"] & ~span["left"]] = 1.0
     s0[span["left"]] = sigma_at(table, span["tau0"][span["left"]])
     s1[span["right"]] = sigma_at(table, span["tau1"][span["right"]])
+    s0[leaving & recalling] = BASE_SIGMA
     exact = span["exact"]
     weight[exact], s1[exact] = 1.0, 0.0
     return {"p0": span["p0"], "p1": span["p1"], "w": weight, "s0": s0, "s1": s1}

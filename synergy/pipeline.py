@@ -10,15 +10,17 @@ from pathlib import Path
 from .config import Settings, get_settings
 
 ROOT = Path(__file__).resolve().parent.parent
-STEPS = ("window", "features", "stream", "profiles", "blocks", "mirrored", "scores")
+STEPS = ("window", "features", "stream", "profiles", "blocks", "evaluation", "mirrored", "scores", "duos")
 COMMANDS = {
     "window": ("window", "--workers", "4"),
     "features": ("features", "--workers", "4"),
     "stream": ("stream",),
     "profiles": ("profiles",),
     "blocks": ("blocks",),
+    "evaluation": ("evaluation",),
     "mirrored": ("mirrored",),
     "scores": ("interaction", "--skip-fit"),
+    "duos": ("duos",),
     "network": ("pairnet",),
 }
 SERVED_MODELS = (
@@ -30,6 +32,9 @@ SERVED_MODELS = (
     "pairnet_report.json",
     "training_report.json",
     "synergy_model.pkl",
+    "duo_records.parquet",
+    "duo_scores.npz",
+    "duo_report.json",
 )
 SERVED_PROCESSED = (
     "player_styles.parquet",
@@ -151,10 +156,13 @@ def metrics(models: Path) -> dict:
     out = {}
     report = read_manifest_like(models / "interaction_report.json")
     if report:
-        out["pair"] = {key: report.get(key) for key in ("matches", "cells_alone", "with_interaction", "gain", "interaction_spread", "informative")}
+        out["pair"] = {key: report.get(key) for key in ("minute", "matches", "cells_alone", "with_interaction", "gain", "interaction_spread", "informative")}
     seats = read_manifest_like(models / "seat_report.json")
     if seats:
         out["seats"] = seats
+    duos = read_manifest_like(models / "duo_report.json")
+    if duos:
+        out["duos"] = {key: duos.get(key) for key in ("duos_kept", "spread", "noise", "split_half")}
     network = read_manifest_like(models / "pairnet_report.json")
     if network:
         out["network"] = {"curved_gain": network.get("curved", {}).get("gain"), "interaction": network.get("interaction")}

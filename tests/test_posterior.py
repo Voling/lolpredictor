@@ -1,7 +1,11 @@
 import numpy as np
 
 from synergy.features.posterior import (
+    ANCHOR,
+    BASE_SIGMA,
     DEFAULT_TABLE,
+    FOUNTAIN_POINT,
+    FRAME,
     bridge_at,
     dead_mask,
     death_spans,
@@ -142,3 +146,70 @@ def test_top_regions_keep_the_largest_masses_in_order():
     # then
     assert order.tolist() == [[1, 2]]
     assert np.allclose(picked.astype(float), [[0.6, 0.3]], atol=1e-3)
+
+
+def test_known_points_tag_frames_kill_spots_and_fountain_visits():
+    # given
+    frames = np.array([[7000.0, 7000.0], [7000.0, 7000.0], [7000.0, 7000.0]])
+    certain = [(0.3, 394.0, 461.0), (1.5, 6000.0, 6500.0)]
+    spans = death_spans([(1.5, 6)])
+
+    # when
+    points = known_points(frames, np.array([True, True, True]), spans, certain, [], team=100)
+
+    # then
+    assert points.shape[1] == 4
+    assert points[points[:, 0] == 0.0, 3].tolist() == [FRAME]
+    assert points[points[:, 0] == 0.3, 3].tolist() == [FOUNTAIN_POINT]
+    assert points[points[:, 0] == 1.5, 3].tolist() == [ANCHOR]
+    assert points[np.isclose(points[:, 0], 1.5 + 16.0 / 60.0), 3].tolist() == [FOUNTAIN_POINT]
+
+
+def test_a_player_stays_where_they_were_until_a_recall_lands():
+    # given
+    points = np.array([[0.0, 7000.0, 7000.0, FRAME], [0.9, 394.0, 461.0, FOUNTAIN_POINT], [1.0, 394.0, 461.0, FRAME]])
+
+    # when
+    mix = bridge_at(points, np.array([0.5, 0.85, 0.9]), DEFAULT_TABLE)
+
+    # then
+    assert mix["w"][0] == 0.0 and np.allclose(mix["p0"][0], [7000.0, 7000.0]) and np.isinf(mix["s1"][0])
+    assert mix["w"][1] == 0.0 and mix["s0"][1] > mix["s0"][0]
+    assert mix["w"][2] == 1.0 and mix["s1"][2] == 0.0 and np.allclose(mix["p1"][2], [394.0, 461.0])
+
+
+def test_a_player_leaves_the_fountain_at_walking_speed_rather_than_by_the_clock():
+    # given
+    points = np.array([[0.0, 394.0, 461.0, FOUNTAIN_POINT], [1.0, 394.0 + 6000.0, 461.0, FRAME]])
+
+    # when
+    mix = bridge_at(points, np.array([0.1, 0.5]), DEFAULT_TABLE)
+
+    # then
+    assert np.isclose(mix["w"][0], 0.5)
+    assert mix["w"][1] == 1.0
+    assert np.isfinite(mix["s0"][0]) and np.isfinite(mix["s1"][0])
+
+
+def test_between_two_fountain_visits_the_player_is_in_the_base():
+    # given
+    points = np.array([[0.0, 394.0, 461.0, FOUNTAIN_POINT], [0.5, 394.0, 461.0, FOUNTAIN_POINT], [1.0, 7000.0, 7000.0, FRAME]])
+
+    # when
+    mix = bridge_at(points, np.array([0.25]), DEFAULT_TABLE)
+    masses = region_mass(mix, team=100)
+
+    # then
+    assert mix["w"][0] == 0.0 and mix["s0"][0] == BASE_SIGMA and np.isinf(mix["s1"][0])
+    assert masses[0, REGION_INDEX["BASE_OWN"]] > 0.99
+
+
+def test_the_filtered_posterior_holds_at_the_fountain_after_a_visit():
+    # given
+    points = np.array([[0.0, 394.0, 461.0, FOUNTAIN_POINT], [1.0, 7000.0, 7000.0, FRAME]])
+
+    # when
+    mix = bridge_at(points, np.array([0.5]), DEFAULT_TABLE, filtered=True)
+
+    # then
+    assert mix["w"][0] == 0.0 and np.allclose(mix["p0"][0], [394.0, 461.0]) and np.isinf(mix["s1"][0])

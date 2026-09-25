@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-fit", action="store_true", help="reuse the saved matrix, only write the scores"
     )
     mirrored_cmd = sub.add_parser(
-        "mirrored", help="fit the cells and their interaction against each pair's own gold at 15"
+        "mirrored", help="fit the cells and their interaction against each pair's own gold at the target minute"
     )
     mirrored_cmd.add_argument("--components", type=int, default=24)
     mirrored_cmd.add_argument(
@@ -159,13 +159,17 @@ def main(argv: list[str] | None = None) -> int:
         "--target",
         choices=("gold", "events"),
         default="gold",
-        help="gold at 15, or the gold swung by events both players were present at",
+        help="gold at the target minute, or the gold swung by events both players were present at",
     )
+    sub.add_parser("duos", help="score every duo from both readings, the fit and their games together at the target minute")
+    evaluation_cmd = sub.add_parser("evaluation", help="price objectives against wins from game states up to the target minute")
+    evaluation_cmd.add_argument("--sample", type=int, default=40000, help="matches to fit the prices on")
     pairnet_cmd = sub.add_parser(
-        "pairnet", help="fit a network on the four seats of each pair against the pair's own gold at 15"
+        "pairnet", help="fit a network on the four seats of each pair against the pair's own gold at the target minute"
     )
     pairnet_cmd.add_argument("--epochs", type=int, default=12)
     pairnet_cmd.add_argument("--seeds", type=int, default=5, help="repeat the network and its curved null this many times")
+    pairnet_cmd.add_argument("--hold-premade", action="store_true", help="train on strangers only and hold every premade pair out")
     sub.add_parser("validate", help="check the corpus for integrity problems")
     sub.add_parser("profiles", help="rebuild the player profile table from the corpus")
     sub.add_parser("status", help="show corpus and model status")
@@ -372,10 +376,20 @@ def main(argv: list[str] | None = None) -> int:
         pairs = attach_dyads(tables["pairs"], tables.get("dyads"))
         _report(fit_gold(pairs, settings, min_games=args.min_games))
         return 0
+    if args.command == "duos":
+        from .ml.duos import fit_duo_records
+
+        _report(fit_duo_records(settings))
+        return 0
+    if args.command == "evaluation":
+        from .ml.gold import fit_target_evaluation
+
+        _report(fit_target_evaluation(settings, sample=args.sample))
+        return 0
     if args.command == "pairnet":
         from .ml.pairnet import fit_pairnet
 
-        _report(fit_pairnet(settings, epochs=args.epochs, seeds=args.seeds))
+        _report(fit_pairnet(settings, epochs=args.epochs, seeds=args.seeds, hold_premade=args.hold_premade))
         return 0
     if args.command == "mirrored":
         from .ml.mirrored import fit_mirrored, fit_positions

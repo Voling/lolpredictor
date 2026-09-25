@@ -32,7 +32,7 @@ def test_plan_slices_the_ordered_steps_and_rejects_unknown_ones():
 
     # then
     assert middle == ["stream", "profiles", "blocks"]
-    assert tail == ["mirrored", "scores", "network"]
+    assert tail == ["mirrored", "scores", "duos", "network"]
     with pytest.raises(ValueError):
         plan("blocks", "stream")
     with pytest.raises(ValueError):

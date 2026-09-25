@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,10 +41,14 @@ def create_app() -> FastAPI:
     app = FastAPI(title="lolpredictor", version="1.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
+        allow_origins=[origin for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if origin],
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
+    @app.get("/api/health")
+    def health():
+        return {"ok": True}
 
     @app.get("/api/status")
     def status():

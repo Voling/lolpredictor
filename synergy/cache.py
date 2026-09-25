@@ -14,6 +14,8 @@ class Cache:
         self.settings = settings or get_settings()
         self.client = None
         self._build: str | None = None
+        if self.settings.redis_url in ("", "disabled"):
+            return
         try:
             import redis
 

@@ -6,6 +6,7 @@ from psycopg.rows import tuple_row
 from ..config import Settings, get_settings
 from ..features.anchors import plausible
 from ..features.posterior import (
+    FRAME,
     SIGMA_FILE,
     TOP,
     anchor_points,
@@ -187,7 +188,7 @@ def calibrate_sigma(settings: Settings, match_ids: list[str]) -> dict:
                 spot["xy"][seat], spot["known"][seat], death_spans(kills.get(seat + 1, [])), [], [],
                 100 if blue_of[seat] else 200,
             )
-            frames_only = frames_only[np.isclose(frames_only[:, 0], np.round(frames_only[:, 0]))]
+            frames_only = frames_only[frames_only[:, 3] == FRAME]
             witnessed = [
                 (m, x, y) for m, x, y in claimed.get(seat + 1, [])
                 if plausible([tuple(p) for p in frames_only], m, (x, y))

@@ -14,7 +14,6 @@ from ..ingest.store import Store
 from .gold import objective_prices
 from .interaction import SEED, TEAM_PAIRS, _basis
 
-MINUTE = 15
 COMPONENTS = 24
 BLOCK = 8000
 ADDITIVE_PENALTIES = (1e2, 1e3, 1e4)
@@ -33,7 +32,8 @@ SEAT_REPORT_FILE = "seat_report.json"
 GOLD_QUERY = (
     "SELECT f.match_id, p.puuid, sum(f.total_gold) AS gold FROM frames f"
     " JOIN participations p ON p.match_id = f.match_id AND p.puuid = f.puuid"
-    " WHERE f.minute = %s GROUP BY 1,2"
+    " JOIN (SELECT match_id, max(minute) AS last FROM frames GROUP BY match_id) l ON l.match_id = f.match_id"
+    " WHERE f.minute = LEAST(%s, l.last) GROUP BY 1,2"
 )
 
 
@@ -64,7 +64,8 @@ def artifact_names(target: str) -> tuple[str, str]:
     return f"interaction_matrix{suffix}.npz", f"interaction_report{suffix}.json"
 
 
-def seat_gold(settings: Settings, match_id: np.ndarray, seat_puuid: np.ndarray, minute: int = MINUTE) -> np.ndarray:
+def seat_gold(settings: Settings, match_id: np.ndarray, seat_puuid: np.ndarray, minute: int | None = None) -> np.ndarray:
+    minute = minute or settings.target_minute
     store = Store(settings)
     try:
         with store.conn.cursor() as cursor:
@@ -399,11 +400,12 @@ def fit_mirrored(
     own = held.products @ found["weights"][widths[0] :].float()
     report = {
         "target": (
-            "each pair's gold at 15 against the same two enemy seats"
+            f"each pair's gold at {settings.target_minute} against the same two enemy seats"
             if target == "gold"
             else "gold swung by kills, plates and objectives both players were present at, against the same two enemy seats"
         ),
         "device": device,
+        "minute": settings.target_minute,
         "matches": int(sound.sum()),
         "pair_rows": int(len(fitted.target)),
         "held_out_rows": int(len(held.target)),
@@ -470,7 +472,8 @@ def fit_mirrored(
         columns=np.array(columns),
         centre=basis["centre"],
         spread=basis["spread"],
-        units=np.array("gold at 15"),
+        units=np.array(f"gold at {settings.target_minute}"),
+        minute=settings.target_minute,
     )
     (settings.model_dir / report_file).write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
@@ -528,7 +531,7 @@ def fit_positions(
         readings = scale[index] * np.concatenate([served(fit, blue), served(fit, red)])
         quantiles[index] = np.quantile(readings, grid)
         print(
-            f"  {name:8} seat edge at 15, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f},"
+            f"  {name:8} seat edge at {settings.target_minute}, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f},"
             f" {int(dead.sum())} dead cells, served readings scaled by {scale[index]:.3f},"
             f" spread {readings.std():,.0f} gold over {len(readings):,} seats",
             flush=True,
@@ -539,10 +542,12 @@ def fit_positions(
         centres=centres,
         scale=scale,
         quantiles=quantiles,
+        minute=settings.target_minute,
         columns=np.array(columns),
         positions=np.array(list(POSITIONS)),
     )
     report = {
+        "minute": settings.target_minute,
         "held_out": held,
         "scale": {name: round(float(scale[index]), 3) for index, name in enumerate(POSITIONS)},
         "matches": int(sound.sum()),

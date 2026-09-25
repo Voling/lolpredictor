@@ -10,8 +10,11 @@ import pytest
 from synergy.config import Settings
 from synergy.ml.serving import (
     NAMES_TABLE,
+    DUO_RECORDS,
+    DUO_SCORES,
     NoGamesInPosition,
     cached,
+    duo_between,
     known_names,
     lineup_between,
     pair_between,
@@ -67,9 +70,9 @@ def test_a_pair_scores_fifty_at_the_average_and_projects_its_fit_into_gold_at_15
     off_role = pair_between("a", "JUNGLE", "c", "MIDDLE", settings)
 
     # then
-    assert unrelated["score"] == 50.0 and unrelated["projected_gold_at_15"] == 0.0
-    assert alike["score"] == 64.0 and alike["projected_gold_at_15"] == 5.0
-    assert off_role["score"] == 36.0 and off_role["projected_gold_at_15"] == -5.0
+    assert unrelated["score"] == 50.0 and unrelated["projected_gold"] == 0.0
+    assert alike["score"] == 64.0 and alike["projected_gold"] == 5.0
+    assert off_role["score"] == 36.0 and off_role["projected_gold"] == -5.0
 
 
 def test_the_edge_splits_into_each_seat_and_the_fit_and_sums_to_the_total(serving_settings):
@@ -164,7 +167,7 @@ def test_a_lineup_sums_its_ten_pairs_and_ranks_against_corpus_teams(serving_sett
     assert len(result["pairs"]) == 10
     assert np.isclose(result["synergy"], sum(pair["synergy"] for pair in result["pairs"]), rtol=1e-12, atol=1e-15)
     assert 0.0 <= result["percentile"] <= 100.0
-    assert 0.0 < result["score"] < 100.0 and result["projected_gold_at_15"] == round(result["synergy"] * 100.0, 2)
+    assert 0.0 < result["score"] < 100.0 and result["projected_gold"] == round(result["synergy"] * 100.0, 2)
     assert all(0.0 < pair["score"] < 100.0 for pair in result["pairs"])
     assert result["pairs"][0]["synergy"] >= result["pairs"][-1]["synergy"]
     assert result["edge"]["seats"] == {"TOP": 100.0, "JUNGLE": 50.0, "MIDDLE": 40.0, "BOTTOM": 30.0, "UTILITY": 10.0}
@@ -235,3 +238,56 @@ def test_serving_a_request_never_loads_the_training_libraries():
 
     # then
     assert result.stdout.strip() == ""
+
+
+def _duo_artifacts(settings, records: list[tuple[str, str, int, float]], combos: list[str]) -> None:
+    pd.DataFrame(
+        {
+            "a": [row[0] for row in records],
+            "b": [row[1] for row in records],
+            "games": [row[2] for row in records],
+            "mean": [row[3] * 2.0 for row in records],
+            "record": [row[3] for row in records],
+        }
+    ).to_parquet(settings.model_dir / DUO_RECORDS, index=False)
+    grid = np.linspace(-400.0, 400.0, 1001)
+    np.savez(settings.model_dir / DUO_SCORES, quantiles=grid, combos=np.array(combos), combo_quantiles=np.stack([grid] * len(combos)))
+
+
+def test_the_duo_score_adds_the_record_together_to_both_readings_and_the_fit(serving_settings):
+    # given
+    _duo_artifacts(serving_settings, [("a", "b", 12, 40.0)], ["JUNGLE+TOP"])
+
+    # when
+    forward = duo_between("a", "TOP", "b", "JUNGLE", serving_settings)
+    backward = duo_between("b", "JUNGLE", "a", "TOP", serving_settings)
+
+    # then
+    assert forward["projected_gold"] == backward["projected_gold"] == 195.0
+    assert forward["edge"]["record"] == {"gold": 40.0, "games": 12}
+    assert forward["edge"]["total"] == 195.0 and forward["edge"]["fit"]["gold"] == 5.0
+    assert forward["percentile"] == 74.4 and forward["score"] == backward["score"] == 57.0
+
+
+def test_a_duo_never_seen_together_scores_on_its_readings_and_fit_alone(serving_settings):
+    # given
+    _duo_artifacts(serving_settings, [("a", "b", 12, 40.0)], ["JUNGLE+TOP", "MIDDLE+TOP"])
+
+    # when
+    found = duo_between("a", "TOP", "c", "MIDDLE", serving_settings)
+
+    # then
+    assert found["edge"]["record"] == {"gold": 0.0, "games": 0}
+    assert found["projected_gold"] == 140.0
+
+
+def test_without_duo_scores_a_pair_keeps_the_fit_on_top(serving_settings):
+    # given
+    settings = serving_settings
+
+    # when
+    duo = duo_between("a", "TOP", "b", "JUNGLE", settings)
+    pair = pair_between("a", "TOP", "b", "JUNGLE", settings)
+
+    # then
+    assert duo == pair

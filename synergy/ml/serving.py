@@ -22,7 +22,10 @@ MATRIX_FILE = "interaction_matrix.npz"
 SCORES_FILE = "interaction_scores.npz"
 SEATS_FILE = "seat_weights.npz"
 REPORT_FILE = "interaction_report.json"
-UNRELIABLE = "the pair term did not beat its shuffled partners on this corpus, so the fit is shown for inspection only"
+DUO_RECORDS = "duo_records.parquet"
+DUO_SCORES = "duo_scores.npz"
+DUO_REPORT = "duo_report.json"
+UNRELIABLE = "the fit did not beat shuffled partners on this corpus, so it is shown for inspection only"
 
 _held: dict[tuple[str, str], tuple[tuple[int, int], object]] = {}
 
@@ -162,6 +165,13 @@ def _score(value: float, quantiles: np.ndarray) -> float:
     return round(float(50.0 + 50.0 * np.tanh((value - float(quantiles.mean())) / (SCORE_SPAN * spread))), 1)
 
 
+def target_minute(saved: dict) -> int:
+    if "minute" in saved:
+        return int(saved["minute"])
+    units = str(saved.get("units", "gold at 15"))
+    return int(units.rsplit(" ", 1)[-1]) if units.rsplit(" ", 1)[-1].isdigit() else 15
+
+
 def _gold(value: float, scores: dict) -> float:
     return float(value * float(scores["gold_sd"])) if "gold_sd" in scores else float(value)
 
@@ -215,7 +225,8 @@ def pair_between(
     fit = {"gold": round(gold, 1), "score": _score(value, quantiles), "percentile": _percentile(value, quantiles)}
     return {
         "score": fit["score"],
-        "projected_gold_at_15": round(gold, 2),
+        "projected_gold": round(gold, 2),
+        "minute": target_minute(saved),
         "synergy": value,
         "percentile": fit["percentile"],
         "reliable": reliable,
@@ -239,6 +250,37 @@ def pair_between(
             "left": _reading(styles, left_position, columns, a, terms.sum(axis=1)),
             "right": _reading(styles, right_position, columns, b, terms.sum(axis=0)),
         },
+    }
+
+
+def _record_index(path: Path) -> dict[tuple[str, str], tuple[int, float]]:
+    table = pd.read_parquet(path, columns=["a", "b", "games", "record"])
+    return {(a, b): (int(games), float(record)) for a, b, games, record in zip(table["a"], table["b"], table["games"], table["record"])}
+
+
+def record_between(left: str, right: str, settings: Settings | None = None) -> dict:
+    records = cached((settings or get_settings()).served_model_dir / DUO_RECORDS, "records", _record_index)
+    games, gold = (records or {}).get((left, right) if left < right else (right, left), (0, 0.0))
+    return {"gold": round(gold, 1), "games": games}
+
+
+def duo_between(
+    left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None
+) -> dict | None:
+    settings = settings or get_settings()
+    found = pair_between(left, left_position, right, right_position, settings)
+    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    if found is None or scores is None:
+        return found
+    record = record_between(left, right, settings)
+    total = round(found["edge"]["total"] + record["gold"], 1)
+    quantiles = _quantiles(scores, "quantiles", combination(left_position, right_position))
+    return {
+        **found,
+        "score": _score(total, quantiles),
+        "percentile": _percentile(total, quantiles),
+        "projected_gold": total,
+        "edge": {**found["edge"], "record": record, "total": total},
     }
 
 
@@ -276,7 +318,7 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
     loaded = _loaded(settings)
     if loaded is None:
         return None
-    _, _, scores, seats, _, vectors = loaded
+    _, saved, scores, seats, _, vectors = loaded
     pairs = []
     for (left_position, left), (right_position, right) in combinations(
         [(position, assignments[position]) for position in POSITIONS], 2
@@ -294,7 +336,8 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
     gold = _gold(total, scores)
     return {
         "score": _score(total, scores["team_quantiles"]),
-        "projected_gold_at_15": round(gold, 2),
+        "projected_gold": round(gold, 2),
+        "minute": target_minute(saved),
         "synergy": total,
         "percentile": _percentile(total, scores["team_quantiles"]),
         "reliable": reliable,

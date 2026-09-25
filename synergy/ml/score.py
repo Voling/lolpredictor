@@ -12,7 +12,7 @@ from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
-from .serving import hinge_between, known_names, lineup_between, pair_between, position_profile
+from .serving import duo_between, hinge_between, known_names, lineup_between, position_profile
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ class SynergyService:
                 if not required:
                     return None
                 raise ValueError(f"{riot_id(profile)} has no games as {positions[side]} in the corpus")
-        return pair_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
+        return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
 
     @staticmethod
     def _warnings(a: pd.Series, b: pd.Series, interaction: dict | None) -> list[str]:
@@ -256,7 +256,8 @@ class SynergyService:
         interaction = self._interaction(a, b, positions, positions_required)
         return {
             "score": interaction["score"] if interaction else None,
-            "projected_gold_at_15": interaction["projected_gold_at_15"] if interaction else None,
+            "projected_gold": interaction["projected_gold"] if interaction else None,
+            "minute": interaction["minute"] if interaction else None,
             "reliable": bool(interaction and interaction["reliable"]),
             "note": interaction["note"] if interaction else (NOT_FITTED if positions else NO_POSITIONS),
             "warnings": self._warnings(a, b, interaction),
@@ -327,7 +328,7 @@ class SynergyService:
                     "b_riot_id": riot_id(profiles[right]),
                     "positions": result["positions"],
                     "score": result["score"],
-                    "projected_gold_at_15": result["projected_gold_at_15"],
+                    "projected_gold": result["projected_gold"],
                     "percentile": interaction["percentile"] if interaction else None,
                     "reliable": result["reliable"],
                     "games_together": result["games_together"],
@@ -393,11 +394,14 @@ class SynergyService:
                 rows.append({"riot_id": friend["riot_id"], "note": found["note"]})
                 continue
             if own is None:
-                own = {"position": interaction["positions"]["left"], "reading": interaction["edge"]["left"], "evidence": interaction["left_evidence"], "games": interaction["left_games"]}
+                own = {"position": interaction["positions"]["left"], "reading": interaction["edge"]["left"], "evidence": interaction["left_evidence"], "games": interaction["left_games"], "minute": interaction["minute"]}
             rows.append(
                 {
                     "riot_id": friend["riot_id"],
                     "position": interaction["positions"]["right"],
+                    "score": interaction["score"],
+                    "projected_gold": interaction["projected_gold"],
+                    "record": interaction["edge"].get("record"),
                     "reading": interaction["edge"]["right"],
                     "fit": interaction["edge"]["fit"],
                     "total": interaction["edge"]["total"],
@@ -408,7 +412,7 @@ class SynergyService:
                     "note": None,
                 }
             )
-        ranked = sorted(rows, key=lambda row: -row["total"] if row.get("total") is not None else float("inf"))
+        ranked = sorted(rows, key=lambda row: (-row["score"], -row["total"]) if row.get("score") is not None else (float("inf"), 0.0))
         return {"me": {"riot_id": riot_id(anchor), **(own or {})}, "friends": ranked}
 
     def best_partners(self, query: str, limit: int = 10) -> dict:

@@ -2,7 +2,9 @@ import pandas as pd
 import pytest
 
 from synergy.ml.score import SynergyService
-from synergy.ml.serving import NAMES_TABLE
+import numpy as np
+
+from synergy.ml.serving import DUO_RECORDS, DUO_SCORES, NAMES_TABLE
 
 
 @pytest.fixture
@@ -33,7 +35,7 @@ def test_a_pair_carries_its_position_score_on_top_and_keeps_the_reading_stats_be
     # then
     interaction = result["interaction"]
     assert result["score"] == interaction["score"] == 64.0
-    assert result["projected_gold_at_15"] == interaction["projected_gold_at_15"] == 5.0
+    assert result["projected_gold"] == interaction["projected_gold"] == 5.0
     assert {"synergy", "percentile", "drivers", "reading", "edge", "left_evidence"} <= set(interaction)
     assert not {"synergy", "drivers"} & set(result)
     assert interaction["positions"] == {"left": "TOP", "right": "JUNGLE"}
@@ -111,3 +113,27 @@ def test_friends_are_ranked_by_the_projected_edge_and_a_refused_pair_keeps_its_r
     assert beta["fit"]["gold"] == 5.0 and beta["games_together"] == 4 and beta["thin"] is False
     assert "both given TOP" in found["friends"][1]["note"]
     assert found["friends"][2]["note"] == "not in the corpus"
+
+
+def test_friends_are_ranked_by_the_duo_score_which_carries_the_record_together(service):
+    # given
+    pd.DataFrame(
+        {"a": ["a", "a"], "b": ["b", "c"], "games": [20, 3], "mean": [-150.0, 400.0], "record": [-100.0, 50.0]}
+    ).to_parquet(service.settings.model_dir / DUO_RECORDS, index=False)
+    grid = np.linspace(-400.0, 400.0, 1001)
+    np.savez(
+        service.settings.model_dir / DUO_SCORES,
+        quantiles=grid,
+        combos=np.array(["JUNGLE+TOP", "MIDDLE+TOP"]),
+        combo_quantiles=np.stack([grid, grid]),
+    )
+
+    # when
+    found = service.friends("Alpha#NA1", ["Beta#NA1", "Gamma#NA1:middle"])
+
+    # then
+    gamma, beta = found["friends"]
+    assert gamma["riot_id"] == "Gamma#NA1" and beta["riot_id"] == "Beta#NA1"
+    assert gamma["projected_gold"] == 190.0 and beta["projected_gold"] == 55.0
+    assert gamma["score"] > beta["score"]
+    assert beta["record"] == {"gold": -100.0, "games": 20}

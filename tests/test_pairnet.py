@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from synergy.ml.pairnet import (
+    COMBINATIONS,
     CurvedNet,
     InteractionNet,
     explained,
@@ -11,6 +12,7 @@ from synergy.ml.pairnet import (
     pair_index,
     pair_target,
     shape,
+    split_rows,
     train_interaction,
 )
 
@@ -68,6 +70,27 @@ def test_pair_rows_index_the_two_seats_and_their_mirrors_for_every_combination()
     assert np.isclose(target[0], gold[0, 0] + gold[0, 1] - gold[0, 5] - gold[0, 6])
     picked = gather(torch.as_tensor(reduced), torch.as_tensor(index[:2]))
     assert picked.shape == (2, 4, 6) and torch.allclose(picked[0, 3], torch.as_tensor(reduced[0, 6]))
+
+
+def test_holding_premades_out_keeps_every_premade_row_from_the_fit():
+    # given
+    rng = np.random.default_rng(8)
+    blue, red, _ = _seats(rng, 12)
+    everyone = np.arange(12)
+    all_raw = pair_index(blue, red, everyone)
+    combo_all = np.repeat(np.arange(len(COMBINATIONS)), len(everyone))
+    match_all = np.tile(everyone, len(COMBINATIONS))
+    ours_all = (match_all % 4 == 0) & (combo_all == 0)
+    learn, check, test = np.arange(0, 8), np.arange(8, 10), np.arange(10, 12)
+
+    # when
+    plain, plain_combo, plain_ours = split_rows(all_raw, combo_all, match_all, ours_all, learn, check, test, False)
+    held, held_combo, held_ours = split_rows(all_raw, combo_all, match_all, ours_all, learn, check, test, True)
+
+    # then
+    assert len(plain["learn"]) == 80 and len(plain["held"]) == 20 and plain_ours.sum() == 0
+    assert len(held["learn"]) == 78 and len(held["held"]) == 23 and held_ours.sum() == 3
+    assert (held_combo["held"][held_ours] == 0).all() and set(held["held"][held_ours, 0]) == {0, 4, 8}
 
 
 def test_shape_reports_the_spread_and_the_tails_of_a_distribution():

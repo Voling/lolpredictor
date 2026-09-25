@@ -51,7 +51,7 @@ def train(settings: Settings | None = None, min_games: int | None = None) -> dic
     try:
         advantage = team_advantage(settings)
     except ValueError as exc:
-        logger.warning("objectives cannot be priced, training on gold at 15 alone: %s", exc)
+        logger.warning("objectives cannot be priced, training on gold at the target minute alone: %s", exc)
         advantage = team_gold(settings)
     model = SynergyModel()
     report = model.fit(features, controls, advantage=advantage)
