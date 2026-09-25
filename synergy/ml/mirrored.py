@@ -1,9 +1,11 @@
 import json
+import time
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import torch
 
 from ..config import Settings, get_settings
 from ..features.positions import POSITIONS
@@ -177,7 +179,13 @@ def pair_design(
     rows: np.ndarray,
     upper: tuple[np.ndarray, np.ndarray],
     shuffle: np.random.Generator | None = None,
+    cells: torch.Tensor | None = None,
 ) -> PairRows:
+    source = cells if cells is not None else torch.as_tensor(board.reduced)
+    device = source.device
+    project = torch.as_tensor(projection, dtype=torch.float32, device=device)
+    left_index = torch.as_tensor(upper[0], device=device)
+    right_index = torch.as_tensor(upper[1], device=device)
     additive, products, target, depth, premade = [], [], [], [], []
     combinations = [(a, b) for a in range(len(POSITIONS)) for b in range(a + 1, len(POSITIONS))]
     names, match_id = board.seat_puuid, board.match_id
@@ -186,15 +194,19 @@ def pair_design(
         first, second = names[row, one], names[row, other]
         return (first, second) if first < second else (second, first)
 
+    def seat(values: np.ndarray) -> torch.Tensor:
+        return torch.as_tensor(values, dtype=torch.long, device=device)
+
     for start in range(0, len(rows), BLOCK):
         chunk = rows[start : start + BLOCK]
-        cells = board.reduced[chunk].astype(np.float64)
-        small = cells @ projection
-        at = np.arange(len(chunk))
+        block = source[seat(chunk)].float()
+        small = block @ project
+        at = torch.arange(len(chunk), device=device)
         for first, second in combinations:
             a, b = board.blue[chunk, first], board.blue[chunk, second]
             c, d = board.red[chunk, first], board.red[chunk, second]
-            additive.append((cells[at, a] + cells[at, b]) - (cells[at, c] + cells[at, d]))
+            ta, tb, tc, td = seat(a), seat(b), seat(c), seat(d)
+            additive.append((block[at, ta] + block[at, tb]) - (block[at, tc] + block[at, td]))
             if board.swings is None:
                 target.append(board.gold[chunk, a] + board.gold[chunk, b] - board.gold[chunk, c] - board.gold[chunk, d])
             else:
@@ -209,24 +221,24 @@ def pair_design(
                 )
             depth.append(np.minimum.reduce([board.games[chunk, a], board.games[chunk, b], board.games[chunk, c], board.games[chunk, d]]))
             premade.append(np.array([couple(row, a[k], b[k]) in board.premade for k, row in enumerate(chunk)]))
-            order = shuffle.permutation(len(chunk)) if shuffle is not None else at
-            ours = small[at, a][:, :, None] * small[order, b[order]][:, None, :]
-            theirs = small[at, c][:, :, None] * small[order, d[order]][:, None, :]
-            ours, theirs = ours + ours.transpose(0, 2, 1), theirs + theirs.transpose(0, 2, 1)
-            products.append((ours - theirs)[:, upper[0], upper[1]])
+            order = seat(shuffle.permutation(len(chunk))) if shuffle is not None else at
+            ours = small[at, ta][:, :, None] * small[order, tb[order]][:, None, :]
+            theirs = small[at, tc][:, :, None] * small[order, td[order]][:, None, :]
+            ours, theirs = ours + ours.transpose(1, 2), theirs + theirs.transpose(1, 2)
+            products.append((ours - theirs)[:, left_index, right_index])
     return PairRows(
-        np.concatenate(additive).astype(np.float32),
-        np.concatenate(products).astype(np.float32),
+        torch.cat(additive),
+        torch.cat(products),
         np.concatenate(target),
         np.concatenate(depth),
         np.concatenate(premade),
     )
 
 
-def _scaled(fitted: np.ndarray, held: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    spread = fitted.std(axis=0, keepdims=True)
+def _scaled(fitted: torch.Tensor, held: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    spread = fitted.std(dim=0, unbiased=False, keepdim=True)
     spread[spread == 0.0] = 1.0
-    return fitted / spread, held / spread, spread[0]
+    return fitted / spread, held / spread, spread[0].cpu().numpy().astype(np.float64)
 
 
 def _gram(design: np.ndarray, values: np.ndarray, rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -240,48 +252,83 @@ def _gram(design: np.ndarray, values: np.ndarray, rows: np.ndarray) -> tuple[np.
     return left, right
 
 
-def _fit_pair(left, right, widths, held_design, held_values, middle) -> dict:
+def _gram_parts(parts: list[torch.Tensor], values: torch.Tensor, rows: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    width = sum(part.shape[1] for part in parts)
+    device = parts[0].device
+    left = torch.zeros((width, width), dtype=torch.float64, device=device)
+    right = torch.zeros(width, dtype=torch.float64, device=device)
+    count = len(rows) if rows is not None else len(values)
+    for start in range(0, count, BLOCK * 4):
+        pick = rows[start : start + BLOCK * 4] if rows is not None else slice(start, start + BLOCK * 4)
+        block = torch.cat([part[pick] for part in parts], dim=1)
+        left += (block.T @ block).double()
+        right += (block.T @ values[pick].float()).double()
+    return left, right
+
+
+def _solve(left: torch.Tensor, right: torch.Tensor, penalty: torch.Tensor) -> torch.Tensor:
+    return torch.linalg.solve(left + torch.diag(penalty), right)
+
+
+def _explained(values: torch.Tensor, guess: torch.Tensor) -> float:
+    values, guess = values.double(), guess.double()
+    return 1.0 - float(((values - guess) ** 2).sum()) / float(((values - values.mean()) ** 2).sum())
+
+
+def _predict(parts: list[torch.Tensor], weights: torch.Tensor, middle: float) -> torch.Tensor:
+    out, start = torch.full((parts[0].shape[0],), middle, dtype=torch.float32, device=parts[0].device), 0
+    for part in parts:
+        out += part @ weights[start : start + part.shape[1]].float()
+        start += part.shape[1]
+    return out
+
+
+def _fit_pair(left, right, widths, held_parts, held_values, middle) -> dict:
     width = widths[0]
+    device = left.device
     alone = None
     for penalty in ADDITIVE_PENALTIES:
-        weights = ridge(left[:width, :width], right[:width], np.repeat(penalty, width))
-        score = explained(held_values, middle + held_design[:, :width] @ weights.astype(np.float32))
+        weights = _solve(left[:width, :width], right[:width], torch.full((width,), penalty, dtype=torch.float64, device=device))
+        score = _explained(held_values, _predict(held_parts[:1], weights, middle))
         if alone is None or score > alone[0]:
             alone = (score, weights)
     together = None
     for first in ADDITIVE_PENALTIES:
         for second in PRODUCT_PENALTIES:
-            penalty = np.concatenate([np.repeat(first, widths[0]), np.repeat(second, widths[1])])
-            weights = ridge(left, right, penalty)
-            score = explained(held_values, middle + held_design @ weights.astype(np.float32))
+            penalty = torch.cat(
+                [torch.full((widths[0],), first, dtype=torch.float64, device=device), torch.full((widths[1],), second, dtype=torch.float64, device=device)]
+            )
+            weights = _solve(left, right, penalty)
+            score = _explained(held_values, _predict(held_parts, weights, middle))
             if together is None or score > together[0]:
                 together = (score, weights)
     return {"alone": alone[0], "alone_weights": alone[1], "together": together[0], "weights": together[1]}
 
 
-def _slice(name, fitted: PairRows, held: PairRows, fit_design, test_design, mask_fit, mask_test, widths, fit_middle, found) -> dict | None:
+def _slice(name, fitted: PairRows, held: PairRows, fit_target, test_target, mask_fit, mask_test, widths, fit_middle, found) -> dict | None:
     if int(mask_test.sum()) < SMALLEST_SLICE:
         return None
-    rows_test = np.nonzero(mask_test)[0]
-    values = held.target[rows_test]
-    design = test_design[rows_test]
+    device = fit_target.device
+    rows_test = torch.as_tensor(np.nonzero(mask_test)[0], device=device)
+    values = test_target[rows_test]
+    parts = [held.additive[rows_test], held.products[rows_test]]
     width = widths[0]
-    scored_alone = explained(values, fit_middle + design[:, :width] @ found["alone_weights"].astype(np.float32))
-    scored_together = explained(values, fit_middle + design @ found["weights"].astype(np.float32))
+    scored_alone = _explained(values, _predict(parts[:1], found["alone_weights"], fit_middle))
+    scored_together = _explained(values, _predict(parts, found["weights"], fit_middle))
     out = {
         "rows_fitted": int(mask_fit.sum()),
         "rows_held_out": int(len(rows_test)),
-        "target_spread": round(float(values.std()), 1),
+        "target_spread": round(float(values.double().std(unbiased=False)), 1),
         "scored_gain": round(scored_together - scored_alone, 5),
-        "scored_spread": round(float((design[:, width:] @ found["weights"][width:].astype(np.float32)).std()), 1),
+        "scored_spread": round(float((parts[1] @ found["weights"][width:].float()).double().std(unbiased=False)), 1),
     }
     if int(mask_fit.sum()) >= SMALLEST_REFIT:
-        rows_fit = np.nonzero(mask_fit)[0]
-        middle = float(fitted.target[rows_fit].mean())
-        left, right = _gram(fit_design, fitted.target - middle, rows_fit)
-        refit = _fit_pair(left, right, widths, design, values, middle)
+        rows_fit = torch.as_tensor(np.nonzero(mask_fit)[0], device=device)
+        middle = float(fit_target[rows_fit].double().mean())
+        left, right = _gram_parts([fitted.additive, fitted.products], fit_target - middle, rows_fit)
+        refit = _fit_pair(left, right, widths, parts, values, middle)
         out["refit_gain"] = round(refit["together"] - refit["alone"], 5)
-        out["refit_spread"] = round(float((design[:, width:] @ refit["weights"][width:].astype(np.float32)).std()), 1)
+        out["refit_spread"] = round(float((parts[1] @ refit["weights"][width:].float()).double().std(unbiased=False)), 1)
     print(f"  {name:14} {out}", flush=True)
     return out
 
@@ -293,10 +340,13 @@ def fit_mirrored(
     seed: int = SEED,
     source: str = "style",
     target: str = "gold",
+    device: str | None = None,
 ) -> dict:
     settings = settings or get_settings()
     if target not in TARGETS:
         raise ValueError(f"target must be one of {TARGETS}")
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    clock = time.time()
     basis = _basis(settings, stream, seed, source)
     reduced, columns = basis["reduced"], [str(name) for name in basis["columns"]]
     dim = len(columns)
@@ -318,37 +368,42 @@ def fit_mirrored(
     test = np.array(sorted(set(basis["test"]) & set(np.nonzero(sound)[0])))
     print(
         f"mirrored pairs on {int(sound.sum()):,} matches, fitting {len(fit):,}, holding out {len(test):,},"
-        f" {len(board.premade):,} premade pairs known, target {target}",
+        f" {len(board.premade):,} premade pairs known, target {target}, on {device}, basis ready in {time.time() - clock:.0f}s",
         flush=True,
     )
 
+    clock = time.time()
+    cells = torch.as_tensor(reduced, device=device)
     projection = directions(reduced, fit, components)
     upper = np.triu_indices(components)
-    fitted = pair_design(board, projection, fit, upper)
-    held = pair_design(board, projection, test, upper)
+    fitted = pair_design(board, projection, fit, upper, cells=cells)
+    held = pair_design(board, projection, test, upper, cells=cells)
     fitted.additive, held.additive, _ = _scaled(fitted.additive, held.additive)
     fitted.products, held.products, product_spread = _scaled(fitted.products, held.products)
     widths = (fitted.additive.shape[1], fitted.products.shape[1])
-    fit_design = np.hstack([fitted.additive, fitted.products])
-    test_design = np.hstack([held.additive, held.products])
-    print(f"{len(fitted.target):,} pair rows fitted, spread {fitted.target.std():,.0f} gold", flush=True)
+    fit_target = torch.as_tensor(fitted.target, dtype=torch.float32, device=device)
+    test_target = torch.as_tensor(held.target, dtype=torch.float32, device=device)
+    held_parts = [held.additive, held.products]
+    print(f"{len(fitted.target):,} pair rows fitted, spread {fitted.target.std():,.0f} gold, design built in {time.time() - clock:.0f}s", flush=True)
 
+    clock = time.time()
     middle = float(fitted.target.mean())
-    left, right = _gram(fit_design, fitted.target - middle, np.arange(len(fitted.target)))
-    found = _fit_pair(left, right, widths, test_design, held.target, middle)
-    weights = found["weights"]
+    left, right = _gram_parts([fitted.additive, fitted.products], fit_target - middle)
+    found = _fit_pair(left, right, widths, held_parts, test_target, middle)
+    weights = found["weights"].cpu().numpy()
     product_weights = weights[widths[0] :] / product_spread
     compact = np.zeros((components, components))
     compact[upper[0], upper[1]] = product_weights
     compact = (compact + compact.T) / 2.0
     matrix = projection @ compact @ projection.T * (TEAM_PAIRS * dim)
-    own = held.products @ weights[widths[0] :].astype(np.float32)
+    own = held.products @ found["weights"][widths[0] :].float()
     report = {
         "target": (
             "each pair's gold at 15 against the same two enemy seats"
             if target == "gold"
             else "gold swung by kills, plates and objectives both players were present at, against the same two enemy seats"
         ),
+        "device": device,
         "matches": int(sound.sum()),
         "pair_rows": int(len(fitted.target)),
         "held_out_rows": int(len(held.target)),
@@ -358,11 +413,11 @@ def fit_mirrored(
         "cells_alone": round(found["alone"], 5),
         "with_interaction": round(found["together"], 5),
         "gain": round(found["together"] - found["alone"], 5),
-        "interaction_spread": round(float(own.std()), 1),
+        "interaction_spread": round(float(own.double().std(unbiased=False)), 1),
     }
     print(
         f"cells alone {report['cells_alone']:+.5f}, with the interaction {report['with_interaction']:+.5f},"
-        f" spread {report['interaction_spread']} gold",
+        f" spread {report['interaction_spread']} gold, fitted in {time.time() - clock:.0f}s",
         flush=True,
     )
 
@@ -373,20 +428,19 @@ def fit_mirrored(
     slices["strangers"] = (~fitted.premade, ~held.premade)
     report["slices"] = {}
     for name, (mask_fit, mask_test) in slices.items():
-        result = _slice(name, fitted, held, fit_design, test_design, mask_fit, mask_test, widths, middle, found)
+        result = _slice(name, fitted, held, fit_target, test_target, mask_fit, mask_test, widths, middle, found)
         if result is not None:
             report["slices"][name] = result
 
     rng = np.random.default_rng(1000)
     draws = []
     for draw in range(NULLS):
-        shuffled_fit = pair_design(board, projection, fit, upper, shuffle=rng).products
-        shuffled_test = pair_design(board, projection, test, upper, shuffle=rng).products
+        shuffled_fit = pair_design(board, projection, fit, upper, shuffle=rng, cells=cells).products
+        shuffled_test = pair_design(board, projection, test, upper, shuffle=rng, cells=cells).products
         shuffled_fit, shuffled_test, _ = _scaled(shuffled_fit, shuffled_test)
-        null_design = np.hstack([fitted.additive, shuffled_fit])
-        null_held = np.hstack([held.additive, shuffled_test])
-        null_left, null_right = _gram(null_design, fitted.target - middle, np.arange(len(fitted.target)))
-        null = _fit_pair(null_left, null_right, widths, null_held, held.target, middle)
+        null_left, null_right = _gram_parts([fitted.additive, shuffled_fit], fit_target - middle)
+        null = _fit_pair(null_left, null_right, widths, [held.additive, shuffled_test], test_target, middle)
+        del shuffled_fit, shuffled_test
         draws.append(round(null["together"] - null["alone"], 5))
         print(f"  partners shuffled {draw + 1}/{NULLS}: the interaction adds {draws[-1]:+.5f}", flush=True)
     report["shuffled"] = draws
@@ -394,13 +448,13 @@ def fit_mirrored(
     planted = {}
     for level in PLANTED:
         seeded = np.random.default_rng(7).normal(size=(components, components))
-        seeded = (seeded + seeded.T)[upper[0], upper[1]].astype(np.float32)
+        seeded = torch.as_tensor((seeded + seeded.T)[upper[0], upper[1]], dtype=torch.float32, device=device)
         raw_fit, raw_test = fitted.products @ seeded, held.products @ seeded
-        scale = level / float(raw_fit.std())
-        planted_fit, planted_test = fitted.target + raw_fit * scale, held.target + raw_test * scale
-        planted_middle = float(planted_fit.mean())
-        planted_left, planted_right = _gram(fit_design, planted_fit - planted_middle, np.arange(len(planted_fit)))
-        recovered = _fit_pair(planted_left, planted_right, widths, test_design, planted_test, planted_middle)
+        scale = level / float(raw_fit.double().std(unbiased=False))
+        planted_fit, planted_test = fit_target + raw_fit * scale, test_target + raw_test * scale
+        planted_middle = float(planted_fit.double().mean())
+        planted_left, planted_right = _gram_parts([fitted.additive, fitted.products], planted_fit - planted_middle)
+        recovered = _fit_pair(planted_left, planted_right, widths, held_parts, planted_test, planted_middle)
         planted[f"{level:.0f} gold"] = round(recovered["together"] - recovered["alone"], 5)
         print(f"  planted {level:.0f} gold: the interaction adds {planted[f'{level:.0f} gold']:+.5f}", flush=True)
     report["planted"] = planted
