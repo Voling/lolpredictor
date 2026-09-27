@@ -8,7 +8,7 @@ from .store import Store
 
 logger = logging.getLogger(__name__)
 
-WINDOW_MINUTES = 15
+WINDOW_MINUTES = get_settings().feature_minutes
 
 
 def truncate_timeline(timeline: dict, minutes: int = WINDOW_MINUTES) -> dict:

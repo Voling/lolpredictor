@@ -61,7 +61,7 @@ def leave_one_out_ratio(frame: pd.DataFrame, seats: pd.DataFrame, prior: float, 
 def build_tendencies(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     context = priority_context(settings)
-    opportunities = with_priority(pd.read_parquet(settings.processed_dir / "opportunities.parquet"), context)
+    source = settings.processed_dir / "opportunities.parquet"
     seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"])
     out = seats[["match_id", "puuid"]].copy()
     everyone = seats[KEY].drop_duplicates().set_index(KEY)
@@ -69,7 +69,9 @@ def build_tendencies(settings: Settings | None = None) -> dict:
     shares = []
     for kind in KINDS:
         column = f"tend_{kind}"
-        subset = opportunities[opportunities["kind"] == kind].merge(seats, on=["match_id", "puuid"], how="inner")
+        rows = pd.read_parquet(source, filters=[("kind", "==", kind)])
+        subset = with_priority(rows, context).merge(seats, on=["match_id", "puuid"], how="inner")
+        del rows
         if len(subset) < MIN_ROWS or subset["outcome"].nunique() < 2:
             for cell in CELLS:
                 out[f"{column}_{cell}"] = 0.0

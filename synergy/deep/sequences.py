@@ -12,7 +12,7 @@ from ..ingest.window import truncate_timeline
 
 logger = logging.getLogger(__name__)
 
-MAX_MINUTES = 16
+MAX_MINUTES = get_settings().feature_minutes + 1
 NO_EVENT_REGION = len(REGIONS)
 OWN_JUNGLE = {"JUNGLE_OWN_TOPSIDE", "JUNGLE_OWN_BOTSIDE"}
 NUMERIC_FEATURES = [

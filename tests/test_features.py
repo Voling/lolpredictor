@@ -1,5 +1,6 @@
 import pytest
 
+from synergy.config import get_settings
 from synergy.features.early import EARLY_FEATURE_COLUMNS, early_rows
 from synergy.features.match import match_duration_minutes, participant_rows
 from synergy.features.timeline import EARLY_MINUTES, PAIR_TIMELINE_COLUMNS, VISION_WARDS, pair_rows
@@ -145,8 +146,8 @@ def test_ward_features_count_vision_wards_only():
         {"type": "WARD_PLACED", "timestamp": 63000, "creatorId": 1, "wardType": "UNDEFINED"},
     ]
     rows = {row["puuid"]: row for row in early_rows(build_match(), build_timeline(events=events))}
-    assert rows["p0"]["e_wards_pm"] == pytest.approx(2 / 15)
-    assert rows["p0"]["e_control_wards_pm"] == pytest.approx(1 / 15)
+    assert rows["p0"]["e_wards_pm"] == pytest.approx(2 / EARLY_MINUTES)
+    assert rows["p0"]["e_control_wards_pm"] == pytest.approx(1 / EARLY_MINUTES)
     assert "TEEMO_MUSHROOM" not in VISION_WARDS
     assert "UNDEFINED" not in VISION_WARDS
 
@@ -169,7 +170,7 @@ def test_pair_rows_are_capped_at_the_early_window():
         for column in PAIR_TIMELINE_COLUMNS:
             assert column in row
         assert 0.0 <= row["pair_close_share"] <= 1.0
-    assert EARLY_MINUTES == 15
+    assert EARLY_MINUTES == get_settings().feature_minutes
 
 
 def test_bot_lane_pairs_stand_closer_than_cross_map_pairs(corpus_settings):

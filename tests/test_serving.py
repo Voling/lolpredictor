@@ -12,6 +12,7 @@ from synergy.ml.serving import (
     NAMES_TABLE,
     DUO_RECORDS,
     DUO_SCORES,
+    PLAYER_HISTORY,
     NoGamesInPosition,
     cached,
     duo_between,
@@ -145,7 +146,7 @@ def test_pair_between_refuses_a_shared_position_and_a_position_never_played(serv
 
     # then
     assert "two different positions" in str(shared.value)
-    assert never.value.position == "UTILITY" and "no games as UTILITY" in str(never.value)
+    assert never.value.position == "UTILITY" and "no games as utility" in str(never.value)
     assert position_profile("b", "UTILITY", settings) == {"games": 0, "evidence": 0.0}
     assert position_profile("b", "JUNGLE", settings) == {"games": 7, "evidence": 0.9}
     assert position_profile("b", "JUNGLE", Settings(data_dir=tmp_path / "empty")) is None
@@ -291,3 +292,53 @@ def test_without_duo_scores_a_pair_keeps_the_fit_on_top(serving_settings):
 
     # then
     assert duo == pair
+
+
+def test_a_reading_adds_the_players_form_and_champion_baseline_and_ranks_among_such_readings(serving_settings):
+    # given
+    pd.DataFrame({"puuid": ["a"], "position": ["TOP"], "games": [30], "form": [40.0], "champion": [25.0]}).to_parquet(
+        serving_settings.model_dir / PLAYER_HISTORY, index=False
+    )
+    grid = np.linspace(-400.0, 400.0, 1001)
+    np.savez(
+        serving_settings.model_dir / DUO_SCORES,
+        quantiles=grid,
+        combos=np.array(["JUNGLE+TOP"]),
+        combo_quantiles=np.stack([grid]),
+        seat_positions=np.array(["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]),
+        seat_quantiles=np.stack([np.linspace(-200.0, 200.0, 1001)] * 5),
+    )
+
+    # when
+    found = pair_between("a", "TOP", "b", "JUNGLE", serving_settings)
+    left, right = found["edge"]["left"], found["edge"]["right"]
+
+    # then
+    assert left["gold"] == 165.0 and left["style"] == 100.0 and left["form"] == 40.0 and left["champion"] == 25.0
+    assert right["gold"] == 50.0 and right["form"] == 0.0 and right["champion"] == 0.0
+    assert found["edge"]["total"] == 220.0
+    assert left["percentile"] == 91.3 and right["percentile"] == 62.5
+
+
+def test_a_reading_is_shrunk_by_its_held_out_calibration_and_its_parts_still_add_up(serving_settings):
+    # given
+    pd.DataFrame({"puuid": ["a"], "position": ["TOP"], "games": [30], "form": [40.0], "champion": [25.0]}).to_parquet(
+        serving_settings.model_dir / PLAYER_HISTORY, index=False
+    )
+    grid = np.linspace(-400.0, 400.0, 1001)
+    np.savez(
+        serving_settings.model_dir / DUO_SCORES,
+        quantiles=grid,
+        combos=np.array(["JUNGLE+TOP"]),
+        combo_quantiles=np.stack([grid]),
+        seat_positions=np.array(["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]),
+        seat_quantiles=np.stack([np.linspace(-200.0, 200.0, 1001)] * 5),
+        reading_scale=np.array([0.5, 1.0, 1.0, 1.0, 1.0]),
+    )
+
+    # when
+    left = pair_between("a", "TOP", "b", "JUNGLE", serving_settings)["edge"]["left"]
+
+    # then
+    assert left["gold"] == 82.5
+    assert (left["style"], left["form"], left["champion"]) == (50.0, 20.0, 12.5)

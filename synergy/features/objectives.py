@@ -2,7 +2,9 @@ import math
 
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 NEARBY = 2500.0
 APPROACH = 5000.0
 CONTEST_WINDOW = 1.0

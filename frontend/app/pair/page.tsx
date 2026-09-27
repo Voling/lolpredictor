@@ -5,26 +5,33 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useRemote } from "@/lib/remote";
 import { getPair, type PairScore } from "@/lib/api";
+import { positionName } from "@/lib/positions";
+import { Verdict } from "@/lib/verdict";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
 type Query = { a?: string; b?: string; a_position?: string; b_position?: string };
 
-const signed = (gold: number) => `${gold > 0 ? "+" : ""}${Math.round(gold).toLocaleString()}`;
+function lead(gold: number): string {
+  const rounded = Math.round(Math.abs(gold) / 50) * 50;
+  if (rounded === 0) return "about even with";
+  return `about ${rounded.toLocaleString()} gold ${gold > 0 ? "ahead of" : "behind"}`;
+}
 
 function Result({ pair }: { pair: PairScore }) {
   const found = pair.interaction;
   if (!found) {
-    return <div className="gate"><strong>No reading</strong>{pair.note}</div>;
+    return <div className="gate"><strong>Can&apos;t score this duo.</strong>{pair.note}</div>;
   }
   const [left, right] = pair.players;
+  const positions = `${positionName(found.positions.left)} and ${positionName(found.positions.right)}`;
   return (
     <>
-      <h2>your score together: {found.score.toFixed(0)}</h2>
-      <p className="sub">
-        {left.riot_id} as {found.positions.left.toLowerCase()} with {right.riot_id} as {found.positions.right.toLowerCase()}:{" "}
-        {signed(found.edge.total)} gold at {found.minute} minutes against the same two positions. 50 is an average duo.
-      </p>
+      <h2>Your duo score: {found.score.toFixed(0)}</h2>
+      <p className="verdict-line"><Verdict score={found.score} /></p>
+      <p>{left.riot_id} as {positionName(found.positions.left)} with {right.riot_id} as {positionName(found.positions.right)}.</p>
+      <p>At {found.minute} minutes you two are projected to be {lead(found.edge.total)} the other team&apos;s {positions}.</p>
+      <p className="sub">50 is an average duo for these positions. Higher is better.</p>
     </>
   );
 }
@@ -40,20 +47,26 @@ function PairQuery() {
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
-      <p className="sub">Your score with one friend.</p>
+      <p className="sub">Enter your Riot ID and a friend&apos;s Riot ID to see how you do as a duo.</p>
       <form method="get" action="/pair/" className="pair">
-        <label>you <input name="a" defaultValue={query.a ?? ""} placeholder="name#tag" required /></label>
-        <select name="a_position" defaultValue={query.a_position ?? ""}>
-          {POSITIONS.map((position) => <option key={position} value={position}>{position || "any position"}</option>)}
-        </select>
-        <label>friend <input name="b" defaultValue={query.b ?? ""} placeholder="name#tag" required /></label>
-        <select name="b_position" defaultValue={query.b_position ?? ""}>
-          {POSITIONS.map((position) => <option key={position} value={position}>{position || "any position"}</option>)}
-        </select>
-        <button type="submit">read</button>
+        <label>Your Riot ID <input name="a" defaultValue={query.a ?? ""} placeholder="name#tag" required /></label>
+        <label>
+          Your position
+          <select name="a_position" defaultValue={query.a_position ?? ""}>
+            {POSITIONS.map((position) => <option key={position} value={position}>{position || "your main position"}</option>)}
+          </select>
+        </label>
+        <label>Friend&apos;s Riot ID <input name="b" defaultValue={query.b ?? ""} placeholder="name#tag" required /></label>
+        <label>
+          Their position
+          <select name="b_position" defaultValue={query.b_position ?? ""}>
+            {POSITIONS.map((position) => <option key={position} value={position}>{position || "their main position"}</option>)}
+          </select>
+        </label>
+        <button type="submit">Check</button>
       </form>
-      {loading && <p className="sub">reading</p>}
-      {error && <div className="gate"><strong>No reading</strong>{error}</div>}
+      {loading && <p className="sub">Checking your duo…</p>}
+      {error && <div className="gate"><strong>Can&apos;t score this duo.</strong>{error}</div>}
       {pair && <Result pair={pair} />}
     </main>
   );

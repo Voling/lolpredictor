@@ -1,7 +1,14 @@
 import numpy as np
 import pandas as pd
 
-from synergy.features.cells import cell_block
+from synergy.features.cells import SeatIndex, cells_frame, dense_counts, fit_cells
+
+
+def _cells(counts, seats, situations, outcomes, prefix, scale=1.0):
+    index = SeatIndex(seats)
+    dense = dense_counts(counts, index, situations, outcomes)
+    fit = fit_cells(dense, index, situations, outcomes, prefix, scale)
+    return cells_frame([(fit, dense)], index, fit.columns), fit.report
 
 
 def _counts():
@@ -23,8 +30,8 @@ def test_a_larger_prior_scale_pulls_every_cell_toward_the_position_world():
     counts, seats = _counts(), _seats()
 
     # when
-    plain, report = cell_block(counts, seats, ["s"], ["hold", "leave"], "x")
-    pulled, pulled_report = cell_block(counts, seats, ["s"], ["hold", "leave"], "x", scale=4.0)
+    plain, report = _cells(counts, seats, ["s"], ["hold", "leave"], "x")
+    pulled, pulled_report = _cells(counts, seats, ["s"], ["hold", "leave"], "x", scale=4.0)
 
     # then
     world = np.array(report["s"]["world"]["TOP"])

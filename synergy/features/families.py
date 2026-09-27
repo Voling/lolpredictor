@@ -4,7 +4,9 @@ from .regions import REGIONS, region_of
 from .timeline import ParsedTimeline
 from .wave import PUSH, wave_states
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 ARRIVE = 2000.0
 LANE_ROLES = ("TOP", "MIDDLE", "BOTTOM", "UTILITY")
 LANE_PREFIX = {"TOP": "LANE_TOP", "MIDDLE": "LANE_MID", "BOTTOM": "LANE_BOT", "UTILITY": "LANE_BOT"}

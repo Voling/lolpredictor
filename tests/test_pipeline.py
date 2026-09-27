@@ -105,3 +105,22 @@ def test_old_runs_are_pruned_but_the_served_one_survives(tmp_path):
     assert oldest not in removed and (settings.runs_dir / oldest).is_dir()
     assert len(runs) == KEEP_RUNS + 1 and sum(run["current"] for run in runs) == 1
     assert removed == [sorted(built)[0]]
+
+
+def test_promoting_a_run_that_was_served_before_only_moves_the_pointer(tmp_path):
+    # given
+    settings = Settings(data_dir=tmp_path)
+    settings.ensure_dirs()
+    first = run_pipeline(settings, start="scores", runner=lambda *_: 0, counts=_counts)["id"]
+    (settings.model_dir / "seat_report.json").write_text('{"held_out": {"TOP": 0.1}}', encoding="utf-8")
+    second = run_pipeline(settings, start="scores", runner=lambda *_: 0, counts=_counts)["id"]
+    kept = (settings.runs_dir / first / "serve" / "models" / "seat_report.json").exists()
+
+    # when
+    rolled = promote(settings, first)
+
+    # then
+    assert second != first and settings.served_run() == first
+    assert rolled["status"] == "served" and not kept
+    assert not (settings.runs_dir / first / "serve" / "models" / "seat_report.json").exists()
+    assert (settings.runs_dir / second / "serve" / "models" / "seat_report.json").exists()

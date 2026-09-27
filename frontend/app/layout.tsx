@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "lolpredictor",
-  description: "Your score with each friend when you duo",
+  description: "Find out which friends you play best with in ranked",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

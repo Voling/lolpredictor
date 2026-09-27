@@ -3,19 +3,20 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from scipy.stats import norm
 
 from ..chunks import ChunkWriter, merge
 from ..config import Settings, get_settings
 from ..deep.stream import SEATS, _by_match, _seat_points, event_rows, frame_tracks, seat_table
 from ..ingest.store import Store
-from .cells import cell_block, evidence_share
+from .cells import SeatIndex, evidence_shares, fit_cells, moment_kappa, write_cells
 from .posterior import bridge_at, dead_mask, load_sigma, progress_moments, region_mass, top_regions, wave_mass
 from .regions import REGION_INDEX
 from .wave import LANE_PREFIX, WAVE_CS
 
 TICK = 10.0 / 60.0
-TICKS = np.round(np.arange(0.0, 15.0, TICK), 6)
+TICKS = np.round(np.arange(0.0, float(get_settings().feature_minutes), TICK), 6)
 OBJECTIVE_WINDOW = 1.0
 LANES = {"LANE_TOP": ("TOP",), "LANE_MID": ("MIDDLE",), "LANE_BOT": ("BOTTOM", "UTILITY")}
 BAND_EDGES = np.array([0.85, 0.95, 1.05, 1.15])
@@ -28,8 +29,11 @@ PRIORITY_COLUMNS = [f"prio_{s}_{o}" for s in SITUATIONS for o in OUTCOMES]
 TRACK = "positions_10s.parquet"
 TABLE = "priority.parquet"
 EVIDENCE = "evidence_priority.parquet"
+COUNTS = "priority_counts.npy"
 WORKERS = 8
 CHUNK_MATCHES = 400
+RECYCLE = 4
+TICK_UNIT = float(len(TICKS))
 _zones = {
     prefix: np.array([REGION_INDEX[f"{prefix}_{depth}"] for depth in ("OWN", "NEUTRAL", "ENEMY")])
     for prefix in LANES
@@ -128,8 +132,8 @@ def _lane_pass(seat: dict, blue_of, roles) -> dict:
     return out
 
 
-def lane_counts(seat: dict, lane: dict, blue_of, roles, objective_ticks: np.ndarray) -> list[tuple]:
-    rows = []
+def lane_counts(seat: dict, lane: dict, blue_of, roles, objective_ticks: np.ndarray) -> np.ndarray:
+    counts = np.zeros((SEATS, len(SITUATIONS), len(OUTCOMES)))
     for s in range(SEATS):
         if LANE_PREFIX.get(roles[s]) is None:
             continue
@@ -148,10 +152,9 @@ def lane_counts(seat: dict, lane: dict, blue_of, roles, objective_ticks: np.ndar
             [(joint * in_lane).reshape(len(TICKS), -1), (1.0 - seat["in_lane"][s])[:, None], (~alive)[:, None].astype(float)], axis=1
         )
         weights[~alive, :-1] = 0.0
-        for situation, mask in (("all", np.ones(len(TICKS), bool)), ("pre_objective", objective_ticks)):
-            totals = weights[mask].sum(axis=0)
-            rows.extend((s, situation, outcome, float(total)) for outcome, total in zip(OUTCOMES, totals) if total > 0)
-    return rows
+        counts[s, SITUATIONS.index("all")] = weights.sum(axis=0)
+        counts[s, SITUATIONS.index("pre_objective")] = weights[objective_ticks].sum(axis=0)
+    return counts
 
 
 def _finite(values: np.ndarray) -> np.ndarray:
@@ -177,17 +180,29 @@ def track_frame(match: dict, smoothed: dict, lane: dict, filtered: dict) -> pd.D
     })
 
 
-def count_frame(match: dict, rows: list[tuple]) -> pd.DataFrame:
-    return pd.DataFrame({
-        "match_id": np.full(len(rows), match["match_id"], dtype=object),
-        "puuid": np.array(match["puuid"], dtype=object)[np.array([row[0] for row in rows], dtype=np.int64)],
-        "situation": np.array([row[1] for row in rows], dtype=object),
-        "outcome": np.array([row[2] for row in rows], dtype=object),
-        "count": np.array([row[3] for row in rows], dtype=np.float64),
-    })
+def save_counts(path: Path, match_ids: list[str], players: list[list[str]], blocks: list[np.ndarray]) -> str:
+    np.savez(
+        path,
+        match_id=np.repeat(np.array(match_ids, dtype=str), SEATS),
+        puuid=np.array([puuid for seated in players for puuid in seated], dtype=str),
+        counts=np.concatenate(blocks) if blocks else np.zeros((0, len(SITUATIONS), len(OUTCOMES))),
+    )
+    return str(path)
 
 
-def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+def gather_counts(paths: list[Path], index: SeatIndex, target: Path) -> np.ndarray:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    counts = np.lib.format.open_memmap(target, mode="w+", dtype=np.float64, shape=(len(index), len(SITUATIONS), len(OUTCOMES)))
+    for path in paths:
+        with np.load(path) as shard:
+            rows = index.rows(shard["match_id"], shard["puuid"])
+            seated = rows >= 0
+            counts[rows[seated]] = shard["counts"][seated]
+    counts.flush()
+    return counts
+
+
+def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) -> tuple[pd.DataFrame, np.ndarray]:
     blue_of = [1 if team == 100 else 0 for team in match["team"]]
     roles = match["position"]
     points, spans = _seat_points(match, spot, events)
@@ -201,13 +216,10 @@ def match_priority(match: dict, spot: dict, events: list[tuple], sigma: dict) ->
             when = float(stamp or 0) / 60000.0
             objective_ticks |= (TICKS >= when - OBJECTIVE_WINDOW) & (TICKS < when)
 
-    return (
-        track_frame(match, smoothed, lane, filtered),
-        count_frame(match, lane_counts(smoothed, lane, blue_of, roles, objective_ticks)),
-    )
+    return track_frame(match, smoothed, lane, filtered), lane_counts(smoothed, lane, blue_of, roles, objective_ticks)
 
 
-def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, pd.DataFrame]:
+def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, str]:
     seats = seat_table(settings, match_ids)
     wanted = sorted(seats)
     tracks = frame_tracks(settings, wanted, seats)
@@ -216,7 +228,7 @@ def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, p
     shards = settings.processed_dir / "shards"
     shards.mkdir(parents=True, exist_ok=True)
     writer = ChunkWriter(shards / f"positions_10s.{shard:03d}.parquet")
-    counts: list[pd.DataFrame] = []
+    done, players, blocks = [], [], []
     for match_id in wanted:
         spot = tracks.get(match_id)
         if spot is None:
@@ -224,13 +236,23 @@ def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple[str, p
         match = dict(seats[match_id], match_id=match_id)
         rows, found = match_priority(match, spot, grouped.get(match_id, []), sigma)
         writer.add_frame(rows)
-        counts.append(found)
+        done.append(match_id)
+        players.append(match["puuid"])
+        blocks.append(found)
     writer.close()
-    empty = count_frame({"match_id": None, "puuid": []}, [])
-    return str(writer.path), pd.concat(counts, ignore_index=True) if counts else empty
+    return str(writer.path), save_counts(shards / f"priority_counts.{shard:03d}.npz", done, players, blocks)
 
 
-def build_priority(settings: Settings | None = None, workers: int = WORKERS, limit: int | None = None) -> dict:
+def _complete(track: Path, counted: Path) -> bool:
+    try:
+        pq.read_metadata(track)
+        with np.load(counted) as shard:
+            return {"match_id", "puuid", "counts"} <= set(shard.files)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def build_priority(settings: Settings | None = None, workers: int = WORKERS, limit: int | None = None, resume: bool = False) -> dict:
     settings = settings or get_settings()
     store = Store(settings)
     try:
@@ -242,28 +264,45 @@ def build_priority(settings: Settings | None = None, workers: int = WORKERS, lim
     if limit:
         match_ids = match_ids[:limit]
     chunks = [match_ids[start : start + CHUNK_MATCHES] for start in range(0, len(match_ids), CHUNK_MATCHES)]
-    parts, counts = [], []
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        for path, found in pool.map(_shard, [settings] * len(chunks), chunks, range(len(chunks))):
-            parts.append(path)
-            counts.append(found)
-    rows = merge([Path(p) for p in parts], settings.processed_dir / TRACK)
-    for part in parts:
-        Path(part).unlink(missing_ok=True)
+    shards = settings.processed_dir / "shards"
+    shards.mkdir(parents=True, exist_ok=True)
+    written, pending = [], []
+    for number, chunk in enumerate(chunks):
+        track, counted = shards / f"positions_10s.{number:03d}.parquet", shards / f"priority_counts.{number:03d}.npz"
+        if resume and _complete(track, counted):
+            written.append((str(track), str(counted)))
+        else:
+            pending.append((number, chunk))
+    print(f"priority: {len(written)} shards kept, {len(pending)} to build", flush=True)
+    for start in range(0, len(pending), workers * RECYCLE):
+        batch = pending[start : start + workers * RECYCLE]
+        with ProcessPoolExecutor(max_workers=min(workers, len(batch))) as pool:
+            written.extend(pool.map(_shard, [settings] * len(batch), [chunk for _, chunk in batch], [number for number, _ in batch]))
+    written.sort()
+    rows = merge([Path(track) for track, _ in written], settings.processed_dir / TRACK)
+    for track, _ in written:
+        Path(track).unlink(missing_ok=True)
     seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"])
-    seats = seats[seats.match_id.isin(set(match_ids))]
-    counted = pd.concat(counts, ignore_index=True)
-    counts.clear()
-    table, report = cell_block(counted, seats, SITUATIONS, OUTCOMES, "prio", scale=settings.cell_prior_scale)
-    table.to_parquet(settings.processed_dir / TABLE, index=False)
-    evidence = evidence_share(counted, seats, SITUATIONS, {situation: report[situation]["kappa"] for situation in SITUATIONS})
+    index = SeatIndex(seats[seats.match_id.isin(set(match_ids))])
+    target = settings.processed_dir / "buffers" / COUNTS
+    counts = gather_counts([Path(path) for _, path in written], index, target)
+    for _, path in written:
+        Path(path).unlink(missing_ok=True)
+    kappas = [moment_kappa(counts, index, step) for step in range(len(SITUATIONS))]
+    fit = fit_cells(counts, index, SITUATIONS, OUTCOMES, "prio", scale=settings.cell_prior_scale, unit=TICK_UNIT, kappa=kappas)
+    write_cells(settings.processed_dir / TABLE, [(fit, counts)], index, PRIORITY_COLUMNS)
+    evidence = evidence_shares(fit, index)
     evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)
+    del counts
+    report = fit.report
     return {
         "matches": len(match_ids),
         "track_rows": int(rows),
-        "player_matches": int(len(table)),
+        "player_matches": int(len(index)),
         "columns": len(PRIORITY_COLUMNS),
-        "kappa": {situation: report[situation]["kappa"] for situation in SITUATIONS},
+        "tick_unit": TICK_UNIT,
+        "counts_buffer": str(target),
+        "kappa_games": {situation: report[situation]["kappa"] for situation in SITUATIONS},
         "ticks_counted": {situation: round(report[situation]["rows"]) for situation in SITUATIONS},
         "evidence_share_median": round(float(evidence["share"].median()), 3),
     }
@@ -273,9 +312,21 @@ LANE_OF = {"TOP": "top", "MIDDLE": "mid", "BOTTOM": "bot", "UTILITY": "bot"}
 CONTEXT_COLUMNS = ["lane_priority", "top_priority", "mid_priority", "bot_priority"]
 
 
-def priority_context_from(track: pd.DataFrame, seats: pd.DataFrame) -> pd.DataFrame:
+def _minute_sums(track: pd.DataFrame) -> pd.DataFrame:
     ticks = track.dropna(subset=["prio_filtered"]).assign(minute=lambda f: np.floor(f["tick"]).astype(int))
-    per_player = ticks.groupby(["match_id", "puuid", "minute"], as_index=False)["prio_filtered"].mean()
+    return ticks.groupby(["match_id", "puuid", "minute"], as_index=False)["prio_filtered"].agg(total="sum", ticks="count")
+
+
+def _minute_means(sums: pd.DataFrame) -> pd.DataFrame:
+    joined = sums.groupby(["match_id", "puuid", "minute"], as_index=False)[["total", "ticks"]].sum()
+    return joined.assign(prio_filtered=joined["total"] / joined["ticks"])[["match_id", "puuid", "minute", "prio_filtered"]]
+
+
+def priority_context_from(track: pd.DataFrame, seats: pd.DataFrame) -> pd.DataFrame:
+    return lane_context(_minute_means(_minute_sums(track)), seats)
+
+
+def lane_context(per_player: pd.DataFrame, seats: pd.DataFrame) -> pd.DataFrame:
     per_player = per_player.merge(seats, on=["match_id", "puuid"])
     per_player["lane"] = per_player["position"].map(LANE_OF)
     lanes = (
@@ -304,9 +355,13 @@ def priority_context(settings: Settings | None = None) -> pd.DataFrame:
     path = settings.processed_dir / TRACK
     if not path.exists():
         return pd.DataFrame(columns=["match_id", "puuid", "minute", *CONTEXT_COLUMNS])
-    track = pd.read_parquet(path, columns=["match_id", "puuid", "tick", "prio_filtered"])
+    track = pq.ParquetFile(path)
+    sums = pd.concat(
+        [_minute_sums(track.read_row_group(group, columns=["match_id", "puuid", "tick", "prio_filtered"]).to_pandas()) for group in range(track.num_row_groups)],
+        ignore_index=True,
+    )
     seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "team_id", "position"])
-    return priority_context_from(track, seats)
+    return lane_context(_minute_means(sums), seats)
 
 
 def load_priority(settings: Settings | None = None) -> pd.DataFrame:

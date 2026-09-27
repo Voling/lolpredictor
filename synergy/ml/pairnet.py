@@ -9,7 +9,7 @@ from ..config import Settings, get_settings
 from ..features.positions import POSITIONS
 from ..ingest.premades import premade_pairs
 from .interaction import SEED, _basis
-from .mirrored import SEATS_FILE, seat_games, seat_gold, seats_by_position
+from .mirrored import SEATS_FILE, on_device, seat_games, seat_gold, seats_by_position
 
 HIDDEN = 256
 EPOCHS = 12
@@ -220,7 +220,7 @@ def fit_pairnet(
     sound = (blue >= 0).all(axis=1) & (red >= 0).all(axis=1) & np.isfinite(gold).all(axis=1)
     fit = np.array(sorted(set(basis["fit"]) & set(np.nonzero(sound)[0])))
     test = np.array(sorted(set(basis["test"]) & set(np.nonzero(sound)[0])))
-    reduced = torch.as_tensor(basis.pop("reduced"), dtype=torch.float32, device=device)
+    reduced = on_device(basis.pop("reduced"), device)
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(fit))
     cut = int(len(order) * (1.0 - VALIDATION))

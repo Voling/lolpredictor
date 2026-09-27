@@ -24,7 +24,7 @@ from ..features.posterior import (
 from ..features.regions import REGIONS, regions_of
 from ..ingest.store import Store
 
-SPAN = 16
+SPAN = get_settings().feature_minutes + 1
 SEATS = 10
 MAX_EVENTS = 1024
 LEAD_SCALE = 2.33

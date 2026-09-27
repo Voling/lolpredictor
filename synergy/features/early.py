@@ -3,7 +3,9 @@ import math
 from .regions import MAP_SPAN, REGIONS, region_of
 from .timeline import VISION_WARDS, ParsedTimeline
 
-EARLY_MINUTES = 15
+from ..config import get_settings
+
+EARLY_MINUTES = get_settings().feature_minutes
 RESPONSE_RANGE = 3000.0
 ENEMY_JUNGLE = {"JUNGLE_ENEMY_TOPSIDE", "JUNGLE_ENEMY_BOTSIDE"}
 OWN_JUNGLE = {"JUNGLE_OWN_TOPSIDE", "JUNGLE_OWN_BOTSIDE"}

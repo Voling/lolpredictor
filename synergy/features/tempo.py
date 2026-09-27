@@ -3,7 +3,9 @@ import math
 from .regions import REGIONS, region_of
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 BANKED = 1200.0
 LOW_HEALTH = 0.45
 STALE = 4

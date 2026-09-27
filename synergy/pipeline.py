@@ -35,6 +35,8 @@ SERVED_MODELS = (
     "duo_records.parquet",
     "duo_scores.npz",
     "duo_report.json",
+    "player_history.parquet",
+    "champion_effects.parquet",
 )
 SERVED_PROCESSED = (
     "player_styles.parquet",
@@ -162,7 +164,7 @@ def metrics(models: Path) -> dict:
         out["seats"] = seats
     duos = read_manifest_like(models / "duo_report.json")
     if duos:
-        out["duos"] = {key: duos.get(key) for key in ("duos_kept", "spread", "noise", "split_half")}
+        out["duos"] = {key: duos.get(key) for key in ("duos_kept", "spread", "noise", "split_half", "form", "champions", "held_out")}
     network = read_manifest_like(models / "pairnet_report.json")
     if network:
         out["network"] = {"curved_gain": network.get("curved", {}).get("gain"), "interaction": network.get("interaction")}
@@ -185,6 +187,11 @@ def promote(settings: Settings | None = None, run_id: str | None = None, counts=
         manifest = read_manifest(settings.runs_dir / run_id)
         if manifest is None:
             raise ValueError(f"no run named {run_id} under {settings.runs_dir}")
+        if manifest.get("status") == "served" and (settings.runs_dir / run_id / "serve").is_dir():
+            manifest["promoted"] = _now()
+            write_manifest(settings.runs_dir / run_id, manifest)
+            write_pointer(settings, run_id)
+            return manifest
     run_dir = settings.runs_dir / run_id
     copied, missing = [], []
     for names, source, kind in ((SERVED_MODELS, settings.model_dir, "models"), (SERVED_PROCESSED, settings.processed_dir, "processed")):

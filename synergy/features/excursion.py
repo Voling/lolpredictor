@@ -4,7 +4,9 @@ from .anchors import MAX_REACH, confidence_at
 from .regions import REGIONS, region_of
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 INTERVENE = 2000.0
 VISIT_GAP = 0.35
 

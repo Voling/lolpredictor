@@ -5,6 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useRemote } from "@/lib/remote";
 import { getFriends, type Friends } from "@/lib/api";
+import { positionName } from "@/lib/positions";
+import { Verdict } from "@/lib/verdict";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -14,26 +16,27 @@ function Result({ found }: { found: Friends }) {
   const me = found.me;
   return (
     <>
-      <h2>your score with each friend{me.position ? `, you as ${me.position.toLowerCase()}` : ""}</h2>
+      <h2>Your duo scores{me.position ? ` as ${positionName(me.position)}` : ""}</h2>
       <table>
         <thead>
-          <tr><th>friend</th><th>position</th><th className="num">score</th></tr>
+          <tr><th>Friend</th><th>Their position</th><th className="num">Score</th><th>Verdict</th></tr>
         </thead>
         <tbody>
           {found.friends.map((row) =>
             row.note ? (
-              <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={2}>{row.note}</td></tr>
+              <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={3}>{row.note}</td></tr>
             ) : (
               <tr key={row.riot_id}>
                 <td>{row.riot_id}</td>
-                <td>{row.position?.toLowerCase()}</td>
+                <td>{positionName(row.position)}</td>
                 <td className="num">{row.score?.toFixed(0)}</td>
+                <td>{row.score != null && <Verdict score={row.score} />}</td>
               </tr>
             ),
           )}
         </tbody>
       </table>
-      <p className="sub">50 is an average duo in those two positions.</p>
+      <p className="sub">50 is an average duo for those two positions. Higher is better.</p>
     </>
   );
 }
@@ -50,20 +53,24 @@ function FriendsQuery() {
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
-      <p className="sub">Which friend to queue with.</p>
+      <p className="sub">Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a duo score with you.</p>
       <form method="get" action="/friends/" className="pair">
-        <label>you <input name="me" defaultValue={query.me ?? ""} placeholder="name#tag" required /></label>
-        <select name="me_position" defaultValue={query.me_position ?? ""}>
-          {POSITIONS.map((position) => <option key={position} value={position}>{position || "your main position"}</option>)}
-        </select>
+        <label>Your Riot ID <input name="me" defaultValue={query.me ?? ""} placeholder="name#tag" required /></label>
         <label>
-          friends, one per line, add :jungle to pick their position
+          Your position
+          <select name="me_position" defaultValue={query.me_position ?? ""}>
+            {POSITIONS.map((position) => <option key={position} value={position}>{position || "your main position"}</option>)}
+          </select>
+        </label>
+        <label>
+          Friends, one per line
           <textarea name="friends" defaultValue={query.friends ?? ""} rows={4} placeholder={"friend#tag\nother#tag:support"} required />
         </label>
-        <button type="submit">rank</button>
+        <button type="submit">Rank</button>
       </form>
-      {loading && <p className="sub">ranking</p>}
-      {error && <div className="gate"><strong>No reading</strong>{error}</div>}
+      <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>
+      {loading && <p className="sub">Ranking your friends…</p>}
+      {error && <div className="gate"><strong>Can&apos;t rank these friends.</strong>{error}</div>}
       {found && <Result found={found} />}
     </main>
   );

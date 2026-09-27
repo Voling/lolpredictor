@@ -3,14 +3,15 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
-from .cells import cell_block, combine_shares, evidence_share
+from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, write_cells
 
 TABLE = "reaction.parquet"
+PIECE_ROWS = 2_000_000
 EVIDENCE = "evidence_reaction.parquet"
 DISTANCE_BANDS = ((2.5, "near"), (5.0, "mid"), (np.inf, "far"))
 TRIGGERS = ("kill", "plate", "objective", "building")
 RESPONSES = ("converged", "held", "left", "present", "absent")
-OBJECTIVES = ("DRAGON", "HORDE")
+OBJECTIVES = ("DRAGON", "HORDE", "RIFTHERALD")
 OBJECTIVE_RESPONSES = ("died", "fought", "committed", "rotated", "approached", "absent")
 MINUTE_BANDS = ((5.0, "early"), (10.0, "mid"), (np.inf, "late"))
 WARD_ZONES = ("lane_own_side", "lane_middle", "lane_enemy_side", "own_jungle", "enemy_jungle", "river", "other")
@@ -38,14 +39,14 @@ OBJECTIVE_READ = [
 ]
 
 
-def _responses(settings: Settings) -> pd.DataFrame:
-    table = pq.read_table(
-        settings.processed_dir / "event_responses.parquet",
-        columns=RESPONSE_READ,
-        filters=[("is_actor", "==", 0), ("is_victim", "==", 0), ("trigger", "in", list(TRIGGERS))],
-        use_pandas_metadata=True,
-    )
-    return table.to_pandas(split_blocks=True, self_destruct=True)
+def _pieces(path, columns: list[str]):
+    for batch in pq.ParquetFile(path).iter_batches(batch_size=PIECE_ROWS, columns=columns):
+        yield batch.to_pandas()
+
+
+def _responses(settings: Settings):
+    for piece in _pieces(settings.processed_dir / "event_responses.parquet", RESPONSE_READ):
+        yield piece[(piece["is_actor"] == 0) & (piece["is_victim"] == 0) & piece["trigger"].isin(TRIGGERS)]
 
 
 def _band_codes(values: np.ndarray, bands) -> np.ndarray:
@@ -123,37 +124,44 @@ def jungle_counts(openings: pd.DataFrame) -> pd.DataFrame:
 
 def build_reaction(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
-    seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["match_id", "puuid", "position"])
-    openings = jungle_counts(pd.read_parquet(settings.processed_dir / "jungle_openings.parquet"))
+    processed = settings.processed_dir
+    index = SeatIndex(pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"]))
+    openings = jungle_counts(pd.read_parquet(processed / "jungle_openings.parquet"))
     sources = (
-        ("rsp", lambda: response_counts(_responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES)),
-        ("obj", lambda: objective_counts(pd.read_parquet(settings.processed_dir / "objectives.parquet", columns=OBJECTIVE_READ)),
+        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES)),
+        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)),
          OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES)),
-        ("ward", lambda: ward_counts(pd.read_parquet(settings.processed_dir / "wards.parquet", columns=["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES)),
-        ("jgl", lambda: openings[openings["situation"] != "sides"], OPENING_SITUATIONS, OPENING_OUTCOMES),
-        ("jgl", lambda: openings[openings["situation"] == "sides"], ["sides"], list(SIDES)),
+        ("ward", lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", "zone"])),
+         WARD_SITUATIONS, list(WARD_ZONES)),
+        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES),
+        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES)),
     )
-    keys, values, report, shares = None, None, {}, []
-    for prefix, load, situations, outcomes in sources:
-        counts = load()
-        block, found = cell_block(counts, seats, situations, outcomes, prefix, scale=settings.cell_prior_scale)
-        if values is None:
-            keys = block[["match_id", "puuid"]]
-            values = np.full((len(block), len(REACTION_COLUMNS)), np.nan)
-        values[:, [REACTION_COLUMNS.index(column) for column in block.columns[2:]]] = block.iloc[:, 2:].to_numpy(dtype=float)
-        del block
-        shares.append((len(situations) * len(outcomes), evidence_share(counts, seats, situations, {s: found[s]["kappa"] for s in situations})))
-        report[f"{prefix}:{situations[0]}" if prefix in report else prefix] = {"rows": int(counts["count"].sum()), "situations": len(situations), "outcomes": len(outcomes),
-                          "kappa_range": [min(v["kappa"] for v in found.values()), max(v["kappa"] for v in found.values())]}
-        del counts
-    table = pd.DataFrame(values, columns=REACTION_COLUMNS)
-    table.insert(0, "puuid", keys["puuid"].to_numpy())
-    table.insert(0, "match_id", keys["match_id"].to_numpy())
-    table.to_parquet(settings.processed_dir / TABLE, index=False)
+    parts, paths, report, shares = [], [], {}, []
+    for number, (prefix, load, situations, outcomes) in enumerate(sources):
+        path = processed / "buffers" / f"reaction_counts.{number}.npy"
+        counts = buffer(path, index, situations, outcomes)
+        for frame in load():
+            dense_counts(frame, index, situations, outcomes, out=counts)
+        counts.flush()
+        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale)
+        parts.append((fit, counts))
+        paths.append(path)
+        shares.append((len(situations) * len(outcomes), evidence_shares(fit, index)))
+        kappas = [entry["kappa"] for entry in fit.report.values()]
+        report[f"{prefix}:{situations[0]}" if prefix in report else prefix] = {
+            "rows": int(sum(entry["rows"] for entry in fit.report.values())),
+            "situations": len(situations),
+            "outcomes": len(outcomes),
+            "kappa_range": [min(kappas), max(kappas)],
+        }
+    write_cells(processed / TABLE, parts, index, REACTION_COLUMNS)
+    del parts, counts
+    for path in paths:
+        path.unlink(missing_ok=True)
     evidence = combine_shares(shares)
-    evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)
+    evidence.to_parquet(processed / EVIDENCE, index=False)
     report["columns"] = len(REACTION_COLUMNS)
-    report["rows"] = int(len(table))
+    report["rows"] = len(index)
     report["evidence_share_median"] = round(float(evidence["share"].median()), 3)
     return report
 

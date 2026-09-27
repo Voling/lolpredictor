@@ -1,5 +1,7 @@
+import hashlib
 import json
 import time
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -9,6 +11,7 @@ import numpyro.distributions as dist
 import pandas as pd
 import torch
 from numpyro.infer import SVI, Trace_ELBO, autoguide
+from scipy import sparse
 
 from ..config import Settings, get_settings
 from ..deep.stream import SEATS
@@ -17,6 +20,9 @@ from ..features.positions import KEY, UNKNOWN
 from .gold import TEAM_PAIRS, TEAM_SIZE, team_advantage
 
 SOURCES = ("style", "walk")
+BASIS = "basis"
+CHUNK_MATCHES = 4096
+CHUNK_SEATS = 65_536
 RANK = 8
 STEPS = 8000
 MAX_STEPS = 120000
@@ -68,30 +74,65 @@ def seat_matrix(settings: Settings, stream: str = "stream.npz", cache: bool = Tr
     return built
 
 
-def style_matrix(settings: Settings, stream: str = "stream.npz") -> dict:
-    from ..features.habit import HABIT_COLUMNS, load_habits
-    from ..features.priority import PRIORITY_COLUMNS, load_priority
-    from ..features.reaction import REACTION_COLUMNS, load_reaction
-    from ..features.tendency import TENDENCY_COLUMNS, load_tendencies
-    from .embedding import EMBED_COLUMNS, load_embedding
+def fingerprint(paths: list[Path]) -> list:
+    return [[path.name, *((path.stat().st_size, path.stat().st_mtime_ns) if path.exists() else (None, None))] for path in paths]
+
+
+def _style_loaders() -> tuple:
+    from ..features.habit import HABIT_COLUMNS, TABLE as HABIT_TABLE, load_habits
+    from ..features.priority import PRIORITY_COLUMNS, TABLE as PRIORITY_TABLE, load_priority
+    from ..features.reaction import REACTION_COLUMNS, TABLE as REACTION_TABLE, load_reaction
+    from ..features.tendency import TENDENCY_COLUMNS, TABLE as TENDENCY_TABLE, load_tendencies
+    from .embedding import EMBED_COLUMNS, TABLE as EMBED_TABLE, load_embedding
     from .movement import MOVEMENT_COLUMNS, load_movement
 
+    return (
+        (load_tendencies, TENDENCY_COLUMNS, TENDENCY_TABLE),
+        (load_priority, PRIORITY_COLUMNS, PRIORITY_TABLE),
+        (load_reaction, REACTION_COLUMNS, REACTION_TABLE),
+        (load_habits, HABIT_COLUMNS, HABIT_TABLE),
+        (load_movement, MOVEMENT_COLUMNS, "movement.parquet"),
+        (load_embedding, EMBED_COLUMNS, EMBED_TABLE),
+    )
+
+
+def _buffered_style(folder: Path, sources: list) -> dict | None:
+    try:
+        meta = json.loads((folder / "style.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if meta.get("sources") != sources or not (folder / "style.npy").exists():
+        return None
+    with np.load(folder / "style_seats.npz", allow_pickle=True) as stored:
+        seats = {name: stored[name] for name in ("match_id", "seat_puuid", "seat_side")}
+    encoding = np.load(folder / "style.npy", mmap_mode="r")
+    print(f"style blocks: {len(meta['columns'])} leave one out columns, read from the run's buffer", flush=True)
+    return {
+        "match_id": seats["match_id"],
+        "seat_puuid": seats["seat_puuid"],
+        "seat_side": seats["seat_side"],
+        "encoding": encoding.reshape(len(seats["match_id"]), SEATS, len(meta["columns"])),
+        "columns": np.array(meta["columns"]),
+    }
+
+
+def style_matrix(settings: Settings, stream: str = "stream.npz") -> dict:
+    loaders = _style_loaders()
+    folder = settings.processed_dir / BASIS
+    sources = fingerprint([settings.processed_dir / stream, *(settings.processed_dir / table for _, _, table in loaders)])
+    found = _buffered_style(folder, sources)
+    if found is not None:
+        return found
     raw = np.load(settings.processed_dir / stream, allow_pickle=True)
     seats = pd.DataFrame(
         {"match_id": np.repeat(raw["match_id"], SEATS), "puuid": raw["seat_puuid"].ravel()}
     )
-    loaders = (
-        (load_tendencies, TENDENCY_COLUMNS),
-        (load_priority, PRIORITY_COLUMNS),
-        (load_reaction, REACTION_COLUMNS),
-        (load_habits, HABIT_COLUMNS),
-        (load_movement, MOVEMENT_COLUMNS),
-        (load_embedding, EMBED_COLUMNS),
-    )
-    values = np.full((len(seats), sum(len(names) for _, names in loaders)), np.nan, dtype=np.float32)
+    folder.mkdir(parents=True, exist_ok=True)
+    width = sum(len(names) for _, names, _ in loaders)
+    values = np.lib.format.open_memmap(folder / "style.partial.npy", mode="w+", dtype=np.float32, shape=(len(seats), width))
     covered = np.ones(len(seats), bool)
     columns, filled, start = [], [], 0
-    for load, names in loaders:
+    for load, names, _ in loaders:
         table = load(settings)
         if not table.empty:
             slot = seats.merge(
@@ -99,29 +140,41 @@ def style_matrix(settings: Settings, stream: str = "stream.npz") -> dict:
             )["slot"].to_numpy(dtype=float)
             if len(slot) != len(seats):
                 raise ValueError(f"a style block repeats a seat, {len(slot):,} rows for {len(seats):,} seats")
+            block = table[list(names)].to_numpy(dtype=np.float32)
+            del table
             seen = ~np.isnan(slot)
-            rows = slot[seen].astype(np.int64)
-            for offset, name in enumerate(names):
-                column = table[name].to_numpy(dtype=float)[rows]
-                values[seen, start + offset] = column
-                covered[seen] &= ~np.isnan(column)
-            if names:
-                covered &= seen
+            for first in range(0, len(seats), CHUNK_SEATS):
+                last = min(first + CHUNK_SEATS, len(seats))
+                part = np.full((last - first, len(names)), np.nan, dtype=np.float32)
+                here = seen[first:last]
+                part[here] = block[slot[first:last][here].astype(np.int64)]
+                values[first:last, start : start + len(names)] = part
+                covered[first:last] &= here & ~np.isnan(part).any(axis=1) if names else here
+            del block
             columns.extend(names)
             filled.extend(range(start, start + len(names)))
+        else:
+            del table
+            for first in range(0, len(seats), CHUNK_SEATS):
+                values[first : first + CHUNK_SEATS, start : start + len(names)] = np.nan
         start += len(names)
-        del table
-    if len(filled) < values.shape[1]:
-        values = values[:, filled]
+    values.flush()
+    if len(filled) < width:
+        compact = np.lib.format.open_memmap(folder / "style.compact.npy", mode="w+", dtype=np.float32, shape=(len(seats), len(filled)))
+        for first in range(0, len(seats), CHUNK_SEATS):
+            compact[first : first + CHUNK_SEATS] = values[first : first + CHUNK_SEATS][:, filled]
+        compact.flush()
+        del compact, values
+        (folder / "style.partial.npy").unlink()
+        (folder / "style.compact.npy").replace(folder / "style.npy")
+    else:
+        del values
+        (folder / "style.partial.npy").replace(folder / "style.npy")
+    np.savez(folder / "style_seats.npz", match_id=raw["match_id"], seat_puuid=raw["seat_puuid"], seat_side=raw["seat_side"])
+    (folder / "style.json").write_text(json.dumps({"sources": sources, "columns": columns}), encoding="utf-8")
     print(f"style blocks: {len(columns)} leave one out columns, "
-          f"{float(covered.mean()):.3f} of seats fully covered", flush=True)
-    return {
-        "match_id": raw["match_id"],
-        "seat_puuid": raw["seat_puuid"],
-        "seat_side": raw["seat_side"],
-        "encoding": values.reshape(len(raw["match_id"]), SEATS, len(columns)),
-        "columns": np.array(columns),
-    }
+          f"{float(covered.mean()):.3f} of seats fully covered, buffered to disk", flush=True)
+    return _buffered_style(folder, sources)
 
 
 def seat_positions(settings: Settings, match_id: np.ndarray, seat_puuid: np.ndarray) -> np.ndarray:
@@ -138,6 +191,50 @@ def fully_seated(positions: np.ndarray) -> np.ndarray:
 def _moments(encoding: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     seen = encoding[fit].reshape(-1, encoding.shape[-1])
     return np.nanmean(seen, axis=0), np.nanstd(seen, axis=0).clip(min=1e-6)
+
+
+def buffered_moments(encoding: np.ndarray, rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    width = encoding.shape[-1]
+    total, count = np.zeros(width), np.zeros(width)
+    for start in range(0, len(rows), CHUNK_MATCHES):
+        block = np.asarray(encoding[rows[start : start + CHUNK_MATCHES]], dtype=np.float64).reshape(-1, width)
+        known = ~np.isnan(block)
+        total += np.where(known, block, 0.0).sum(axis=0)
+        count += known.sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        centre = total / count
+    squares = np.zeros(width)
+    for start in range(0, len(rows), CHUNK_MATCHES):
+        block = np.asarray(encoding[rows[start : start + CHUNK_MATCHES]], dtype=np.float64).reshape(-1, width)
+        known = ~np.isnan(block)
+        squares += np.where(known, (block - centre) ** 2, 0.0).sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        spread = np.sqrt(squares / count)
+    return centre, np.clip(spread, 1e-6, None)
+
+
+def standardised(folder: Path, encoding: np.ndarray, keep: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    style = json.loads((folder / "style.json").read_text(encoding="utf-8"))
+    key = hashlib.sha1(
+        json.dumps(style["sources"]).encode("utf-8") + np.packbits(keep).tobytes() + np.asarray(fit, dtype=np.int64).tobytes()
+    ).hexdigest()
+    try:
+        with np.load(folder / "reduced.npz") as meta:
+            if str(meta["key"]) == key and (folder / "reduced.npy").exists():
+                return np.load(folder / "reduced.npy", mmap_mode="r"), meta["centre"], meta["spread"]
+    except OSError:
+        pass
+    rows = np.flatnonzero(keep)
+    centre, spread = buffered_moments(encoding, np.sort(rows[fit]))
+    out = np.lib.format.open_memmap(folder / "reduced.partial.npy", mode="w+", dtype=np.float32, shape=(len(rows), *encoding.shape[1:]))
+    for start in range(0, len(rows), CHUNK_MATCHES):
+        block = (np.asarray(encoding[rows[start : start + CHUNK_MATCHES]], dtype=np.float64) - centre) / spread
+        out[start : start + CHUNK_MATCHES] = np.nan_to_num(block, nan=0.0)
+    out.flush()
+    del out
+    (folder / "reduced.partial.npy").replace(folder / "reduced.npy")
+    np.savez(folder / "reduced.npz", key=np.array(key), centre=centre, spread=spread)
+    return np.load(folder / "reduced.npy", mmap_mode="r"), centre, spread
 
 
 def standardise(encoding: np.ndarray, fit: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -328,7 +425,10 @@ def _basis(settings: Settings, stream: str, seed: int, source: str) -> dict:
     raw = gold.to_numpy(dtype=float)[keep]
     order = np.random.default_rng(seed).permutation(len(raw))
     cut = int(len(raw) * (1.0 - HOLDOUT))
-    reduced, centre, spread = standardise(seats.pop("encoding")[keep], order[:cut])
+    if source == "style":
+        reduced, centre, spread = standardised(settings.processed_dir / BASIS, seats.pop("encoding"), keep, order[:cut])
+    else:
+        reduced, centre, spread = standardise(seats.pop("encoding")[keep], order[:cut])
     return {
         "match_id": seats["match_id"][keep],
         "seat_puuid": seats["seat_puuid"][keep],
@@ -460,9 +560,11 @@ def _side_pairs(basis: dict, matrix: np.ndarray, side: int) -> pd.DataFrame:
     left, right = np.triu_indices(TEAM_SIZE, k=1)
     seated = np.argsort(~(basis["seat_side"] == side), axis=1, kind="stable")[:, :TEAM_SIZE]
     rows = np.arange(len(reduced))[:, None]
-    team = reduced[rows, seated]
-    scored = np.einsum("bpi,ij,bqj->bpq", team, matrix, team) / (TEAM_PAIRS * dim)
-    del team
+    scored = np.empty((len(reduced), TEAM_SIZE, TEAM_SIZE))
+    for start in range(0, len(reduced), CHUNK_MATCHES):
+        stop = min(start + CHUNK_MATCHES, len(reduced))
+        team = np.asarray(reduced[start:stop])[np.arange(stop - start)[:, None], seated[start:stop]].astype(np.float64)
+        scored[start:stop] = np.einsum("bpj,bqj->bpq", team @ matrix, team) / (TEAM_PAIRS * dim)
     puuids, positions = basis["seat_puuid"][rows, seated], basis["seat_position"][rows, seated]
     return pd.DataFrame(
         {
@@ -478,13 +580,19 @@ def _side_pairs(basis: dict, matrix: np.ndarray, side: int) -> pd.DataFrame:
 
 
 def player_styles(basis: dict, columns: list[str]) -> pd.DataFrame:
-    flat = pd.DataFrame(basis["reduced"].reshape(-1, len(columns)), columns=columns)
-    flat["puuid"] = basis["seat_puuid"].ravel()
-    flat["position"] = basis["seat_position"].ravel()
-    grouped = flat.groupby(KEY)
-    styles = grouped.mean()
-    styles["seats"] = grouped.size()
-    return styles
+    reduced = basis["reduced"]
+    codes, who = pd.MultiIndex.from_arrays([basis["seat_puuid"].ravel(), basis["seat_position"].ravel()]).factorize()
+    who = who.set_names(KEY)
+    sums = np.zeros((len(who), len(columns)))
+    for start in range(0, len(reduced), CHUNK_MATCHES):
+        stop = min(start + CHUNK_MATCHES, len(reduced))
+        block = np.asarray(reduced[start:stop], dtype=np.float64).reshape(-1, len(columns))
+        picked = codes[start * SEATS : stop * SEATS]
+        sums += sparse.csr_matrix((np.ones(len(picked)), (picked, np.arange(len(picked)))), shape=(len(who), len(picked))) @ block
+    counts = np.bincount(codes, minlength=len(who))
+    styles = pd.DataFrame((sums / counts[:, None]).astype(np.float32), index=who, columns=columns)
+    styles["seats"] = counts
+    return styles.sort_index()
 
 
 def write_scores(

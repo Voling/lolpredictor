@@ -21,8 +21,8 @@ STYLE_SUFFIXES = ("_pct", "_var")
 UNINFORMATIVE = (
     "the pair model found no usable synergy signal in this corpus, so no score is reported"
 )
-NOT_FITTED = "the pair network is not fitted yet"
-NO_POSITIONS = "the two players share a main position, so no position pair was read"
+NOT_FITTED = "The model is not ready yet. Try again later."
+NO_POSITIONS = "You both play the same position. Pick a different position for one of you."
 THIN = (
     "{name}'s {position} playstyle is {own}% their own evidence from {games} {noun} and {rest}% the"
     " {position} corpus row, so this score says little about them"
@@ -205,10 +205,9 @@ class SynergyService:
             return chosen
         if not required:
             return None
-        raise ValueError(
-            f"{riot_id(a)} and {riot_id(b)} are both given {chosen['left']}, a duo needs two different"
-            " positions, pass the position each will play"
-        )
+        if not chosen["left"] or not chosen["right"]:
+            raise ValueError(f"We don't know which position {riot_id(a) if not chosen['left'] else riot_id(b)} plays. Pick one.")
+        raise ValueError(f"{riot_id(a)} and {riot_id(b)} both play {chosen['left'].lower()}. Pick a different position for one of you.")
 
     def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True) -> dict | None:
         if positions is None:
@@ -220,7 +219,7 @@ class SynergyService:
             if known["games"] == 0:
                 if not required:
                     return None
-                raise ValueError(f"{riot_id(profile)} has no games as {positions[side]} in the corpus")
+                raise ValueError(f"{riot_id(profile)} has no games as {positions[side].lower()} in our data.")
         return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
 
     @staticmethod
@@ -361,7 +360,7 @@ class SynergyService:
             if known is None:
                 return {"reliable": False, "note": NOT_FITTED, "players": summaries}
             if known["games"] == 0:
-                raise ValueError(f"{riot_id(profile)} has no games as {position} in the corpus")
+                raise ValueError(f"{riot_id(profile)} has no games as {position.lower()} in our data.")
             warning = thin_warning(riot_id(profile), position, known["games"], known["evidence"])
             if warning:
                 warnings.append(warning)
@@ -384,7 +383,7 @@ class SynergyService:
             try:
                 found = self.pair_score(me, name, me_position, wanted.strip() or None)
             except UnknownPlayer:
-                rows.append({"riot_id": name, "note": "not in the corpus"})
+                rows.append({"riot_id": name, "note": "Not in our data yet."})
                 continue
             except ValueError as error:
                 rows.append({"riot_id": name, "note": str(error)})

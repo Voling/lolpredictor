@@ -8,7 +8,7 @@ RESPONSES = {
     "present": "present at",
     "absent": "absent from",
 }
-OBJECTIVES = {"DRAGON": "dragon", "HORDE": "void grubs"}
+OBJECTIVES = {"DRAGON": "dragon", "HORDE": "void grubs", "RIFTHERALD": "rift herald"}
 OBJECTIVE_RESPONSES = {
     "died": "died at",
     "fought": "fought at",

@@ -32,7 +32,7 @@ def _handle(call):
     try:
         return call()
     except UnknownPlayer as exc:
-        raise HTTPException(404, f"unknown player: {exc}") from exc
+        raise HTTPException(404, f"We can't find {exc} in our data. Check the name and tag.") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

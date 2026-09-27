@@ -1,5 +1,9 @@
-import numpy as np
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
+from synergy.features.cells import SeatIndex
 from synergy.features.posterior import DEFAULT_TABLE, bridge_at, progress_moments
 from synergy.features.priority import (
     OUTCOMES,
@@ -7,9 +11,10 @@ from synergy.features.priority import (
     SITUATIONS,
     TICKS,
     band_weights,
-    count_frame,
+    gather_counts,
     lane_counts,
     lane_priority,
+    save_counts,
     track_frame,
 )
 
@@ -86,7 +91,7 @@ def test_band_weights_are_one_hot_when_certain_and_spread_when_not():
 
 def test_lane_counts_spread_a_laners_ticks_over_the_joint_cells_and_sum_to_the_tick_count():
     # given
-    ticks = 90
+    ticks = len(TICKS)
     seat = {
         "u_mean": np.full((10, ticks), 1.1), "u_var": np.zeros((10, ticks)),
         "in_lane": np.zeros((10, ticks)), "alive": np.ones((10, ticks), bool), "farmed": np.zeros((10, ticks)),
@@ -98,14 +103,15 @@ def test_lane_counts_spread_a_laners_ticks_over_the_joint_cells_and_sum_to_the_t
     blue_of = [1] * 5 + [0] * 5
 
     # when
-    rows = lane_counts(seat, lane, blue_of, roles, np.zeros(ticks, bool))
-    top = {(situation, outcome): count for s, situation, outcome, count in rows if s == 0}
+    counts = lane_counts(seat, lane, blue_of, roles, np.zeros(ticks, bool))
+    top = counts[0, SITUATIONS.index("all")]
 
     # then
-    assert np.isclose(sum(c for (situation, _), c in top.items() if situation == "all"), ticks)
-    assert np.isclose(top[("all", "theirs_own_farm")], 0.8 * ticks)
-    assert np.isclose(top[("all", "off_lane")], 0.2 * ticks)
-    assert not any(situation == "pre_objective" for (situation, _) in top)
+    assert counts.shape == (10, len(SITUATIONS), len(OUTCOMES))
+    assert np.isclose(top.sum(), ticks)
+    assert np.isclose(top[OUTCOMES.index("theirs_own_farm")], 0.8 * ticks)
+    assert np.isclose(top[OUTCOMES.index("off_lane")], 0.2 * ticks)
+    assert counts[0, SITUATIONS.index("pre_objective")].sum() == 0.0 and counts[1].sum() == 0.0
     assert len(PRIORITY_COLUMNS) == len(SITUATIONS) * len(OUTCOMES) == 124
 
 
@@ -134,15 +140,30 @@ def test_the_track_runs_seat_by_seat_then_tick_by_tick_and_leaves_unknown_priori
     assert track.dtypes.astype(str).tolist() == ["object", "object", "float64", "int64"] + ["float64"] * 8 + ["bool"]
 
 
-def test_counts_name_the_seat_player_for_every_row():
+def test_shard_counts_land_on_their_seats_in_the_disk_buffer_and_seats_without_counts_stay_zero(tmp_path):
     # given
-    match = {"match_id": "m", "puuid": [f"p{seat}" for seat in range(10)]}
-    rows = [(0, "all", "off_lane", 3.0), (7, "pre_objective", "dead", 1.5)]
+    shape = (10, len(SITUATIONS), len(OUTCOMES))
+    first, second = np.zeros(shape), np.zeros(shape)
+    first[0], second[3] = 1.0, 2.0
+    paths = [
+        Path(save_counts(tmp_path / "a.npz", ["m1"], [[f"p{seat}" for seat in range(10)]], [first])),
+        Path(save_counts(tmp_path / "b.npz", ["m2"], [[f"q{seat}" for seat in range(10)]], [second])),
+    ]
+    seats = pd.DataFrame(
+        {
+            "match_id": ["m1"] * 10 + ["m2"] * 10 + ["m3"],
+            "puuid": [f"p{seat}" for seat in range(10)] + [f"q{seat}" for seat in range(10)] + ["r0"],
+            "position": ["TOP"] * 21,
+        }
+    )
+    index = SeatIndex(seats)
 
     # when
-    counts = count_frame(match, rows)
+    counts = gather_counts(paths, index, tmp_path / "buffers" / "counts.npy")
 
     # then
-    assert counts["puuid"].tolist() == ["p0", "p7"]
-    assert counts["count"].dtype == np.float64
-    assert list(counts.columns) == ["match_id", "puuid", "situation", "outcome", "count"]
+    assert counts.shape == (21, len(SITUATIONS), len(OUTCOMES))
+    assert (counts[index.rows(["m1"], ["p0"])[0]] == 1.0).all()
+    assert (counts[index.rows(["m2"], ["q3"])[0]] == 2.0).all()
+    assert counts[index.rows(["m3"], ["r0"])[0]].sum() == 0.0
+    assert np.asarray(counts).sum() == first.sum() + second.sum()

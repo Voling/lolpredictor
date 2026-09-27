@@ -2,11 +2,13 @@ import math
 
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 NEAR = 2500.0
 REACH = 5000.0
 LATENCY_WINDOW = 3
-MONSTERS = {"DRAGON", "HORDE"}  # herald spawns at 15:00, baron later; both outside the window
+MONSTERS = {"DRAGON", "HORDE", "RIFTHERALD"}
 
 
 def _position(event: dict) -> tuple[float, float] | None:

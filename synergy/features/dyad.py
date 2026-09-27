@@ -4,7 +4,9 @@ from itertools import combinations
 from .regions import MAP_SPAN, REGIONS, region_of
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 LINK_RANGE = 2000.0
 BREAK_RANGE = 5000.0
 BANDS = (1500.0, 3000.0, 5000.0)

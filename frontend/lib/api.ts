@@ -100,10 +100,21 @@ export type Lineup = {
 
 const base = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+async function failure(response: Response): Promise<Error> {
+  const text = await response.text();
+  let detail: unknown = null;
+  try {
+    detail = JSON.parse(text).detail;
+  } catch {
+    detail = null;
+  }
+  return new Error(typeof detail === "string" ? detail : text || `The server answered ${response.status}.`);
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${base}${path}`, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`${response.status}: ${await response.text()}`);
+    throw await failure(response);
   }
   return response.json() as Promise<T>;
 }
@@ -129,7 +140,7 @@ export const postLineup = async (players: Record<string, string>) => {
     cache: "no-store",
   });
   if (!response.ok) {
-    throw new Error(`${response.status}: ${await response.text()}`);
+    throw await failure(response);
   }
   return response.json() as Promise<Lineup>;
 };

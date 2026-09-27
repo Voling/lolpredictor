@@ -7,7 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from ..config import Settings, get_settings
 from .timeline import ParsedTimeline
 
-SPAN = 15
+SPAN = get_settings().feature_minutes
 STATE_COLUMNS = [
     "gold_diff",
     "xp_diff",

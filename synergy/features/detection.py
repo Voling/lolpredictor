@@ -3,7 +3,9 @@ import math
 from .timeline import ParsedTimeline
 from .wave import lane_progress
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 THREAT_RANGE = 1600.0
 PRESSURE_RANGE = 2600.0
 RETREAT_PROGRESS = 0.06

@@ -6,8 +6,10 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
+from scipy import sparse
 
 from ..config import Settings, get_settings
+from ..deep.stream import SEATS
 from ..features.positions import POSITIONS
 from ..ingest.premades import premade_pairs
 from ..ingest.store import Store
@@ -57,6 +59,13 @@ class PairRows:
     target: np.ndarray
     depth: np.ndarray
     premade: np.ndarray
+
+
+def on_device(array: np.ndarray, device: str) -> torch.Tensor:
+    out = torch.empty(array.shape, dtype=torch.float32, device=device)
+    for start in range(0, len(array), BLOCK):
+        out[start : start + BLOCK] = torch.from_numpy(np.array(array[start : start + BLOCK], dtype=np.float32)).to(device)
+    return out
 
 
 def artifact_names(target: str) -> tuple[str, str]:
@@ -140,10 +149,12 @@ def player_means(basis: dict, rows: np.ndarray) -> dict:
     dim = reduced.shape[-1]
     names = pd.Series(basis["seat_puuid"][rows].ravel()) + "|" + pd.Series(basis["seat_position"][rows].ravel())
     codes, keys = pd.factorize(names)
-    order = np.argsort(codes, kind="stable")
-    starts = np.flatnonzero(np.r_[True, np.diff(codes[order]) > 0])
-    counts = np.diff(np.r_[starts, len(order)])
-    sums = np.add.reduceat(reduced[rows].reshape(-1, dim)[order].astype(np.float64), starts, axis=0)
+    counts = np.bincount(codes, minlength=len(keys))
+    sums = np.zeros((len(keys), dim))
+    for start in range(0, len(rows), BLOCK):
+        picked = codes[start * SEATS : (start + BLOCK) * SEATS]
+        block = np.asarray(reduced[rows[start : start + BLOCK]], dtype=np.float64).reshape(-1, dim)
+        sums += sparse.csr_matrix((np.ones(len(picked)), (picked, np.arange(len(picked)))), shape=(len(keys), len(picked))) @ block
     return {
         "means": (sums / counts[:, None]).astype(np.float32),
         "positions": np.array([str(key).split("|")[1] for key in keys]),
@@ -374,7 +385,7 @@ def fit_mirrored(
     )
 
     clock = time.time()
-    cells = torch.as_tensor(reduced, device=device)
+    cells = on_device(reduced, device)
     projection = directions(reduced, fit, components)
     upper = np.triu_indices(components)
     fitted = pair_design(board, projection, fit, upper, cells=cells)

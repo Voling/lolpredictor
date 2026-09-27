@@ -7,7 +7,9 @@ from .regions import MAP_SPAN
 
 CLOSE_RANGE = 2500.0
 VISION_WARDS = {"YELLOW_TRINKET", "SIGHT_WARD", "CONTROL_WARD", "BLUE_TRINKET"}
-EARLY_MINUTES = 15
+from ..config import get_settings
+
+EARLY_MINUTES = get_settings().feature_minutes
 
 
 def _participant_puuids(timeline: dict, match: dict | None = None) -> dict[int, str]:

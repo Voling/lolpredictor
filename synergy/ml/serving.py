@@ -25,6 +25,8 @@ REPORT_FILE = "interaction_report.json"
 DUO_RECORDS = "duo_records.parquet"
 DUO_SCORES = "duo_scores.npz"
 DUO_REPORT = "duo_report.json"
+PLAYER_HISTORY = "player_history.parquet"
+CHAMPION_EFFECTS = "champion_effects.parquet"
 UNRELIABLE = "the fit did not beat shuffled partners on this corpus, so it is shown for inspection only"
 
 _held: dict[tuple[str, str], tuple[tuple[int, int], object]] = {}
@@ -115,7 +117,7 @@ def known_names(settings: Settings) -> dict[tuple[str, str], str] | None:
 class NoGamesInPosition(ValueError):
     def __init__(self, puuid: str, position: str):
         self.puuid, self.position = puuid, position
-        super().__init__(f"{puuid} has no games as {position} in the corpus")
+        super().__init__(f"{puuid} has no games as {position.lower()} in our data.")
 
 
 def hinge_between(left: str, right: str, settings: Settings | None = None) -> dict:
@@ -180,12 +182,57 @@ def _significant(value: float) -> float:
     return float(f"{value:.{SIGNIFICANT}g}")
 
 
-def seat_reading(seats: dict, z: np.ndarray, position: str) -> dict:
+def _history_index(path: Path) -> dict[tuple[str, str], tuple[float, float, int]]:
+    table = pd.read_parquet(path, columns=["puuid", "position", "games", "form", "champion"])
+    return {
+        (puuid, position): (float(form), float(champion), int(games))
+        for puuid, position, games, form, champion in zip(table["puuid"], table["position"], table["games"], table["form"], table["champion"])
+    }
+
+
+def player_history(puuid: str, position: str, settings: Settings) -> tuple[float, float, int] | None:
+    found = cached(settings.served_model_dir / PLAYER_HISTORY, "history", _history_index)
+    return (found or {}).get((puuid, position))
+
+
+def _seat_quantiles(settings: Settings, position: str) -> np.ndarray | None:
+    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    if scores is None or "seat_quantiles" not in scores:
+        return None
+    names = [str(name) for name in scores["seat_positions"]]
+    return scores["seat_quantiles"][names.index(position)] if position in names else None
+
+
+def _seat_calibration(settings: Settings, position: str) -> float:
+    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    if scores is None or "reading_scale" not in scores:
+        return 1.0
+    names = [str(name) for name in scores["seat_positions"]]
+    return float(scores["reading_scale"][names.index(position)]) if position in names else 1.0
+
+
+def seat_reading(
+    seats: dict,
+    z: np.ndarray,
+    position: str,
+    history: tuple[float, float, int] | None = None,
+    quantiles: np.ndarray | None = None,
+    calibration: float = 1.0,
+) -> dict:
     k = [str(name) for name in seats["positions"]].index(position)
     scale = float(seats["scale"][k]) if "scale" in seats else 1.0
-    gold = scale * float((z - seats["centres"][k]) @ seats["weights"][k])
-    quantiles = seats["quantiles"][k]
-    return {"gold": round(gold, 1), "score": _score(gold, quantiles), "percentile": _percentile(gold, quantiles)}
+    style = calibration * scale * float((z - seats["centres"][k]) @ seats["weights"][k])
+    form, champion = (calibration * history[0], calibration * history[1]) if history is not None else (0.0, 0.0)
+    gold = style + form + champion
+    quantiles = seats["quantiles"][k] if quantiles is None else quantiles
+    return {
+        "gold": round(gold, 1),
+        "score": _score(gold, quantiles),
+        "percentile": _percentile(gold, quantiles),
+        "style": round(style, 1),
+        "form": round(form, 1),
+        "champion": round(champion, 1),
+    }
 
 
 def _loaded(settings: Settings) -> tuple[pd.DataFrame, dict, dict, dict, list[str], dict] | None:
@@ -203,7 +250,7 @@ def pair_between(
 ) -> dict | None:
     settings = settings or get_settings()
     if left_position == right_position:
-        raise ValueError(f"both players are given {left_position}, a duo needs two different positions")
+        raise ValueError(f"Both players are set to {left_position.lower()}. A duo needs two different positions.")
     loaded = _loaded(settings)
     if loaded is None:
         return None
@@ -220,7 +267,12 @@ def pair_between(
     strongest = np.argsort(-np.abs(terms).ravel())[:DRIVERS]
     reliable = _informative(settings)
     quantiles = _quantiles(scores, "quantiles", combination(left_position, right_position))
-    left_edge, right_edge = seat_reading(seats, a, left_position), seat_reading(seats, b, right_position)
+    left_edge = seat_reading(
+        seats, a, left_position, player_history(left, left_position, settings), _seat_quantiles(settings, left_position), _seat_calibration(settings, left_position)
+    )
+    right_edge = seat_reading(
+        seats, b, right_position, player_history(right, right_position, settings), _seat_quantiles(settings, right_position), _seat_calibration(settings, right_position)
+    )
     gold = _gold(value, scores)
     fit = {"gold": round(gold, 1), "score": _score(value, quantiles), "percentile": _percentile(value, quantiles)}
     return {
@@ -329,7 +381,14 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
         pairs.append({"left": left, "right": right, **{k: v for k, v in found.items() if k not in ("drivers", "reading")}})
     total = float(sum(pair["synergy"] for pair in pairs))
     parts = {
-        position: seat_reading(seats, vectors["matrix"][vectors["at"][(puuid, position)]].astype(float), position)["gold"]
+        position: seat_reading(
+            seats,
+            vectors["matrix"][vectors["at"][(puuid, position)]].astype(float),
+            position,
+            player_history(puuid, position, settings),
+            _seat_quantiles(settings, position),
+            _seat_calibration(settings, position),
+        )["gold"]
         for position, puuid in assignments.items()
     }
     reliable = _informative(settings)

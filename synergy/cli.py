@@ -20,7 +20,7 @@ def _report(payload) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
-def _build_blocks(settings, only: list[str] | None) -> dict:
+def _build_blocks(settings, only: list[str] | None, resume: bool = False) -> dict:
     from .features.habit import build_habits
     from .features.hinge import build_hinge
     from .features.orphans import build_orphan_features
@@ -38,7 +38,7 @@ def _build_blocks(settings, only: list[str] | None) -> dict:
         "tendency": lambda: build_tendencies(settings),
         "habit": lambda: build_habits(settings),
         "hinge": lambda: build_hinge(settings),
-        "priority": lambda: build_priority(settings),
+        "priority": lambda: build_priority(settings, resume=resume),
     }
     out = {}
     for name in only or BLOCKS:
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     synth_cmd.add_argument("--seed", type=int, default=7)
 
     window_cmd = sub.add_parser("window", help="cut raw timelines down to the first 15 minutes")
-    window_cmd.add_argument("--minutes", type=int, default=15)
+    window_cmd.add_argument("--minutes", type=int, default=None, help="defaults to FEATURE_MINUTES")
     window_cmd.add_argument("--workers", type=int, default=None)
 
     features_cmd = sub.add_parser(
@@ -124,6 +124,9 @@ def main(argv: list[str] | None = None) -> int:
     blocks_cmd = sub.add_parser("blocks", help="build the derived feature tables the model loads")
     blocks_cmd.add_argument(
         "--only", nargs="*", choices=list(BLOCKS), default=None, help="build a subset"
+    )
+    blocks_cmd.add_argument(
+        "--resume", action="store_true", help="keep finished priority shards from an interrupted build"
     )
     variance_cmd = sub.add_parser(
         "variance", help="fit the pair identity variance component on advantage at 15"
@@ -278,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "window":
         from .ingest.window import build_windows
 
-        _report(build_windows(settings, minutes=args.minutes, workers=args.workers))
+        _report(build_windows(settings, minutes=args.minutes or settings.feature_minutes, workers=args.workers))
         return 0
 
     if args.command == "features":
@@ -364,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         _report(report["best"])
         return 0
     if args.command == "blocks":
-        _report(_build_blocks(settings, args.only))
+        _report(_build_blocks(settings, args.only, args.resume))
         return 0
     if args.command == "variance":
         from .features.build import load_tables

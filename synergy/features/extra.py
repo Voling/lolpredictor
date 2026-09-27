@@ -1,6 +1,8 @@
 from .timeline import ParsedTimeline
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 
 
 def _damage(entries: list[dict] | None) -> float:

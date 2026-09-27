@@ -53,7 +53,7 @@ def test_two_players_sharing_a_main_position_are_refused_without_positions(servi
         service.pair_score(left, right)
 
     # then
-    assert "both given TOP" in str(refused.value)
+    assert "both play top" in str(refused.value)
 
 
 def test_a_player_with_no_games_in_the_asked_position_is_refused_by_name(service):
@@ -65,7 +65,7 @@ def test_a_player_with_no_games_in_the_asked_position_is_refused_by_name(service
         service.pair_score(left, right, "jungle", "top")
 
     # then
-    assert "Gamma#NA1 has no games as TOP" in str(refused.value)
+    assert "Gamma#NA1 has no games as top" in str(refused.value)
 
 
 def test_a_team_without_positions_reads_only_pairs_it_can_place(service):
@@ -111,8 +111,8 @@ def test_friends_are_ranked_by_the_projected_edge_and_a_refused_pair_keeps_its_r
     beta = found["friends"][0]
     assert beta["position"] == "JUNGLE" and beta["reading"]["gold"] == 50.0 and beta["total"] == 155.0
     assert beta["fit"]["gold"] == 5.0 and beta["games_together"] == 4 and beta["thin"] is False
-    assert "both given TOP" in found["friends"][1]["note"]
-    assert found["friends"][2]["note"] == "not in the corpus"
+    assert "both play top" in found["friends"][1]["note"]
+    assert found["friends"][2]["note"] == "Not in our data yet."
 
 
 def test_friends_are_ranked_by_the_duo_score_which_carries_the_record_together(service):

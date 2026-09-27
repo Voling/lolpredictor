@@ -3,61 +3,48 @@
 import Link from "next/link";
 import { getStatus } from "@/lib/api";
 import { useRemote } from "@/lib/remote";
+import { Verdict } from "@/lib/verdict";
+
+const BANDS = [
+  { score: 65, range: "60 and up" },
+  { score: 55, range: "50 to 59" },
+  { score: 45, range: "40 to 49" },
+  { score: 35, range: "below 40" },
+];
 
 export default function Home() {
   const { data: status, error } = useRemote(getStatus, "status");
 
-  const model = (status?.model ?? {}) as Record<string, number>;
-  const gain = model.advantage_gain;
-  const nullsAbove = model.advantage_nulls_above;
-  const informative = status?.informative ?? false;
-
   return (
     <main>
       <h1>lolpredictor</h1>
-      <p className="sub">Your score with each friend when you duo.</p>
-      <p><Link href="/friends/">Rank your friends</Link> · <Link href="/pair/">Read a pair</Link></p>
+      <p className="sub">Find out which friends you play best with in ranked.</p>
 
-      {error && <div className="gate"><strong>API unreachable</strong>{error}</div>}
+      <h3>How to use it</h3>
+      <p><Link href="/friends/">Rank your friends</Link>. Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a score.</p>
+      <p><Link href="/pair/">Check one duo</Link>. Enter your Riot ID and one friend&apos;s Riot ID to get a score for the two of you.</p>
 
-      {status && !informative && (
-        <div className="gate">
-          <strong>Pair fit shown for inspection only</strong>
-          The pair block adds {gain?.toFixed(6)} R² on the early advantage and {nullsAbove ?? "?"} of 20
-          permutation nulls reached it, so the model reports no usable pair signal at the team level.
-        </div>
-      )}
+      <h3>What the score means</h3>
+      <p>50 is an average duo for your two positions. Higher is better.</p>
+      <ul className="legend">
+        {BANDS.map((band) => (
+          <li key={band.range}><Verdict score={band.score} /> {band.range}</li>
+        ))}
+      </ul>
 
-      {status && (
-        <table>
-          <thead>
-            <tr><th>metric</th><th className="num">value</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>served run</td><td className="num">{status.run ? `${status.run.id} at ${status.run.git?.sha ?? "?"}${status.run.git?.dirty ? " with local changes" : ""}` : "working artifacts, no run promoted"}</td></tr>
-            <tr><td>players profiled</td><td className="num">{status.players.toLocaleString()}</td></tr>
-            <tr><td>known pairs</td><td className="num">{status.known_pairs.toLocaleString()}</td></tr>
-            <tr><td>cache</td><td className="num">{status.cache ? "connected" : "off"}</td></tr>
-            {[
-              "matches",
-              "advantage_matches",
-              "advantage_base_r2",
-              "advantage_full_r2",
-              "advantage_gain",
-              "advantage_nulls_above",
-              "advantage_gold_sd",
-            ].map(
-              (key) =>
-                model[key] !== undefined && (
-                  <tr key={key}>
-                    <td>{key}</td>
-                    <td className="num">{model[key].toLocaleString()}</td>
-                  </tr>
-                ),
-            )}
-          </tbody>
-        </table>
-      )}
+      <h3>How it works</h3>
+      <p>
+        The score comes from your past ranked games. It looks at how each of you plays and how you do on the champions you pick.
+        If you two have played together, those games count too.
+      </p>
+      <p>
+        From that it predicts how far ahead your two positions will be in gold at 20 minutes. Teams that are ahead at 20 minutes win
+        more often.
+      </p>
+      <p className="sub">A score is a prediction, not a promise. Any one game can go either way.</p>
+
+      {error && <div className="gate"><strong>The server isn&apos;t reachable right now.</strong>{error}</div>}
+      {status?.run && <p className="footer">Model {status.run.id}</p>}
     </main>
   );
 }

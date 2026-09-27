@@ -4,7 +4,9 @@ from .regions import REGIONS, region_of
 from .timeline import ParsedTimeline
 from .wave import wave_states, PUSH, DEFENSIVE, NEUTRAL
 
-SPAN = 15
+from ..config import get_settings
+
+SPAN = get_settings().feature_minutes
 MEMORY = 2
 SIGHT = 1350.0
 GROUP_RANGE = 2200.0

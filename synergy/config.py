@@ -96,6 +96,7 @@ class Settings:
 
     cell_prior_scale: float = field(default_factory=lambda: _float("CELL_PRIOR_SCALE", 1.0))
     target_minute: int = field(default_factory=lambda: _int("TARGET_MINUTE", 20))
+    feature_minutes: int = field(default_factory=lambda: _int("FEATURE_MINUTES", 15))
     shrinkage_k: float = field(default_factory=lambda: _float("SYNERGY_SHRINKAGE_K", 12.0))
     style_shrinkage_k: float = field(default_factory=lambda: _float("STYLE_SHRINKAGE_K", 5.0))
     min_profile_games: int = field(default_factory=lambda: _int("MIN_PROFILE_GAMES", 3))
