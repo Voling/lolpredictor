@@ -7,7 +7,7 @@ import pandas as pd
 from ..config import Settings, get_settings
 from ..features.positions import KEY, POSITIONS
 from .interaction import SEED, _basis, combination_keys
-from .mirrored import SEATS_FILE, seat_gold, seats_by_position
+from .mirrored import SEATS_FILE, seat_gold, seats_by_position, validation_split
 from .serving import CHAMPION_EFFECTS, DUO_RECORDS, DUO_REPORT, DUO_SCORES, MATRIX_FILE, PLAYER_HISTORY, SCORES_FILE, TEAM_PAIRS
 
 KEPT_GAMES = 2
@@ -127,6 +127,13 @@ def held_out(gold, predicted, blue, red, test, positions, names, champion, histo
     return out
 
 
+def fit_informative(settings: Settings) -> bool:
+    path = settings.model_dir / "interaction_report.json"
+    if not path.exists():
+        return False
+    return bool(json.loads(path.read_text(encoding="utf-8")).get("informative", False))
+
+
 def reading_scales(checked: dict) -> np.ndarray:
     return np.clip(np.array([float(checked[name].get("slope", 1.0)) for name in POSITIONS]), *SCALE_BOUNDS)
 
@@ -219,7 +226,12 @@ def served_readings(
 
 
 def served_totals(
-    settings: Settings, games: pd.DataFrame, kept: pd.DataFrame, history: pd.DataFrame | None = None, scales: np.ndarray | None = None
+    settings: Settings,
+    games: pd.DataFrame,
+    kept: pd.DataFrame,
+    history: pd.DataFrame | None = None,
+    scales: np.ndarray | None = None,
+    with_fit: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     styles, vectors, reading, saved, _ = served_readings(settings, history, scales)
     scores = _npz(settings.model_dir / SCORES_FILE)
@@ -238,7 +250,7 @@ def served_totals(
         fit[start : start + CHUNK] = ((left @ matrix) * right).sum(axis=1).astype(np.float64) / (TEAM_PAIRS * matrix.shape[0]) * gold_sd
     pairs = keyed(games.loc[known])
     record = pairs[["a", "b"]].merge(kept[["a", "b", "record"]], on=["a", "b"], how="left")["record"].fillna(0.0).to_numpy()
-    total = reading[at_left] + reading[at_right] + fit[inverse] + record
+    total = reading[at_left] + reading[at_right] + (fit[inverse] if with_fit else 0.0) + record
     seat_quantiles = np.stack([np.quantile(reading[styles["position"].to_numpy() == name], GRID) if (styles["position"] == name).any() else np.zeros(len(GRID)) for name in POSITIONS])
     return total, known, seat_quantiles
 
@@ -262,6 +274,8 @@ def fit_duo_records(settings: Settings | None = None, stream: str = "stream.npz"
     del seated, lookup_champion
     pools = champion_pools(settings)
     signed = signed_residuals(gold, predicted, blue, red, rows)
+    core, check = validation_split(fit)
+    validated = held_out(gold, predicted, blue, red, check, positions, names, champion, History(positions, names, champion, signed, core, pools))
     checked = held_out(gold, predicted, blue, red, test, positions, names, champion, History(positions, names, champion, signed, fit, pools))
     history = History(positions, names, champion, signed, rows, pools)
     extra = np.zeros(gold.shape)
@@ -282,8 +296,9 @@ def fit_duo_records(settings: Settings | None = None, stream: str = "stream.npz"
     table = history.table()
     table.to_parquet(settings.model_dir / PLAYER_HISTORY, index=False)
     history.champions().to_parquet(settings.model_dir / CHAMPION_EFFECTS, index=False)
-    scales = reading_scales(checked)
-    total, known, seat_quantiles = served_totals(settings, games, kept, table, scales)
+    scales = reading_scales(validated)
+    with_fit = fit_informative(settings)
+    total, known, seat_quantiles = served_totals(settings, games, kept, table, scales, with_fit)
     combos = combination_keys(games.loc[known, "left_position"], games.loc[known, "right_position"])
     combo_names = sorted(set(combos))
     np.savez(
@@ -294,6 +309,7 @@ def fit_duo_records(settings: Settings | None = None, stream: str = "stream.npz"
         seat_positions=np.array(list(POSITIONS)),
         seat_quantiles=seat_quantiles,
         reading_scale=scales,
+        with_fit=with_fit,
         spread=spread,
         noise=noise,
         minute=settings.target_minute,
@@ -313,6 +329,7 @@ def fit_duo_records(settings: Settings | None = None, stream: str = "stream.npz"
         "champions": {"groups": int(len(history.champion_index)), "spread": round(history.champion_tau, 1)},
         "held_out": checked,
         "reading_scale": {name: round(float(value), 3) for name, value in zip(POSITIONS, scales)},
+        "with_fit": with_fit,
         "total_gold": {f"{int(q * 100)}th": round(float(np.quantile(total, q)), 1) for q in (0.1, 0.5, 0.9)},
     }
     (settings.model_dir / DUO_REPORT).write_text(json.dumps(report, indent=2), encoding="utf-8")

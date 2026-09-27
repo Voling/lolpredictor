@@ -146,7 +146,7 @@ def test_pair_between_refuses_a_shared_position_and_a_position_never_played(serv
 
     # then
     assert "two different positions" in str(shared.value)
-    assert never.value.position == "UTILITY" and "no games as utility" in str(never.value)
+    assert never.value.position == "UTILITY" and "no games as support" in str(never.value)
     assert position_profile("b", "UTILITY", settings) == {"games": 0, "evidence": 0.0}
     assert position_profile("b", "JUNGLE", settings) == {"games": 7, "evidence": 0.9}
     assert position_profile("b", "JUNGLE", Settings(data_dir=tmp_path / "empty")) is None
@@ -342,3 +342,20 @@ def test_a_reading_is_shrunk_by_its_held_out_calibration_and_its_parts_still_add
     # then
     assert left["gold"] == 82.5
     assert (left["style"], left["form"], left["champion"]) == (50.0, 20.0, 12.5)
+
+
+def test_a_style_fit_that_failed_its_shuffles_is_left_out_of_the_duo_score(serving_settings):
+    # given
+    grid = np.linspace(-400.0, 400.0, 1001)
+    pd.DataFrame({"a": ["a"], "b": ["b"], "games": [12], "mean": [80.0], "record": [40.0]}).to_parquet(
+        serving_settings.model_dir / DUO_RECORDS, index=False
+    )
+    np.savez(serving_settings.model_dir / DUO_SCORES, quantiles=grid, combos=np.array(["JUNGLE+TOP"]), combo_quantiles=np.stack([grid]), with_fit=False)
+
+    # when
+    found = duo_between("a", "TOP", "b", "JUNGLE", serving_settings)
+
+    # then
+    assert found["projected_gold"] == found["edge"]["total"] == 100.0 + 50.0 + 40.0
+    assert found["edge"]["fit"]["gold"] == 5.0 and found["edge"]["with_fit"] is False
+    assert found["reliable"] is True and found["note"] is None

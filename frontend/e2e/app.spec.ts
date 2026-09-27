@@ -87,3 +87,31 @@ test("two players who share a main position are refused with a plain reason", as
   await expect(page.getByText("Can't score this duo.")).toBeVisible();
   await expect(page.getByText(/both play top\. Pick a different position for one of you\./)).toBeVisible();
 });
+
+test("a duo score built on few games in a position says it is rough", async ({ page }) => {
+  // given
+  const query = new URLSearchParams({ a: ME, b: THIN, a_position: "mid", b_position: "jungle" });
+
+  // when
+  await page.goto(`/pair/?${query}`);
+
+  // then
+  await expect(page.getByRole("heading", { level: 2 })).toContainText(/Your duo score: \d+/);
+  await expect(page.locator("p.hint")).toHaveText(`${ME} has 1 game as mid. Treat this score as rough.`);
+});
+
+test("friends with few games in a position are tagged and a missing position uses the spoken name", async ({ page }) => {
+  // given
+  await page.goto("/friends/");
+  await page.getByLabel("Your Riot ID").fill(ME);
+  await page.getByLabel("Your position").selectOption("jungle");
+  await page.getByLabel(/Friends, one per line/).fill([`${THIN}:mid`, `${THIN}:support`].join("\n"));
+
+  // when
+  await page.getByRole("button", { name: "Rank" }).click();
+
+  // then
+  await expect(page.getByText("You have 2 games as jungle. Your scores are rough until you play more.")).toBeVisible();
+  await expect(page.locator("tbody tr").first().locator(".few")).toHaveText("few games");
+  await expect(page.locator("tbody")).toContainText("has no games as support in our data.");
+});

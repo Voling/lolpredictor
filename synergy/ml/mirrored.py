@@ -19,6 +19,7 @@ from .interaction import SEED, TEAM_PAIRS, _basis
 COMPONENTS = 24
 BLOCK = 8000
 ADDITIVE_PENALTIES = (1e2, 1e3, 1e4)
+SEAT_PENALTIES = (1e1, 3e1, 1e2, 3e2, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5)
 PRODUCT_PENALTIES = (1e3, 1e4, 1e5, 1e6, 1e7)
 PLANTED = (50.0, 100.0)
 NULLS = 3
@@ -27,6 +28,7 @@ DEPTHS = (20, 50)
 SMALLEST_SLICE = 2000
 SMALLEST_REFIT = 20000
 DEAD_SPREAD = 1e-3
+VALIDATION_SHARE = 0.125
 EVENT_VALUES = {"kill": 450.0, "plate": 175.0, "building": 300.0}
 TARGETS = ("gold", "events")
 SEATS_FILE = "seat_weights.npz"
@@ -142,6 +144,12 @@ def joint_swings(settings: Settings) -> dict:
     frame = table.to_pandas(strings_to_categorical=True)
     print(f"joint events: {len(frame):,} present rows", flush=True)
     return pair_swings(frame, objective_prices(settings))
+
+
+def validation_split(rows: np.ndarray, seed: int = SEED) -> tuple[np.ndarray, np.ndarray]:
+    order = np.random.default_rng(seed + 1).permutation(len(rows))
+    cut = int(len(rows) * VALIDATION_SHARE)
+    return np.sort(rows[order[cut:]]), np.sort(rows[order[:cut]])
 
 
 def player_means(basis: dict, rows: np.ndarray) -> dict:
@@ -490,6 +498,24 @@ def fit_mirrored(
     return report
 
 
+def chosen_ridge(core: tuple[np.ndarray, np.ndarray], check: tuple[np.ndarray, np.ndarray], penalties: tuple = SEAT_PENALTIES) -> dict:
+    design, values = core
+    design_check, values_check = check
+    middle = float(values.mean())
+    left, right = _gram(design, values - middle, np.arange(len(values)))
+    chosen = None
+    for penalty in penalties:
+        found = ridge(left, right, np.repeat(penalty, design.shape[1]))
+        score = explained(values_check, middle + design_check @ found.astype(np.float32))
+        if chosen is None or score > chosen[0]:
+            chosen = (score, penalty, found)
+    pooled = float((values.sum() + values_check.sum()) / (len(values) + len(values_check)))
+    extra_left, extra_right = _gram(design_check, values_check - pooled, np.arange(len(values_check)))
+    shifted = right - (pooled - middle) * design.sum(axis=0, dtype=np.float64)
+    weights = ridge(left + extra_left, shifted + extra_right, np.repeat(chosen[1], design.shape[1]))
+    return {"validation": chosen[0], "penalty": chosen[1], "core": chosen[2], "weights": weights, "middle": pooled}
+
+
 def fit_positions(
     settings: Settings | None = None,
     stream: str = "stream.npz",
@@ -507,44 +533,41 @@ def fit_positions(
     grid = np.linspace(0.0, 1.0, 1001)
     table = player_means(basis, np.array(sorted(set(fit) | set(test))))
     names = basis["seat_puuid"]
-    held, weights = {}, np.zeros((len(POSITIONS), len(columns)))
+    core, check = validation_split(fit, seed)
+    held, validated, penalties, weights = {}, {}, {}, np.zeros((len(POSITIONS), len(columns)))
     centres, quantiles = np.zeros((len(POSITIONS), len(columns))), np.zeros((len(POSITIONS), len(grid)))
     scale = np.ones(len(POSITIONS))
     for index, name in enumerate(POSITIONS):
-        design_fit = reduced[fit, blue[fit, index]].astype(np.float32) - reduced[fit, red[fit, index]].astype(np.float32)
+        design_fit = reduced[core, blue[core, index]].astype(np.float32) - reduced[core, red[core, index]].astype(np.float32)
+        design_check = reduced[check, blue[check, index]].astype(np.float32) - reduced[check, red[check, index]].astype(np.float32)
         design_test = reduced[test, blue[test, index]].astype(np.float32) - reduced[test, red[test, index]].astype(np.float32)
-        values_fit = gold[fit, blue[fit, index]] - gold[fit, red[fit, index]]
+        values_fit = gold[core, blue[core, index]] - gold[core, red[core, index]]
+        values_check = gold[check, blue[check, index]] - gold[check, red[check, index]]
         values_test = gold[test, blue[test, index]] - gold[test, red[test, index]]
         spread = design_fit.std(axis=0)
         dead = spread < DEAD_SPREAD
         spread[dead] = 1.0
-        design_fit[:, dead] = 0.0
-        design_test[:, dead] = 0.0
-        design_fit, design_test = design_fit / spread, design_test / spread
-        middle = float(values_fit.mean())
-        left, right = _gram(design_fit, values_fit - middle, np.arange(len(values_fit)))
-        chosen = None
-        for penalty in ADDITIVE_PENALTIES:
-            found = ridge(left, right, np.repeat(penalty, design_fit.shape[1]))
-            score = explained(values_test, middle + design_test @ found.astype(np.float32))
-            if chosen is None or score > chosen[0]:
-                chosen = (score, found / spread)
-        held[name] = round(chosen[0], 5)
-        weights[index] = np.where(dead, 0.0, chosen[1])
-        seats = np.concatenate([reduced[fit, blue[fit, index]], reduced[fit, red[fit, index]]]).astype(np.float64)
-        centres[index] = seats.mean(axis=0)
+        for design in (design_fit, design_check, design_test):
+            design[:, dead] = 0.0
+            design /= spread
+        found = chosen_ridge((design_fit, values_fit), (design_check, values_check))
+        validated[name], penalties[name] = round(found["validation"], 5), found["penalty"]
+        held[name] = round(explained(values_test, found["middle"] + design_test @ found["weights"].astype(np.float32)), 5)
+        weights[index] = np.where(dead, 0.0, found["weights"] / spread)
+        checked = np.where(dead, 0.0, found["core"] / spread)
+        centres[index] = (reduced[fit, blue[fit, index]].mean(axis=0, dtype=np.float64) + reduced[fit, red[fit, index]].mean(axis=0, dtype=np.float64)) / 2.0
 
-        def served(rows, side):
+        def served(rows, side, using):
             picked = [table["at"][f"{names[row, seat]}|{name}"] for row, seat in zip(rows, side[rows, index])]
-            return (table["means"][picked] - centres[index]) @ weights[index]
+            return (table["means"][picked] - centres[index]) @ using
 
-        scale[index] = calibration(served(test, blue) - served(test, red), values_test)
-        readings = scale[index] * np.concatenate([served(fit, blue), served(fit, red)])
+        scale[index] = calibration(served(check, blue, checked) - served(check, red, checked), values_check)
+        readings = scale[index] * np.concatenate([served(fit, blue, weights[index]), served(fit, red, weights[index])])
         quantiles[index] = np.quantile(readings, grid)
         print(
-            f"  {name:8} seat edge at {settings.target_minute}, spread {values_fit.std():,.0f} gold, held out r2 {chosen[0]:+.4f},"
-            f" {int(dead.sum())} dead cells, served readings scaled by {scale[index]:.3f},"
-            f" spread {readings.std():,.0f} gold over {len(readings):,} seats",
+            f"  {name:8} seat edge at {settings.target_minute}, spread {values_fit.std():,.0f} gold, penalty {found['penalty']:,.0f},"
+            f" validation r2 {found['validation']:+.4f}, held out r2 {held[name]:+.4f}, {int(dead.sum())} dead cells,"
+            f" served readings scaled by {scale[index]:.3f}, spread {readings.std():,.0f} gold over {len(readings):,} seats",
             flush=True,
         )
     np.savez(
@@ -560,6 +583,8 @@ def fit_positions(
     report = {
         "minute": settings.target_minute,
         "held_out": held,
+        "validation": validated,
+        "penalty": penalties,
         "scale": {name: round(float(scale[index]), 3) for index, name in enumerate(POSITIONS)},
         "matches": int(sound.sum()),
         "columns": len(columns),

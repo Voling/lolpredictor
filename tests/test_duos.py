@@ -3,6 +3,7 @@ import pandas as pd
 
 from synergy.features.positions import POSITIONS
 from synergy.ml.duos import History, duo_records, halves, held_out, keyed, served_totals, shrunk, signed_residuals, split_half
+from synergy.ml.mirrored import validation_split
 
 
 def _games(duos: dict[tuple[str, str], list[float]]) -> pd.DataFrame:
@@ -154,3 +155,18 @@ def test_the_score_distribution_adds_both_readings_the_fit_the_record_and_the_pl
     assert quantiles.shape == (5, 1001) and quantiles[0, 0] == 100.0
     assert np.allclose(halved, [0.5 * (100.0 + 30.0 + 15.0) + 0.5 * 50.0 + 5.0 + 40.0])
     assert halved_quantiles[0, 0] == 0.5 * (100.0 + 30.0 + 15.0)
+
+
+def test_the_validation_rows_are_an_eighth_of_the_fit_rows_and_never_touch_the_rest():
+    # given
+    rows = np.arange(0, 800, 2)
+
+    # when
+    core, check = validation_split(rows)
+    again, _ = validation_split(rows)
+
+    # then
+    assert len(check) == 50 and len(core) == 350
+    assert not set(core) & set(check) and set(core) | set(check) == set(rows)
+    assert (np.diff(core) > 0).all() and (np.diff(check) > 0).all()
+    assert np.array_equal(core, again)

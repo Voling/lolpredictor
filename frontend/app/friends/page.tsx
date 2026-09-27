@@ -6,7 +6,7 @@ import { Suspense } from "react";
 import { useRemote } from "@/lib/remote";
 import { getFriends, type Friends } from "@/lib/api";
 import { positionName } from "@/lib/positions";
-import { Verdict } from "@/lib/verdict";
+import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -17,6 +17,9 @@ function Result({ found }: { found: Friends }) {
   return (
     <>
       <h2>Your duo scores{me.position ? ` as ${positionName(me.position)}` : ""}</h2>
+      {me.games != null && me.games < FEW_GAMES && (
+        <p className="hint">You have {gameCount(me.games)} as {positionName(me.position)}. Your scores are rough until you play more.</p>
+      )}
       <table>
         <thead>
           <tr><th>Friend</th><th>Their position</th><th className="num">Score</th><th>Verdict</th></tr>
@@ -30,13 +33,17 @@ function Result({ found }: { found: Friends }) {
                 <td>{row.riot_id}</td>
                 <td>{positionName(row.position)}</td>
                 <td className="num">{row.score?.toFixed(0)}</td>
-                <td>{row.score != null && <Verdict score={row.score} />}</td>
+                <td>
+                  {row.score != null && <Verdict score={row.score} />}
+                  {row.games != null && row.games < FEW_GAMES && <span className="few">few games</span>}
+                </td>
               </tr>
             ),
           )}
         </tbody>
       </table>
       <p className="sub">50 is an average duo for those two positions. Higher is better.</p>
+      <p className="sub">Few games means that friend has under {FEW_GAMES} games in that position. Their score stays near 50 until they play more.</p>
     </>
   );
 }

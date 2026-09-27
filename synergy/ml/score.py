@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
-from ..features.positions import parse_position
+from ..features.positions import parse_position, spoken
 from ..features.timeline import PAIR_TIMELINE_COLUMNS
 from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
@@ -207,7 +207,7 @@ class SynergyService:
             return None
         if not chosen["left"] or not chosen["right"]:
             raise ValueError(f"We don't know which position {riot_id(a) if not chosen['left'] else riot_id(b)} plays. Pick one.")
-        raise ValueError(f"{riot_id(a)} and {riot_id(b)} both play {chosen['left'].lower()}. Pick a different position for one of you.")
+        raise ValueError(f"{riot_id(a)} and {riot_id(b)} both play {spoken(chosen['left'])}. Pick a different position for one of you.")
 
     def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True) -> dict | None:
         if positions is None:
@@ -219,7 +219,7 @@ class SynergyService:
             if known["games"] == 0:
                 if not required:
                     return None
-                raise ValueError(f"{riot_id(profile)} has no games as {positions[side].lower()} in our data.")
+                raise ValueError(f"{riot_id(profile)} has no games as {spoken(positions[side])} in our data.")
         return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
 
     @staticmethod
@@ -360,7 +360,7 @@ class SynergyService:
             if known is None:
                 return {"reliable": False, "note": NOT_FITTED, "players": summaries}
             if known["games"] == 0:
-                raise ValueError(f"{riot_id(profile)} has no games as {position.lower()} in our data.")
+                raise ValueError(f"{riot_id(profile)} has no games as {spoken(position)} in our data.")
             warning = thin_warning(riot_id(profile), position, known["games"], known["evidence"])
             if warning:
                 warnings.append(warning)

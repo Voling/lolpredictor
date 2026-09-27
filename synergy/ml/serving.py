@@ -9,7 +9,7 @@ from ..config import Settings, get_settings
 from ..features.describe import describe, describe_situation, named, situation_of
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
-from ..features.positions import KEY, POSITIONS, combination
+from ..features.positions import KEY, POSITIONS, combination, spoken
 
 TEAM_SIZE = 5
 TEAM_PAIRS = TEAM_SIZE * (TEAM_SIZE - 1) // 2
@@ -117,7 +117,7 @@ def known_names(settings: Settings) -> dict[tuple[str, str], str] | None:
 class NoGamesInPosition(ValueError):
     def __init__(self, puuid: str, position: str):
         self.puuid, self.position = puuid, position
-        super().__init__(f"{puuid} has no games as {position.lower()} in our data.")
+        super().__init__(f"{puuid} has no games as {spoken(position)} in our data.")
 
 
 def hinge_between(left: str, right: str, settings: Settings | None = None) -> dict:
@@ -250,7 +250,7 @@ def pair_between(
 ) -> dict | None:
     settings = settings or get_settings()
     if left_position == right_position:
-        raise ValueError(f"Both players are set to {left_position.lower()}. A duo needs two different positions.")
+        raise ValueError(f"Both players are set to {spoken(left_position)}. A duo needs two different positions.")
     loaded = _loaded(settings)
     if loaded is None:
         return None
@@ -325,14 +325,18 @@ def duo_between(
     if found is None or scores is None:
         return found
     record = record_between(left, right, settings)
-    total = round(found["edge"]["total"] + record["gold"], 1)
+    with_fit = bool(scores["with_fit"]) if "with_fit" in scores else True
+    edge = found["edge"]
+    total = round(edge["left"]["gold"] + edge["right"]["gold"] + (edge["fit"]["gold"] if with_fit else 0.0) + record["gold"], 1)
     quantiles = _quantiles(scores, "quantiles", combination(left_position, right_position))
     return {
         **found,
         "score": _score(total, quantiles),
         "percentile": _percentile(total, quantiles),
         "projected_gold": total,
-        "edge": {**found["edge"], "record": record, "total": total},
+        "reliable": found["reliable"] if with_fit else True,
+        "note": found["note"] if with_fit else None,
+        "edge": {**edge, "record": record, "total": total, "with_fit": with_fit},
     }
 
 

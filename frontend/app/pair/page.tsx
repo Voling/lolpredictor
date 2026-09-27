@@ -6,7 +6,7 @@ import { Suspense } from "react";
 import { useRemote } from "@/lib/remote";
 import { getPair, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
-import { Verdict } from "@/lib/verdict";
+import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -25,12 +25,19 @@ function Result({ pair }: { pair: PairScore }) {
   }
   const [left, right] = pair.players;
   const positions = `${positionName(found.positions.left)} and ${positionName(found.positions.right)}`;
+  const thin = [
+    { name: left.riot_id, games: found.left_games, position: found.positions.left },
+    { name: right.riot_id, games: found.right_games, position: found.positions.right },
+  ].filter((player) => player.games < FEW_GAMES);
   return (
     <>
       <h2>Your duo score: {found.score.toFixed(0)}</h2>
       <p className="verdict-line"><Verdict score={found.score} /></p>
       <p>{left.riot_id} as {positionName(found.positions.left)} with {right.riot_id} as {positionName(found.positions.right)}.</p>
       <p>At {found.minute} minutes you two are projected to be {lead(found.edge.total)} the other team&apos;s {positions}.</p>
+      {thin.map((player) => (
+        <p key={player.name} className="hint">{player.name} has {gameCount(player.games)} as {positionName(player.position)}. Treat this score as rough.</p>
+      ))}
       <p className="sub">50 is an average duo for these positions. Higher is better.</p>
     </>
   );

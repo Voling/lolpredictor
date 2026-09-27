@@ -5,6 +5,7 @@ from synergy.features.positions import POSITIONS
 from synergy.ml.mirrored import (
     Board,
     calibration,
+    chosen_ridge,
     directions,
     explained,
     pair_design,
@@ -168,3 +169,23 @@ def test_the_ridge_recovers_a_planted_interaction_that_the_cells_alone_cannot():
     with_products = explained(values[test], design[test] @ both)
     assert with_products > without + 0.2
     assert np.corrcoef(both[5:], truth)[0, 1] > 0.9
+
+
+def test_the_penalty_is_chosen_on_validation_rows_and_the_final_fit_uses_every_fit_row():
+    # given
+    rng = np.random.default_rng(3)
+    truth = np.array([40.0, -25.0, 0.0, 10.0])
+    design = rng.normal(size=(600, 4)).astype(np.float32)
+    values = 300.0 + design.astype(np.float64) @ truth + rng.normal(scale=60.0, size=600)
+    core, check = (design[:500], values[:500]), (design[500:], values[500:])
+
+    # when
+    found = chosen_ridge(core, check, penalties=(1e0, 1e2, 1e6))
+
+    # then
+    pooled = values.mean()
+    both = design.astype(np.float64)
+    direct = np.linalg.solve(both.T @ both + np.eye(4) * found["penalty"], both.T @ (values - pooled))
+    assert found["penalty"] < 1e6 and found["validation"] > 0.2
+    assert np.allclose(found["weights"], direct, atol=1e-2) and abs(found["middle"] - pooled) < 1e-9
+    assert not np.allclose(found["weights"], found["core"], atol=1e-3)

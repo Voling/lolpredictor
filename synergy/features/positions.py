@@ -19,6 +19,12 @@ ALIASES = {
     "utility": "UTILITY",
 }
 
+SPOKEN = {"TOP": "top", "JUNGLE": "jungle", "MIDDLE": "mid", "BOTTOM": "bot", "UTILITY": "support"}
+
+
+def spoken(position: str) -> str:
+    return SPOKEN.get(position, str(position).lower())
+
 
 def parse_position(text: str) -> str:
     key = str(text).strip().lower()
