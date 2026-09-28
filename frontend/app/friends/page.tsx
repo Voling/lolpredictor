@@ -7,6 +7,7 @@ import { useRemote } from "@/lib/remote";
 import { getFriends, type Friends } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
+import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -52,17 +53,20 @@ function FriendsQuery() {
   const params = useSearchParams();
   const query: Query = { me: params.get("me") ?? undefined, me_position: params.get("me_position") ?? undefined, friends: params.get("friends") ?? undefined };
   const friends = (query.friends ?? "").split(/[\n,]/).map((line) => line.trim()).filter(Boolean);
-  const ready = Boolean(query.me && friends.length > 0);
+  const account = useAccount();
+  const me = account.enabled ? account.me?.riot_id ?? undefined : query.me;
+  const ready = accountReady(account) && Boolean(me && friends.length > 0);
   const { data: found, error, loading } = useRemote(
-    ready ? () => getFriends(query.me!, friends, query.me_position || undefined) : null,
-    params.toString(),
+    ready ? () => getFriends(me!, friends, query.me_position || undefined) : null,
+    `${params.toString()}|${ready}`,
   );
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
       <p className="sub">Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a duo score with you.</p>
-      <form method="get" action="/friends/" className="pair">
-        <label>Your Riot ID <input name="me" defaultValue={query.me ?? ""} placeholder="name#tag" required /></label>
+      <AccountNotice account={account} remaining={found?.remaining} />
+      {accountReady(account) && <form method="get" action="/friends/" className="pair">
+        {!account.enabled && <label>Your Riot ID <input name="me" defaultValue={query.me ?? ""} placeholder="name#tag" required /></label>}
         <label>
           Your position
           <select name="me_position" defaultValue={query.me_position ?? ""}>
@@ -74,7 +78,7 @@ function FriendsQuery() {
           <textarea name="friends" defaultValue={query.friends ?? ""} rows={4} placeholder={"friend#tag\nother#tag:support"} required />
         </label>
         <button type="submit">Rank</button>
-      </form>
+      </form>}
       <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>
       {loading && <p className="sub">Ranking your friends…</p>}
       {error && <div className="gate"><strong>Can&apos;t rank these friends.</strong>{error}</div>}

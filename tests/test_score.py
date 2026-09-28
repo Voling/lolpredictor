@@ -21,7 +21,7 @@ def service(serving_settings):
             "main_position": ["TOP", "JUNGLE", "TOP"],
         }
     ).set_index("puuid", drop=False)
-    service.history = pd.DataFrame({"pair_key": ["a|b"], "games": [4], "wins": [3]}).set_index("pair_key", drop=False)
+    service.history = pd.DataFrame({"pair_key": ["a|b"], "games": [4], "wins": [3], "pair_close_share": [0.4]}).set_index("pair_key", drop=False)
     return service
 
 
@@ -137,3 +137,17 @@ def test_friends_are_ranked_by_the_duo_score_which_carries_the_record_together(s
     assert gamma["projected_gold"] == 190.0 and beta["projected_gold"] == 55.0
     assert gamma["score"] > beta["score"]
     assert beta["record"] == {"gold": -100.0, "games": 20}
+
+
+def test_a_lean_pair_keeps_the_score_and_skips_the_details_no_page_shows(service):
+    # given
+    left, right = "Alpha#NA1", "Beta#NA1"
+
+    # when
+    full = service.pair_score(left, right, "top", "jungle")
+    lean = service.pair_score(left, right, "top", "jungle", details=False)
+
+    # then
+    assert lean["score"] == full["score"] and lean["interaction"] == full["interaction"]
+    assert full["shared_play"] == {"pair_close_share": 0.4} and full["games_together"] == 4
+    assert lean["hinge"] is None and lean["games_together"] is None and lean["shared_play"] == {}

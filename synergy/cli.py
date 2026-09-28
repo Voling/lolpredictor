@@ -273,20 +273,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if manifest["status"] in ("built", "served") else 1
 
     if args.command == "contributed":
-        from .ingest.contributed import contribute
+        from .ingest.contributed import MissingKey, contribute
         from .ingest.lock import CorpusBusy
 
         def confirm(summary: dict, batch: str) -> bool:
             for name, count in summary.items():
                 print(f"{name:>28}: {count:,}")
+            question = f"Import {summary['qualified']:,} games as {batch} and empty the store of all {summary['waiting']:,}? [y/N] "
             try:
-                return input(f"Import {summary['qualified']:,} games as {batch}? [y/N] ").strip().lower() == "y"
+                return input(question).strip().lower() == "y"
             except EOFError:
                 return False
 
         try:
             _report(contribute(settings, confirm))
-        except CorpusBusy as problem:
+        except (CorpusBusy, MissingKey) as problem:
             print(problem, file=sys.stderr)
             return 1
         return 0

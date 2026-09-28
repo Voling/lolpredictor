@@ -148,7 +148,7 @@ class SynergyService:
         _, profiles = self._require()
         frame = profiles[profiles["game_name"].notna()]
         if term:
-            frame = frame[frame["game_name"].str.contains(term, case=False, na=False)]
+            frame = frame[frame["game_name"].str.contains(term, case=False, na=False, regex=False)]
         frame = frame.sort_values("games", ascending=False).head(limit)
         return [
             {
@@ -242,6 +242,7 @@ class SynergyService:
         left_position: str | None = None,
         right_position: str | None = None,
         positions_required: bool = True,
+        details: bool = True,
     ) -> dict:
         self._require()
         a = self.resolve(left)
@@ -249,7 +250,7 @@ class SynergyService:
         if a["puuid"] == b["puuid"]:
             raise ValueError("a player cannot be paired with themselves")
         positions = self._positions(a, b, left_position, right_position, positions_required)
-        history = self._pair_history(a["puuid"], b["puuid"])
+        history = self._pair_history(a["puuid"], b["puuid"]) if details else {}
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
         interaction = self._interaction(a, b, positions, positions_required)
@@ -260,10 +261,10 @@ class SynergyService:
             "reliable": bool(interaction and interaction["reliable"]),
             "note": interaction["note"] if interaction else (NOT_FITTED if positions else NO_POSITIONS),
             "warnings": self._warnings(a, b, interaction),
-            "games_together": games,
+            "games_together": games if details else None,
             "winrate_together": round(wins / games, 4) if games else None,
             "positions": positions,
-            "hinge": hinge_between(a["puuid"], b["puuid"], self.settings),
+            "hinge": hinge_between(a["puuid"], b["puuid"], self.settings) if details else None,
             "interaction": interaction,
             "players": [self.player_summary(a), self.player_summary(b)],
             "shared_play": {
@@ -371,7 +372,7 @@ class SynergyService:
             pair["left"], pair["right"] = names[pair["left"]], names[pair["right"]]
         return {**result, "warnings": warnings, "players": summaries}
 
-    def friends(self, me: str, friends: list[str], me_position: str | None = None) -> dict:
+    def friends(self, me: str, friends: list[str], me_position: str | None = None, details: bool = True) -> dict:
         self._require()
         anchor = self.resolve(me)
         rows, own = [], None
@@ -381,7 +382,7 @@ class SynergyService:
             if not name:
                 continue
             try:
-                found = self.pair_score(me, name, me_position, wanted.strip() or None)
+                found = self.pair_score(me, name, me_position, wanted.strip() or None, details=details)
             except UnknownPlayer:
                 rows.append({"riot_id": name, "note": "Not in our data yet."})
                 continue

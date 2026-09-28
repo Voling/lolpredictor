@@ -37,3 +37,5 @@ deploy/terraform/.terraform.lock.hcl.bak
 frontend/out/
 frontend/test-results/
 frontend/playwright-report/
+deploy/terraform/.build/
+deploy/terraform/*.tfplan

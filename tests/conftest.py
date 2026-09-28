@@ -19,7 +19,7 @@ from synergy.ingest.window import build_windows
 
 
 def _make_database(name: str):
-    base = os.environ.get("DATABASE_URL", "postgresql://synergy:synergy@localhost:5432/synergy")
+    base = os.environ.get("DATABASE_URL", "postgresql://synergy:synergy@127.0.0.1:5432/synergy")
     admin = psycopg.connect(base, autocommit=True)
     with admin.cursor() as cursor:
         cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')

@@ -62,12 +62,21 @@ class Settings:
     queue_id: int = field(default_factory=lambda: _int("CRAWL_QUEUE_ID", 420))
     season: int = field(default_factory=lambda: _int("CRAWL_SEASON", 16))
     timescale: bool = field(default_factory=lambda: _bool("USE_TIMESCALE", True))
-    redis_url: str = field(default_factory=lambda: _str("REDIS_URL", "redis://localhost:6380/0"))
-    broker_url: str = field(default_factory=lambda: _str("BROKER_URL", "redis://localhost:6381/0"))
-    result_url: str = field(default_factory=lambda: _str("RESULT_URL", "redis://localhost:6381/1"))
+    redis_url: str = field(default_factory=lambda: _str("REDIS_URL", "redis://127.0.0.1:6380/0"))
+    broker_url: str = field(default_factory=lambda: _str("BROKER_URL", "redis://127.0.0.1:6381/0"))
+    result_url: str = field(default_factory=lambda: _str("RESULT_URL", "redis://127.0.0.1:6381/1"))
     task_eager: bool = field(default_factory=lambda: _bool("TASK_EAGER", False))
     contributed_store: str = field(default_factory=lambda: _str("CONTRIBUTED_STORE", ""))
     corpus_batches: str = field(default_factory=lambda: _str("CORPUS_BATCHES", "all"))
+    public_api: bool = field(default_factory=lambda: _bool("PUBLIC_API", False))
+    cognito_pool_id: str = field(default_factory=lambda: _str("COGNITO_POOL_ID", ""))
+    cognito_region: str = field(default_factory=lambda: _str("COGNITO_REGION", "us-west-2"))
+    accounts_table: str = field(default_factory=lambda: _str("ACCOUNTS_TABLE", ""))
+    riot_key_parameter: str = field(default_factory=lambda: _str("RIOT_KEY_PARAMETER", ""))
+    daily_duos: int = field(default_factory=lambda: _int("DAILY_DUOS", 20))
+    max_friends: int = field(default_factory=lambda: _int("MAX_FRIENDS", 10))
+    link_attempts: int = field(default_factory=lambda: _int("LINK_ATTEMPTS", 10))
+    riot_budget: int = field(default_factory=lambda: _int("RIOT_BUDGET", 60))
     cache_ttl: int = field(default_factory=lambda: _int("CACHE_TTL_SECONDS", 86400))
     min_tier: str = field(default_factory=lambda: _str("CRAWL_MIN_TIER", "DIAMOND"))
     max_tier: str = field(default_factory=lambda: _str("CRAWL_MAX_TIER", "MASTER"))
@@ -95,7 +104,7 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_str("DATA_DIR", str(REPO_ROOT / "data"))))
     database_url: str = field(
         default_factory=lambda: _str(
-            "DATABASE_URL", "postgresql://synergy:synergy@localhost:5432/synergy"
+            "DATABASE_URL", "postgresql://synergy:synergy@127.0.0.1:5432/synergy"
         )
     )
 

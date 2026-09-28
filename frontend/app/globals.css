@@ -41,3 +41,32 @@ p.verdict-line { font-size: 1.25rem; margin: 0.25rem 0 1rem; }
 p.hint { font-size: 0.85rem; opacity: 0.7; margin: -0.75rem 0 1.5rem; }
 p.footer { margin-top: 3rem; font-size: 0.8rem; opacity: 0.5; }
 .few { margin-left: 0.5rem; font-size: 0.8rem; opacity: 0.6; white-space: nowrap; }
+p.nav { display: flex; gap: 1rem; margin: -1.5rem 0 2rem; font-size: 0.9rem; }
+button { font: inherit; padding: 0.4rem 0.8rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+.link-check img { border-radius: 8px; }
+.demo-window {
+  height: 17rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0.75rem 0 1rem;
+  mask-image: linear-gradient(transparent, #000 10%, #000 90%, transparent);
+  -webkit-mask-image: linear-gradient(transparent, #000 10%, #000 90%, transparent);
+}
+.demo-track { list-style: none; margin: 0; padding: 0; animation: demo-scroll 48s linear infinite; }
+.demo-window:hover .demo-track, .demo-window:focus-within .demo-track { animation-play-state: paused; }
+.demo-window:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.demo-track li { padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); }
+.demo-names { font-size: 0.9rem; }
+.demo-position { opacity: 0.6; font-size: 0.8rem; }
+.demo-result { margin-top: 0.2rem; display: flex; gap: 0.6rem; align-items: baseline; }
+.demo-result strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.demo-gold { font-size: 0.85rem; opacity: 0.7; }
+@keyframes demo-scroll { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+@media (prefers-reduced-motion: reduce) {
+  .demo-track { animation: none; }
+  .demo-track li[aria-hidden="true"] { display: none; }
+  .demo-window { overflow-y: auto; }
+}
+footer.legal { margin-top: 3rem; font-size: 0.72rem; opacity: 0.5; }

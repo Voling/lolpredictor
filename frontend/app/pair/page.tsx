@@ -7,6 +7,7 @@ import { useRemote } from "@/lib/remote";
 import { getPair, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
+import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -46,17 +47,20 @@ function Result({ pair }: { pair: PairScore }) {
 function PairQuery() {
   const params = useSearchParams();
   const query: Query = { a: params.get("a") ?? undefined, b: params.get("b") ?? undefined, a_position: params.get("a_position") ?? undefined, b_position: params.get("b_position") ?? undefined };
-  const ready = Boolean(query.a && query.b);
+  const account = useAccount();
+  const me = account.enabled ? account.me?.riot_id ?? undefined : query.a;
+  const ready = accountReady(account) && Boolean(me && query.b);
   const { data: pair, error, loading } = useRemote(
-    ready ? () => getPair(query.a!, query.b!, query.a_position || undefined, query.b_position || undefined) : null,
-    params.toString(),
+    ready ? () => getPair(me!, query.b!, query.a_position || undefined, query.b_position || undefined) : null,
+    `${params.toString()}|${ready}`,
   );
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
       <p className="sub">Enter your Riot ID and a friend&apos;s Riot ID to see how you do as a duo.</p>
-      <form method="get" action="/pair/" className="pair">
-        <label>Your Riot ID <input name="a" defaultValue={query.a ?? ""} placeholder="name#tag" required /></label>
+      <AccountNotice account={account} remaining={pair?.remaining} />
+      {accountReady(account) && <form method="get" action="/pair/" className="pair">
+        {!account.enabled && <label>Your Riot ID <input name="a" defaultValue={query.a ?? ""} placeholder="name#tag" required /></label>}
         <label>
           Your position
           <select name="a_position" defaultValue={query.a_position ?? ""}>
@@ -71,7 +75,7 @@ function PairQuery() {
           </select>
         </label>
         <button type="submit">Check</button>
-      </form>
+      </form>}
       {loading && <p className="sub">Checking your duo…</p>}
       {error && <div className="gate"><strong>Can&apos;t score this duo.</strong>{error}</div>}
       {pair && <Result pair={pair} />}

@@ -1,0 +1,93 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "synergy/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "requirements-serve.txt"
+      - "deploy/lambda.Dockerfile"
+      - "deploy/lambda.Dockerfile.dockerignore"
+      - "deploy/stage_s3.sh"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg17
+        env:
+          POSTGRES_USER: synergy
+          POSTGRES_PASSWORD: synergy
+          POSTGRES_DB: synergy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U synergy"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://synergy:synergy@127.0.0.1:5432/synergy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Test
+        run: python -m pytest -q -p no:cacheprovider
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.BACKEND_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Stage the served model
+        run: bash deploy/stage_s3.sh "${{ vars.MODEL_BUCKET }}"
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      - name: Build and push the image
+        id: image
+        run: |
+          image="${{ vars.ECR_REPOSITORY }}:${GITHUB_SHA}"
+          docker build --platform linux/amd64 --provenance=false -f deploy/lambda.Dockerfile -t "$image" .
+          docker push "$image"
+          echo "uri=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >> "$GITHUB_OUTPUT"
+      - name: Point the function at the image
+        run: |
+          aws lambda update-function-code --function-name "${{ vars.LAMBDA_FUNCTION }}" --image-uri "${{ steps.image.outputs.uri }}" > /dev/null
+          aws lambda wait function-updated --function-name "${{ vars.LAMBDA_FUNCTION }}"
+      - name: Check the API answers and refuses a bad token
+        run: |
+          for attempt in 1 2 3 4; do
+            code="$(curl -s -o /dev/null -m 70 -w '%{http_code}' -H 'x-auth: not.a.token' "${{ vars.SITE_URL }}/api/status" || true)"
+            [ "$code" = "401" ] && exit 0
+            sleep 15
+          done
+          echo "expected 401 from the API, got $code" >&2
+          exit 1

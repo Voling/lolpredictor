@@ -7,9 +7,9 @@ export function gameCount(count: number): string {
 export type Tone = "good" | "ok" | "meh" | "bad";
 
 export function verdict(score: number): { label: string; tone: Tone } {
-  if (score >= 60) return { label: "Good duo", tone: "good" };
+  if (score >= 60) return { label: "Good pair", tone: "good" };
   if (score >= 50) return { label: "Ok pairing", tone: "ok" };
-  if (score >= 40) return { label: "I've seen better duos", tone: "meh" };
+  if (score >= 40) return { label: "I've seen better", tone: "meh" };
   return { label: "Bad pairing!", tone: "bad" };
 }
 

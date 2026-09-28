@@ -1,3 +1,5 @@
+import { accessToken } from "./auth";
+
 export type Status = {
   ready: boolean;
   informative: boolean;
@@ -13,6 +15,14 @@ export type Status = {
     metrics: Record<string, unknown> | null;
   } | null;
 };
+
+export type Me = { riot_id: string | null; verified: boolean; pending: { riot_id: string; icon: number } | null; daily: number; remaining: number };
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
 
 export type Reading = { gold: number; score: number; percentile: number };
 
@@ -56,6 +66,7 @@ export type PairScore = {
     >;
   } | null;
   players: { riot_id: string; main_position: string; games: number; winrate: number }[];
+  remaining?: number;
 };
 
 export type FriendRow = {
@@ -77,30 +88,13 @@ export type FriendRow = {
 export type Friends = {
   me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number; minute?: number };
   friends: FriendRow[];
+  remaining?: number;
 };
 
-export type Lineup = {
-  score: number;
-  projected_gold: number | null;
-  minute: number;
-  synergy: number;
-  percentile: number;
-  reliable: boolean;
-  note?: string;
-  warnings: string[];
-  pairs: {
-    left: string;
-    right: string;
-    score: number;
-    projected_gold: number | null;
-    synergy: number;
-    percentile: number;
-  }[];
-};
 
 const base = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-async function failure(response: Response): Promise<Error> {
+async function failure(response: Response): Promise<ApiError> {
   const text = await response.text();
   let detail: unknown = null;
   try {
@@ -108,11 +102,35 @@ async function failure(response: Response): Promise<Error> {
   } catch {
     detail = null;
   }
-  return new Error(typeof detail === "string" ? detail : text || `The server answered ${response.status}.`);
+  return new ApiError(typeof detail === "string" ? detail : `The server answered ${response.status}. Try again in a few minutes.`, response.status);
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await accessToken();
+  return token ? { "x-auth": token } : {};
+}
+
+async function hash(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function get<T>(path: string): Promise<T> {
-  const response = await fetch(`${base}${path}`, { cache: "no-store" });
+  const response = await fetch(`${base}${path}`, { cache: "no-store", headers: await authHeaders() });
+  if (!response.ok) {
+    throw await failure(response);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function post<T>(path: string, payload: unknown): Promise<T> {
+  const body = JSON.stringify(payload ?? {});
+  const response = await fetch(`${base}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { ...(await authHeaders()), "Content-Type": "application/json", "x-amz-content-sha256": await hash(body) },
+    body,
+  });
   if (!response.ok) {
     throw await failure(response);
   }
@@ -120,6 +138,9 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const getStatus = () => get<Status>("/api/status");
+export const getMe = () => get<Me>("/api/me");
+export const startLink = (riotId: string) => post<Me>("/api/link", { riot_id: riotId });
+export const verifyLink = () => post<Me>("/api/link/verify", {});
 export const getPair = (a: string, b: string, aPosition?: string, bPosition?: string) => {
   const query = new URLSearchParams({ a, b });
   if (aPosition) query.set("a_position", aPosition);
@@ -132,19 +153,3 @@ export const getFriends = (me: string, friends: string[], mePosition?: string) =
   for (const friend of friends) query.append("friends", friend);
   return get<Friends>(`/api/friends?${query.toString()}`);
 };
-export const postLineup = async (players: Record<string, string>) => {
-  const response = await fetch(`${base}/api/lineup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ players }),
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw await failure(response);
-  }
-  return response.json() as Promise<Lineup>;
-};
-export const getOutsiderPair = (a: string, b: string) =>
-  get<Record<string, unknown>>(
-    `/api/outsider-pair?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
-  );

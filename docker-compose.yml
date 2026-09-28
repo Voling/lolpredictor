@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: synergy
       POSTGRES_DB: synergy
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +21,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -56,7 +56,7 @@ services:
     volumes:
       - ./data:/app/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   web:
     build: ./frontend
@@ -65,7 +65,7 @@ services:
     environment:
       API_URL: http://api:8000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
 
   pipeline:
     build: .

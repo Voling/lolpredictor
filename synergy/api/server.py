@@ -1,16 +1,22 @@
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from ..cache import get_cache
+from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml.score import UnknownPlayer, get_service, reload_service
 from ..pipeline import served_summary
+from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
 
 logger = logging.getLogger(__name__)
+LIMIT = 40
+POSITION = 12
+_accounts: Accounts | None = None
+_verifier = None
 
 
 class TeamRequest(BaseModel):
@@ -21,40 +27,117 @@ class LineupRequest(BaseModel):
     players: dict[str, str] = Field(min_length=5, max_length=5)
 
 
+class LinkRequest(BaseModel):
+    riot_id: str = Field(min_length=3, max_length=LIMIT)
+
+
+def get_accounts() -> Accounts:
+    global _accounts
+    if _accounts is None:
+        settings = get_settings()
+        key = ssm_key(settings.riot_key_parameter) if settings.riot_key_parameter else (lambda: settings.riot_api_key)
+        riot = RiotAccounts(key, settings.platform, settings.region)
+        _accounts = Accounts(DynamoTable(settings.accounts_table), riot, settings.daily_duos, settings.link_attempts, settings.riot_budget)
+    return _accounts
+
+
+def get_verifier():
+    global _verifier
+    if _verifier is None:
+        _verifier = cognito_verifier(get_settings())
+    return _verifier
+
+
 def _ready():
     service = get_service()
     if not service.ready:
-        raise HTTPException(503, "model not trained, run `python -m synergy all` first")
+        raise HTTPException(503, "The model is not ready yet. Try again later.")
     return service
 
 
 def _handle(call):
     try:
         return call()
+    except AuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    except QuotaExceeded as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except Busy as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except LinkError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except UnknownPlayer as exc:
         raise HTTPException(404, f"We can't find {exc} in our data. Check the name and tag.") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="lolpredictor", version="1.0")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[origin for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if origin],
-        allow_methods=["GET", "POST"],
-        allow_headers=["*"],
-    )
+def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda found: 0) -> dict:
+    user = get_verifier().subject(token)
+    accounts = get_accounts()
+    me = accounts.linked_puuid(user)
+    service = _ready()
+    if me not in service.profiles.index:
+        raise LinkError("Your Riot account isn't in our data yet.")
+    request = request_key(*query[:1], accounts.day(), *query[1:])
+    left, charged = accounts.spend(user, count, request)
+    try:
+        found = call(me, service)
+    except Exception:
+        if charged:
+            accounts.refund(user, count, request)
+        raise
+    back = unscored(found) if charged else 0
+    if back:
+        accounts.refund(user, back)
+    return {**found, "remaining": left + back}
 
-    @app.get("/api/health")
-    def health():
-        return {"ok": True}
 
-    @app.get("/api/status")
-    def status():
-        service = get_service()
-        return {**service.status(), "cache": get_cache().ready, "run": served_summary()}
+def _public_routes(app: FastAPI) -> None:
+    @app.get("/api/me")
+    def me(x_auth: str | None = Header(None)):
+        return _handle(lambda: get_accounts().status(get_verifier().subject(x_auth)))
 
+    @app.post("/api/link")
+    def link(request: LinkRequest, x_auth: str | None = Header(None)):
+        return _handle(lambda: get_accounts().start_link(get_verifier().subject(x_auth), request.riot_id))
+
+    @app.post("/api/link/verify")
+    def verify(x_auth: str | None = Header(None)):
+        return _handle(lambda: get_accounts().verify_link(get_verifier().subject(x_auth)))
+
+    @app.get("/api/pair")
+    def pair(
+        b: str = Query(max_length=LIMIT),
+        a_position: str | None = Query(None, max_length=POSITION),
+        b_position: str | None = Query(None, max_length=POSITION),
+        x_auth: str | None = Header(None),
+    ):
+        query = ("pair", b, a_position, b_position)
+        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False)))
+
+    @app.get("/api/friends")
+    def friends(
+        friends: list[str] = Query(...),
+        me_position: str | None = Query(None, max_length=POSITION),
+        x_auth: str | None = Header(None),
+    ):
+        most = get_settings().max_friends
+        if len(friends) > most or any(len(friend) > LIMIT for friend in friends):
+            raise HTTPException(400, f"Rank up to {most} friends at a time.")
+        query = ("friends", me_position, *sorted(" ".join(friend.lower().split()) for friend in friends))
+        return _handle(
+            lambda: _metered(
+                x_auth,
+                query,
+                len(friends),
+                lambda me, service: service.friends(me, friends, me_position, details=False),
+                lambda found: sum(1 for row in found["friends"] if row.get("score") is None),
+            )
+        )
+
+
+def _local_routes(app: FastAPI) -> None:
     @app.post("/api/reload")
     def reload():
         get_cache().drop("quantiles")
@@ -62,7 +145,7 @@ def create_app() -> FastAPI:
         return reload_service().status()
 
     @app.get("/api/players")
-    def players(q: str = "", limit: int = Query(25, le=200)):
+    def players(q: str = Query("", max_length=32), limit: int = Query(25, ge=1, le=200)):
         return {"players": _ready().search(q, limit)}
 
     @app.get("/api/players/{query}")
@@ -71,7 +154,7 @@ def create_app() -> FastAPI:
         return _handle(lambda: service.player_report(query))
 
     @app.get("/api/partners/{query}")
-    def partners(query: str, limit: int = Query(10, le=50)):
+    def partners(query: str, limit: int = Query(10, ge=1, le=50)):
         service = _ready()
         return _handle(lambda: service.best_partners(query, limit=limit))
 
@@ -108,6 +191,46 @@ def create_app() -> FastAPI:
         payload = corpus_quantiles()
         return {"rows": payload["rows"], "columns": payload["columns"]}
 
+
+def create_app(public: bool | None = None) -> FastAPI:
+    public = get_settings().public_api if public is None else public
+    app = FastAPI(
+        title="lolpredictor",
+        version="1.0",
+        docs_url=None if public else "/docs",
+        redoc_url=None,
+        openapi_url=None if public else "/openapi.json",
+    )
+    origins = [origin for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if origin]
+    if origins:
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "x-auth"])
+
+    @app.get("/ready")
+    def ready():
+        return {"ok": True}
+
+    if public:
+
+        @app.get("/api/status")
+        def signed_status(x_auth: str | None = Header(None)):
+            _handle(lambda: get_verifier().subject(x_auth))
+            run = served_summary()
+            return {"ready": get_service().ready, "run": {"id": run["id"]} if run else None}
+
+    else:
+
+        @app.get("/api/health")
+        def health():
+            return {"ok": True}
+
+        @app.get("/api/status")
+        def status():
+            return {**get_service().status(), "cache": get_cache().ready, "run": served_summary()}
+
+    if public:
+        _public_routes(app)
+    else:
+        _local_routes(app)
     return app
 
 

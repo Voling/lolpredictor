@@ -6,7 +6,7 @@ import json
 import pytest
 
 from synergy.config import Settings
-from synergy.ingest.contributed import LocalStore, S3Store, basic_reason, contribute, rank_reason
+from synergy.ingest.contributed import LocalStore, MissingKey, S3Store, basic_reason, contribute, rank_reason
 from synergy.ingest.lock import CorpusBusy, corpus_lock
 from synergy.ingest.store import Store, batch_filter
 from synergy.ingest.synthetic import generate
@@ -89,8 +89,8 @@ class _Pages:
 
 
 class _Bucket:
-    def __init__(self, objects: dict[str, bytes]):
-        self.objects = objects
+    def __init__(self, objects: dict[str, bytes], stuck: tuple = ()):
+        self.objects, self.stuck = objects, stuck
         keys = [{"Key": key} for key in objects]
         self.pages = [keys[:2], keys[2:]]
 
@@ -99,6 +99,15 @@ class _Bucket:
 
     def get_object(self, Bucket, Key):
         return {"Body": io.BytesIO(self.objects[Key])}
+
+    def delete_objects(self, Bucket, Delete):
+        errors = []
+        for item in Delete["Objects"]:
+            if item["Key"] in self.stuck:
+                errors.append({"Key": item["Key"], "Code": "AccessDenied"})
+            else:
+                self.objects.pop(item["Key"], None)
+        return {"Errors": errors} if errors else {}
 
 
 def test_an_s3_store_pages_through_keys_and_reads_gzipped_games():
@@ -116,6 +125,8 @@ def test_an_s3_store_pages_through_keys_and_reads_gzipped_games():
     # then
     assert source.ids() == ["NA1_7"]
     assert source.read("timelines", "NA1_7") == {"id": 7}
+    source.delete(["NA1_7"])
+    assert list(client.objects) == ["contributed/matches/NA1_8.json.gz"]
 
 
 @pytest.fixture
@@ -150,6 +161,7 @@ def test_a_confirmed_import_adds_only_qualified_games_as_one_batch_the_pipeline_
     # then
     assert asked == [{"waiting": 2, "in corpus": 0, "qualified": 1, "another queue": 1}]
     assert found["imported"] == 1 and found["batch"].startswith("batch-")
+    assert found["removed"] == 2 and source.ids() == []
     everything = Store(settings)
     crawl_only = Store(Settings(data_dir=settings.data_dir, database_url=settings.database_url, corpus_batches="crawl"))
     try:
@@ -177,7 +189,8 @@ def test_a_declined_import_leaves_the_corpus_untouched(small_corpus):
     # then
     store = Store(settings)
     try:
-        assert found["imported"] == 0 and "batch" not in found
+        assert found["imported"] == 0 and found["removed"] == 0 and "batch" not in found
+        assert len(source.ids()) == 2
         assert store.batch_counts() == {"crawl": 6}
     finally:
         store.close()
@@ -194,3 +207,108 @@ def test_an_import_waits_its_turn_while_a_pipeline_run_holds_the_corpus(small_co
 
     # then
     assert "a pipeline run" in str(busy.value)
+
+
+def test_names_that_are_not_riot_match_ids_never_reach_a_path(tmp_path):
+    # given
+    for name in ("NA1_5123456789", r"..\evil", "NA1_12;rm", "na1_123"):
+        _write(tmp_path, "matches", name, {"id": name})
+        _write(tmp_path, "timelines", name, {"frames": []})
+
+    # when
+    listed = LocalStore(tmp_path).ids()
+
+    # then
+    assert listed == ["NA1_5123456789"]
+
+
+def test_a_game_whose_body_names_another_match_is_refused(small_corpus):
+    # given
+    settings, source = small_corpus
+    forged = source.read("matches", "NA1_9000000001")
+    forged["metadata"]["matchId"] = "NA1_1234567890"
+    _write(source.root, "matches", "NA1_9000000001", forged)
+
+    # when
+    found = contribute(settings, lambda summary, batch: False, source=source, lookup=lambda puuids: {})
+
+    # then
+    assert found["mismatched id"] == 1 and found["qualified"] == 0
+
+
+def test_the_import_stops_before_judging_when_it_cannot_rank_unknown_players(small_corpus):
+    # given
+    settings, source = small_corpus
+    keyless = Settings(data_dir=settings.data_dir, database_url=settings.database_url, min_average_lp=2800, riot_api_key="")
+    store = Store(keyless)
+    with store.conn.cursor() as cursor:
+        cursor.execute("UPDATE players SET lp_value = NULL")
+    store.conn.commit()
+    store.close()
+
+    # when
+    with pytest.raises(MissingKey):
+        contribute(keyless, lambda summary, batch: True, source=source)
+
+    # then
+    assert len(source.ids()) == 2
+
+
+def test_an_s3_delete_that_keeps_objects_fails_loudly():
+    # given
+    body = gzip.compress(json.dumps({"id": 7}).encode("utf-8"))
+    keys = ["contributed/matches/NA1_7.json.gz", "contributed/timelines/NA1_7.json.gz"]
+    source = S3Store("games", "contributed/", _Bucket(dict.fromkeys(keys, body), stuck=(keys[1],)))
+
+    # when
+    with pytest.raises(RuntimeError) as kept:
+        source.delete(["NA1_7"])
+
+    # then
+    assert "kept 1 objects" in str(kept.value)
+
+
+def test_a_game_without_a_start_time_is_refused_and_cleared(small_corpus):
+    # given
+    settings, source = small_corpus
+    broken = source.read("matches", "NA1_9000000001")
+    del broken["info"]["gameCreation"]
+    _write(source.root, "matches", "NA1_9000000001", broken)
+
+    # when
+    found = contribute(settings, lambda summary, batch: True, source=source, lookup=lambda puuids: {})
+
+    # then
+    assert found["no start time"] == 1 and found["imported"] == 0 and source.ids() == []
+
+
+def test_an_import_that_crashes_leaves_the_store_and_the_next_run_finishes_the_game(small_corpus, monkeypatch):
+    # given
+    settings, source = small_corpus
+    real = LocalStore.read
+
+    def flaky(self, kind, match_id):
+        if kind == "timelines":
+            raise OSError("disk hiccup")
+        return real(self, kind, match_id)
+
+    monkeypatch.setattr(LocalStore, "read", flaky)
+    with pytest.raises(OSError):
+        contribute(settings, lambda summary, batch: True, source=source, lookup=lambda puuids: {})
+    monkeypatch.setattr(LocalStore, "read", real)
+
+    # when
+    found = contribute(settings, lambda summary, batch: True, source=source, lookup=lambda puuids: {})
+
+    # then
+    store = Store(settings)
+    try:
+        with store.conn.cursor() as cursor:
+            cursor.execute("SELECT source, batch FROM matches WHERE match_id = 'NA1_9000000001'")
+            row = cursor.fetchone()
+            cursor.execute("SELECT count(*) AS frames FROM frames WHERE match_id = 'NA1_9000000001'")
+            frames = cursor.fetchone()["frames"]
+    finally:
+        store.close()
+    assert found["imported"] == 1 and found["in corpus"] == 0 and source.ids() == []
+    assert row == {"source": "contributed", "batch": found["batch"]} and frames > 0

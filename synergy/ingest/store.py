@@ -200,7 +200,7 @@ class Store:
                 (timeline.get("info", {}).get("windowMinutes"), match_id),
             )
 
-    def save_match(self, match: dict) -> bool:
+    def save_match(self, match: dict, source: str = CRAWL, batch: str | None = None) -> bool:
         info = match["info"]
         match_id = match["metadata"]["matchId"]
         patch = ".".join(str(info.get("gameVersion", "")).split(".")[:2])
@@ -216,11 +216,12 @@ class Store:
         with self._tx() as cursor:
             cursor.execute(
                 "INSERT INTO matches (match_id, platform, queue_id, game_creation, game_duration,"
-                " patch, end_result)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (match_id) DO UPDATE SET"
+                " patch, end_result, source, batch)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (match_id) DO UPDATE SET"
                 " platform=EXCLUDED.platform, queue_id=EXCLUDED.queue_id,"
                 " game_creation=EXCLUDED.game_creation, game_duration=EXCLUDED.game_duration,"
-                " patch=EXCLUDED.patch, end_result=EXCLUDED.end_result",
+                " patch=EXCLUDED.patch, end_result=EXCLUDED.end_result,"
+                " source=EXCLUDED.source, batch=EXCLUDED.batch",
                 (
                     match_id,
                     info.get("platformId"),
@@ -229,6 +230,8 @@ class Store:
                     info.get("gameDuration"),
                     patch,
                     result,
+                    source,
+                    batch,
                 ),
             )
             self._record_identities(cursor, info["participants"])
@@ -376,9 +379,13 @@ class Store:
             cursor.execute(f"SELECT m.match_id FROM matches m WHERE {clause} ORDER BY m.match_id", params)
             return [row["match_id"] for row in cursor.fetchall()]
 
-    def known_matches(self, match_ids: list[str]) -> set[str]:
+    def finished_matches(self, match_ids: list[str]) -> set[str]:
         with self._tx() as cursor:
-            cursor.execute("SELECT match_id FROM matches WHERE match_id = ANY(%s)", (list(match_ids),))
+            cursor.execute(
+                "SELECT m.match_id FROM matches m LEFT JOIN batches b ON b.batch = m.batch"
+                f" WHERE m.match_id = ANY(%s) AND (m.source = '{CRAWL}' OR b.finished_at IS NOT NULL)",
+                (list(match_ids),),
+            )
             return {row["match_id"] for row in cursor.fetchall()}
 
     def player_ranks(self, puuids: list[str]) -> dict[str, int]:
@@ -397,11 +404,7 @@ class Store:
 
     def open_batch(self, batch: str, source: str, location: str) -> None:
         with self._tx() as cursor:
-            cursor.execute("INSERT INTO batches (batch, source, location) VALUES (%s, %s, %s)", (batch, source, location))
-
-    def tag_batch(self, match_id: str, source: str, batch: str) -> None:
-        with self._tx() as cursor:
-            cursor.execute("UPDATE matches SET source = %s, batch = %s WHERE match_id = %s", (source, batch, match_id))
+            cursor.execute("INSERT INTO batches (batch, source, location) VALUES (%s, %s, %s) ON CONFLICT (batch) DO NOTHING", (batch, source, location))
 
     def close_batch(self, batch: str, matches: int) -> None:
         with self._tx() as cursor:

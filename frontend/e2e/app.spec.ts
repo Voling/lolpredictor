@@ -4,7 +4,7 @@ const ME = "bblskibs#gotg";
 const DEEP = "Gryffinn#NA1";
 const THIN = "ethnvo#goat";
 const SAME_POSITION = "KFN Omelas#DAZE";
-const VERDICTS = /Good duo|Ok pairing|I've seen better duos|Bad pairing!/;
+const VERDICTS = /Good pair|Ok pairing|I've seen better|Bad pairing!/;
 
 test("the api answers its health check and refuses an unknown player by name", async ({ request }) => {
   // given
@@ -31,7 +31,7 @@ test("the home page explains the app, the score bands and names the model", asyn
   await expect(page.getByRole("link", { name: "Rank your friends" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Check one duo" })).toBeVisible();
   await expect(legend).toHaveCount(4);
-  await expect(legend.nth(0)).toContainText("Good duo");
+  await expect(legend.nth(0)).toContainText("Good pair");
   await expect(legend.nth(3)).toContainText("Bad pairing!");
   await expect(page.locator("p.footer")).toContainText(/Model \d{8}-\d{6}/);
   await expect(page.getByText("The server isn't reachable right now.")).toHaveCount(0);
@@ -114,4 +114,28 @@ test("friends with few games in a position are tagged and a missing position use
   await expect(page.getByText("You have 2 games as jungle. Your scores are rough until you play more.")).toBeVisible();
   await expect(page.locator("tbody tr").first().locator(".few")).toHaveText("few games");
   await expect(page.locator("tbody")).toContainText("has no games as support in our data.");
+});
+
+test("the home page scrolls sample Challenger duos with their scores and shows Riot's notice", async ({ page }) => {
+  // given
+  await page.goto("/");
+
+  // when
+  const rows = page.locator(".demo-track li");
+
+  // then
+  await expect(rows).toHaveCount(24);
+  await expect(rows.first().locator(".verdict")).toHaveText(VERDICTS);
+  await expect(page.locator("footer.legal")).toContainText("isn't endorsed by Riot Games");
+});
+
+test("the account page says accounts are off when the site runs without sign in", async ({ page }) => {
+  // given
+  const path = "/account/";
+
+  // when
+  await page.goto(path);
+
+  // then
+  await expect(page.getByText("Accounts are off here.")).toBeVisible();
 });

@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { getStatus } from "@/lib/api";
+import { useAccount } from "@/lib/account";
+import { authEnabled } from "@/lib/auth";
+import { DemoCarousel } from "@/lib/demo";
 import { useRemote } from "@/lib/remote";
 import { Verdict } from "@/lib/verdict";
 
@@ -13,14 +16,18 @@ const BANDS = [
 ];
 
 export default function Home() {
-  const { data: status, error } = useRemote(getStatus, "status");
+  const account = useAccount();
+  const canAsk = !authEnabled || account.signedIn;
+  const { data: status, error } = useRemote(canAsk ? getStatus : null, `status|${canAsk}`);
 
   return (
     <main>
       <h1>lolpredictor</h1>
       <p className="sub">Find out which friends you play best with in ranked.</p>
+      <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/pair/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}</p>
 
       <h3>How to use it</h3>
+      {authEnabled && <p>Sign in and link your Riot account first. Each account gets 20 duo checks a day.</p>}
       <p><Link href="/friends/">Rank your friends</Link>. Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a score.</p>
       <p><Link href="/pair/">Check one duo</Link>. Enter your Riot ID and one friend&apos;s Riot ID to get a score for the two of you.</p>
 
@@ -31,6 +38,9 @@ export default function Home() {
           <li key={band.range}><Verdict score={band.score} /> {band.range}</li>
         ))}
       </ul>
+
+      <h3>Top Challenger pairs</h3>
+      <DemoCarousel />
 
       <h3>How it works</h3>
       <p>
