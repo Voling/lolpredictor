@@ -47,7 +47,7 @@ resource "aws_cognito_user_pool_client" "site" {
   supported_identity_providers         = ["COGNITO"]
   callback_urls                        = [for host in local.site_hosts : "https://${host}/auth/"]
   logout_urls                          = [for host in local.site_hosts : "https://${host}/"]
-  explicit_auth_flows                  = ["ALLOW_REFRESH_TOKEN_AUTH"]
+  explicit_auth_flows                  = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
   prevent_user_existence_errors        = "ENABLED"
   enable_token_revocation              = true
   access_token_validity                = 60

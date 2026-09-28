@@ -40,7 +40,7 @@ jobs:
         run: npx next build
         env:
           STATIC_EXPORT: "1"
-          NEXT_PUBLIC_COGNITO_DOMAIN: ${{ vars.COGNITO_DOMAIN }}
+          NEXT_PUBLIC_COGNITO_REGION: ${{ vars.AWS_REGION }}
           NEXT_PUBLIC_COGNITO_CLIENT_ID: ${{ vars.COGNITO_CLIENT_ID }}
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:

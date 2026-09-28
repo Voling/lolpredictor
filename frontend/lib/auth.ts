@@ -1,28 +1,64 @@
-const DOMAIN = process.env.NEXT_PUBLIC_COGNITO_DOMAIN ?? "";
+const REGION = process.env.NEXT_PUBLIC_COGNITO_REGION ?? "";
 const CLIENT = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID ?? "";
 const TOKENS = "lolpredictor.tokens";
-const PENDING = "lolpredictor.pending";
+const BUSY = "Too many tries. Wait a few minutes and try again.";
 
-export const authEnabled = Boolean(DOMAIN && CLIENT);
+export const authEnabled = Boolean(REGION && CLIENT);
 
 type Tokens = { access: string; refresh: string | null; expires: number };
-type Pending = { verifier: string; state: string; back: string };
+type Issued = { AccessToken: string; RefreshToken?: string; ExpiresIn: number };
+type Authenticated = { AuthenticationResult?: Issued };
 
-function base64url(bytes: ArrayBuffer | Uint8Array): string {
-  const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let text = "";
-  array.forEach((byte) => {
-    text += String.fromCharCode(byte);
-  });
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const MESSAGES: Record<string, string> = {
+  UsernameExistsException: "An account with this email already exists. Sign in instead.",
+  InvalidPasswordException: "Use at least 12 characters with a lowercase letter and a number.",
+  CodeMismatchException: "That code doesn't match. Check the email we sent.",
+  ExpiredCodeException: "That code has expired. Send a new one.",
+  LimitExceededException: BUSY,
+  TooManyRequestsException: BUSY,
+  TooManyFailedAttemptsException: BUSY,
+  ForbiddenException: "We can't accept sign ins from your network. Try another connection.",
+  CodeDeliveryFailureException: "We couldn't send the email. Try again later.",
+};
+
+export class SignInError extends Error {
+  constructor(readonly kind: string, message: string) {
+    super(message);
+  }
 }
 
-function random(size: number): string {
-  return base64url(crypto.getRandomValues(new Uint8Array(size)));
+function explain(kind: string, message: string): string {
+  if (kind === "NotAuthorizedException") {
+    if (/attempts exceeded/i.test(message)) return BUSY;
+    if (/current status is confirmed/i.test(message)) return "This email is already confirmed. Sign in.";
+    return "Wrong email or password.";
+  }
+  if (kind === "UserLambdaValidationException") return message.replace(/^\w+ failed with error /, "");
+  return MESSAGES[kind] ?? (message || "Something went wrong. Try again.");
 }
 
-function redirectUri(): string {
-  return `${window.location.origin}/auth/`;
+async function call<T>(operation: string, body: object): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`https://cognito-idp.${REGION}.amazonaws.com/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": `AWSCognitoIdentityProviderService.${operation}` },
+      body: JSON.stringify({ ClientId: CLIENT, ...body }),
+    });
+  } catch {
+    throw new SignInError("Network", "We can't reach the sign in service. Check your connection.");
+  }
+  const text = await response.text();
+  let found: { __type?: string; message?: string } = {};
+  try {
+    found = text ? JSON.parse(text) : {};
+  } catch {
+    found = {};
+  }
+  if (response.ok) return found as T;
+  const fallback = response.status === 429 ? "TooManyRequestsException" : response.status === 403 ? "ForbiddenException" : "Unknown";
+  const kind = (found.__type ?? fallback).split("#").pop() ?? fallback;
+  throw new SignInError(kind, explain(kind, found.message ?? ""));
 }
 
 function read<T>(storage: Storage, key: string): T | null {
@@ -43,52 +79,47 @@ function write(storage: Storage, key: string, value: unknown) {
   }
 }
 
-function safePath(path: string | undefined): string {
+function keep(issued: Issued, refresh: string | null) {
+  write(localStorage, TOKENS, { access: issued.AccessToken, refresh: issued.RefreshToken ?? refresh, expires: Date.now() + (issued.ExpiresIn - 60) * 1000 });
+}
+
+function username(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function safePath(path: string | null | undefined): string {
   return path && /^\/(?![\/\\])[^\\\s]*$/.test(path) ? path : "/";
 }
 
-export async function signIn(back?: string) {
-  const verifier = random(48);
-  const state = random(24);
-  const challenge = base64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  write(sessionStorage, PENDING, { verifier, state, back: safePath(back ?? window.location.pathname + window.location.search) });
-  const query = new URLSearchParams({
-    response_type: "code",
-    client_id: CLIENT,
-    redirect_uri: redirectUri(),
-    scope: "openid email",
-    state,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-  });
-  window.location.assign(`${DOMAIN}/oauth2/authorize?${query}`);
+export function signIn(back?: string) {
+  const next = safePath(back ?? window.location.pathname + window.location.search);
+  window.location.assign(`/signin/?${new URLSearchParams({ next })}`);
 }
 
-class Rejected extends Error {}
-
-async function tokenRequest(body: Record<string, string>): Promise<Tokens> {
-  const response = await fetch(`${DOMAIN}/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: CLIENT, ...body }),
-  });
-  if (response.status === 400) throw new Rejected("Sign in failed. Try again.");
-  if (!response.ok) throw new Error("Sign in failed. Try again.");
-  const found = await response.json();
-  return {
-    access: found.access_token,
-    refresh: found.refresh_token ?? body.refresh_token ?? null,
-    expires: Date.now() + (Number(found.expires_in) - 60) * 1000,
-  };
+export async function passwordSignIn(email: string, password: string) {
+  const found = await call<Authenticated>("InitiateAuth", { AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: username(email), PASSWORD: password } });
+  if (!found.AuthenticationResult) throw new SignInError("Challenge", "This account needs a new password. Use Forgot your password.");
+  keep(found.AuthenticationResult, null);
 }
 
-export async function finishSignIn(params: URLSearchParams): Promise<string> {
-  const pending = read<Pending>(sessionStorage, PENDING);
-  write(sessionStorage, PENDING, null);
-  const code = params.get("code");
-  if (!pending || !code || params.get("state") !== pending.state) throw new Error("Sign in failed. Try again.");
-  write(localStorage, TOKENS, await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: redirectUri(), code_verifier: pending.verifier }));
-  return safePath(pending.back);
+export async function signUp(email: string, password: string) {
+  await call("SignUp", { Username: username(email), Password: password, UserAttributes: [{ Name: "email", Value: username(email) }] });
+}
+
+export async function confirmSignUp(email: string, code: string) {
+  await call("ConfirmSignUp", { Username: username(email), ConfirmationCode: code.trim() });
+}
+
+export async function resendCode(email: string) {
+  await call("ResendConfirmationCode", { Username: username(email) });
+}
+
+export async function forgotPassword(email: string) {
+  await call("ForgotPassword", { Username: username(email) });
+}
+
+export async function resetPassword(email: string, code: string, password: string) {
+  await call("ConfirmForgotPassword", { Username: username(email), ConfirmationCode: code.trim(), Password: password });
 }
 
 export async function accessToken(): Promise<string | null> {
@@ -101,11 +132,12 @@ export async function accessToken(): Promise<string | null> {
     return null;
   }
   try {
-    const fresh = await tokenRequest({ grant_type: "refresh_token", refresh_token: tokens.refresh });
-    write(localStorage, TOKENS, fresh);
-    return fresh.access;
+    const found = await call<Authenticated>("InitiateAuth", { AuthFlow: "REFRESH_TOKEN_AUTH", AuthParameters: { REFRESH_TOKEN: tokens.refresh } });
+    if (!found.AuthenticationResult) return null;
+    keep(found.AuthenticationResult, tokens.refresh);
+    return found.AuthenticationResult.AccessToken;
   } catch (error) {
-    if (error instanceof Rejected) write(localStorage, TOKENS, null);
+    if (error instanceof SignInError && error.kind === "NotAuthorizedException") write(localStorage, TOKENS, null);
     return null;
   }
 }
@@ -121,13 +153,6 @@ export function signedIn(): boolean {
 export async function signOut() {
   const tokens = read<Tokens>(localStorage, TOKENS);
   write(localStorage, TOKENS, null);
-  if (tokens?.refresh) {
-    await fetch(`${DOMAIN}/oauth2/revoke`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: CLIENT, token: tokens.refresh }),
-    }).catch(() => undefined);
-  }
-  const query = new URLSearchParams({ client_id: CLIENT, logout_uri: `${window.location.origin}/` });
-  window.location.assign(`${DOMAIN}/logout?${query}`);
+  if (tokens?.refresh) await call("RevokeToken", { Token: tokens.refresh }).catch(() => undefined);
+  window.location.assign("/");
 }

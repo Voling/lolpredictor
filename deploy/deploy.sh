@@ -34,10 +34,9 @@ aws lambda update-function-code --region "$region" --function-name "$(terraform 
 aws lambda wait function-updated --region "$region" --function-name "$(terraform -chdir="$tf" output -raw function_name)"
 bucket="$(terraform -chdir="$tf" output -raw bucket)"
 distribution="$(terraform -chdir="$tf" output -raw distribution_id)"
-cognito_domain="$(terraform -chdir="$tf" output -raw cognito_domain)"
 cognito_client="$(terraform -chdir="$tf" output -raw cognito_client_id)"
 
-(cd "$root/frontend" && STATIC_EXPORT=1 NEXT_PUBLIC_COGNITO_DOMAIN="$cognito_domain" NEXT_PUBLIC_COGNITO_CLIENT_ID="$cognito_client" npx next build)
+(cd "$root/frontend" && STATIC_EXPORT=1 NEXT_PUBLIC_COGNITO_REGION="$region" NEXT_PUBLIC_COGNITO_CLIENT_ID="$cognito_client" npx next build)
 aws s3 sync "$root/frontend/out" "s3://$bucket" --delete
 aws cloudfront create-invalidation --distribution-id "$distribution" --paths "/*" > /dev/null
 echo "live at $(terraform -chdir="$tf" output -raw site_url)"
