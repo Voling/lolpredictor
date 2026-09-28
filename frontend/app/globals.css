@@ -26,11 +26,11 @@ form.pair button { cursor: pointer; }
 form.pair textarea { font: inherit; padding: 0.4rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; min-width: 18rem; }
 h3 { font-size: 1rem; margin: 1.75rem 0 0.4rem; }
 ul.legend { list-style: none; padding: 0; margin: 0.5rem 0 1rem; display: grid; gap: 0.45rem; }
-.verdict { display: inline-block; font-weight: 600; padding: 0.1rem 0.6rem; border-radius: 999px; white-space: nowrap; }
-.verdict.good { color: #15803d; background: color-mix(in srgb, #22c55e 18%, transparent); }
-.verdict.ok { color: #1d4ed8; background: color-mix(in srgb, #3b82f6 16%, transparent); }
-.verdict.meh { color: #a16207; background: color-mix(in srgb, #eab308 22%, transparent); }
-.verdict.bad { color: #b91c1c; background: color-mix(in srgb, #ef4444 18%, transparent); }
+.verdict { font-weight: 600; white-space: nowrap; }
+.verdict.good { color: #15803d; }
+.verdict.ok { color: #1d4ed8; }
+.verdict.meh { color: #a16207; }
+.verdict.bad { color: #b91c1c; }
 @media (prefers-color-scheme: dark) {
   .verdict.good { color: #4ade80; }
   .verdict.ok { color: #60a5fa; }

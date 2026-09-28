@@ -44,7 +44,7 @@ export default function Home() {
 
       <h3>How it works</h3>
       <p>
-        The score comes from your past ranked games. It looks at how each of you plays and how you do on the champions you pick.
+        The score uses your ranked games in our data. It looks at what each of you does in common situations and your usual gold lead at 20 minutes. 
         If you two have played together, those games count too.
       </p>
       <p>

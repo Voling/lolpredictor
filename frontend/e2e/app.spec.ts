@@ -4,7 +4,7 @@ const ME = "bblskibs#gotg";
 const DEEP = "Gryffinn#NA1";
 const THIN = "ethnvo#goat";
 const SAME_POSITION = "KFN Omelas#DAZE";
-const VERDICTS = /Good pair|Ok pairing|I've seen better|Bad pairing!/;
+const VERDICTS = /Good|Ok pairing|I've seen better|Definitely reconsider.../;
 
 test("the api answers its health check and refuses an unknown player by name", async ({ request }) => {
   // given
@@ -31,8 +31,8 @@ test("the home page explains the app, the score bands and names the model", asyn
   await expect(page.getByRole("link", { name: "Rank your friends" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Check one duo" })).toBeVisible();
   await expect(legend).toHaveCount(4);
-  await expect(legend.nth(0)).toContainText("Good pair");
-  await expect(legend.nth(3)).toContainText("Bad pairing!");
+  await expect(legend.nth(0)).toContainText("Good");
+  await expect(legend.nth(3)).toContainText("Definitely reconsider...");
   await expect(page.locator("p.footer")).toContainText(/Model \d{8}-\d{6}/);
   await expect(page.getByText("The server isn't reachable right now.")).toHaveCount(0);
 });
