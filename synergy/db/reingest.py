@@ -1,7 +1,5 @@
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor
-from itertools import repeat
 
 from ..config import Settings, get_settings
 from ..ingest.store import Store
@@ -48,8 +46,9 @@ def reingest(
     if len(chunks) == 1:
         results = [_chunk(settings, chunks[0])]
     else:
-        with ProcessPoolExecutor(max_workers=len(chunks)) as pool:
-            results = list(pool.map(_chunk, repeat(settings), chunks))
+        from ..queue import fan_out
+
+        results = fan_out("reingest", settings, [(chunk,) for chunk in chunks])
     return {
         "matches": len(match_ids),
         "missing_only": missing,

@@ -4,9 +4,12 @@ Ranks which friends a League of Legends player should queue with. Each friend ge
 
 | Command | What it does |
 |---|---|
-| `docker compose up -d postgres redis` | Start the database and cache |
+| `docker compose up -d postgres redis broker` | Start the database, the cache and the Celery broker |
+| `python -m synergy worker` | Celery workers for the pipeline's parallel jobs, keep running during a pipeline |
 | `python -m synergy crawl` | Pull ranked matches from the Riot API, resumable |
 | `python -m synergy pipeline` | Rebuild features and models into a new run, then serve it |
+| `python -m synergy pipeline --batches crawl` | Train on the crawl alone, or on a comma list of batches from a past manifest |
+| `python -m synergy contributed` | Import contributed Master+ games from `CONTRIBUTED_STORE` as a new batch, after you confirm |
 | `python -m synergy runs` | List runs and which one is served |
 | `python -m synergy promote --id RUN` | Serve another run, for rollback |
 | `uvicorn synergy.api.server:app` | API on :8000 |

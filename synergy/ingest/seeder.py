@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 
 from ..config import Settings, get_settings
-from ..ranks import pick_solo_entry, rank_to_lp, tier_index
+from ..ranks import pick_solo_entry, rank_fields, rank_to_lp
 from ..riot.client import NotFound, RiotApiError, RiotClient, Unauthorized
 from ..riot.routing import split_riot_id
 from .store import Store
@@ -114,12 +114,6 @@ class Seeder:
     def _budget_left(self) -> int:
         return self.settings.max_requests - self._spent()
 
-    def _in_scope(self, tier: str | None) -> bool:
-        index = tier_index(tier)
-        if index < 0:
-            return False
-        return self.settings.tier_floor <= index <= self.settings.tier_ceiling
-
     async def _refresh_rank(self, puuid: str) -> dict | None:
         try:
             entries = await self.client.league_entries(puuid)
@@ -129,15 +123,7 @@ class Seeder:
         if entry is None:
             self.store.upsert_player(puuid, tier=None, in_scope=False)
             return None
-        fields = {
-            "tier": entry.get("tier"),
-            "division": entry.get("rank"),
-            "league_points": entry.get("leaguePoints"),
-            "lp_value": rank_to_lp(entry.get("tier"), entry.get("rank"), entry.get("leaguePoints")),
-            "wins": entry.get("wins"),
-            "losses": entry.get("losses"),
-            "in_scope": self._in_scope(entry.get("tier")),
-        }
+        fields = rank_fields(entry, self.settings.tier_floor, self.settings.tier_ceiling)
         self.store.upsert_player(puuid, **fields)
         return fields
 

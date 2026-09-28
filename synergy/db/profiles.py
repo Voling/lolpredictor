@@ -1,7 +1,7 @@
 import pandas as pd
 
 from ..config import Settings, get_settings
-from ..ingest.store import Store
+from ..ingest.store import Store, batch_filter
 from ..ml.serving import NAMES_TABLE
 
 TOP_CHAMPIONS = 5
@@ -41,7 +41,7 @@ INSERT INTO player_profiles (
 )
 WITH played AS (
     SELECT c.puuid, c.position, c.champion_name, c.win, m.game_creation, m.patch
-    FROM participations c JOIN matches m ON m.match_id = c.match_id
+    FROM participations c JOIN matches m ON m.match_id = c.match_id WHERE {clause}
 ),
 totals AS (
     SELECT puuid, COUNT(*) AS games, COUNT(*) FILTER (WHERE win) AS wins,
@@ -121,7 +121,8 @@ def build_profiles(settings: Settings | None = None) -> dict:
     try:
         with store._tx() as cursor:
             cursor.execute(SCHEMA)
-            cursor.execute(BUILD, (TOP_CHAMPIONS,))
+            clause, params = batch_filter(settings.corpus_batches)
+            cursor.execute(BUILD.replace("{clause}", clause), (*params, TOP_CHAMPIONS))
             written = cursor.rowcount
         with store.conn.cursor() as cursor:
             cursor.execute(

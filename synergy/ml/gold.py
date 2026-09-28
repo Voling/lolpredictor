@@ -10,7 +10,7 @@ from numpyro.infer import SVI, Trace_ELBO, autoguide
 
 from ..config import Settings, get_settings
 from ..features.advantage import STATE_COLUMNS, fit_evaluation, load_evaluation
-from ..ingest.store import Store
+from ..ingest.store import Store, batch_filter
 
 MIN_PAIR_GAMES = 5
 LEARNING_RATE = 0.02
@@ -109,13 +109,14 @@ def team_objectives(settings: Settings, minute: int | None = None) -> pd.DataFra
     store = Store(settings)
     try:
         with store.conn.cursor() as cursor:
+            clause, params = batch_filter(settings.corpus_batches)
             cursor.execute(
-                "SELECT match_id, killer_team_id AS team_id, monster_type,"
-                " COUNT(*) AS taken FROM events"
-                " WHERE type = 'ELITE_MONSTER_KILL' AND minute < %s"
-                " AND monster_type = ANY(%s) AND killer_team_id IS NOT NULL"
-                " GROUP BY match_id, killer_team_id, monster_type",
-                (minute, list(OBJECTIVES)),
+                "SELECT e.match_id, e.killer_team_id AS team_id, e.monster_type,"
+                " COUNT(*) AS taken FROM events e JOIN matches m ON m.match_id = e.match_id"
+                " WHERE e.type = 'ELITE_MONSTER_KILL' AND e.minute < %s"
+                f" AND e.monster_type = ANY(%s) AND e.killer_team_id IS NOT NULL AND {clause}"
+                " GROUP BY e.match_id, e.killer_team_id, e.monster_type",
+                (minute, list(OBJECTIVES), *params),
             )
             rows = cursor.fetchall()
     finally:
@@ -150,13 +151,15 @@ def team_gold(settings: Settings, minute: int | None = None) -> pd.Series:
     store = Store(settings)
     try:
         with store.conn.cursor() as cursor:
+            clause, params = batch_filter(settings.corpus_batches)
             cursor.execute(
                 "SELECT f.match_id, p.team_id, SUM(f.total_gold) AS gold, COUNT(*) AS seats"
                 " FROM frames f JOIN participations p"
                 " ON p.match_id = f.match_id AND p.puuid = f.puuid"
                 f" JOIN {LAST_FRAME} l ON l.match_id = f.match_id"
-                " WHERE f.minute = LEAST(%s, l.last) GROUP BY f.match_id, p.team_id",
-                (minute,),
+                " JOIN matches m ON m.match_id = f.match_id"
+                f" WHERE f.minute = LEAST(%s, l.last) AND {clause} GROUP BY f.match_id, p.team_id",
+                (minute, *params),
             )
             rows = cursor.fetchall()
     finally:
@@ -203,7 +206,8 @@ def assemble_states(frames: pd.DataFrame, events: pd.DataFrame, wins: pd.DataFra
 
 def store_states(settings: Settings, minute: int | None = None, sample: int = STATE_SAMPLE) -> pd.DataFrame:
     minute = minute or settings.target_minute
-    chosen = f"(SELECT match_id FROM matches ORDER BY md5(match_id) LIMIT {int(sample)})"
+    clause, params = batch_filter(settings.corpus_batches)
+    chosen = f"(SELECT m.match_id FROM matches m WHERE {clause} ORDER BY md5(m.match_id) LIMIT {int(sample)})"
     store = Store(settings)
     try:
         with store.conn.cursor() as cursor:
@@ -212,7 +216,7 @@ def store_states(settings: Settings, minute: int | None = None, sample: int = ST
                 " SUM(f.minions + f.jungle_minions) AS cs, COUNT(*) AS seats"
                 " FROM frames f JOIN participations p ON p.match_id = f.match_id AND p.puuid = f.puuid"
                 f" WHERE f.minute <= %s AND f.match_id IN {chosen} GROUP BY 1, 2, 3",
-                (minute,),
+                (minute, *params),
             )
             frames = pd.DataFrame(cursor.fetchall())
             cursor.execute(
@@ -220,11 +224,11 @@ def store_states(settings: Settings, minute: int | None = None, sample: int = ST
                 " FROM events e JOIN participations p ON p.match_id = e.match_id AND p.puuid = e.actor"
                 " WHERE e.minute <= %s AND e.type = ANY(%s)"
                 f" AND e.match_id IN {chosen} GROUP BY 1, 2, 3, 4, 5",
-                (minute, ["CHAMPION_KILL", "TURRET_PLATE_DESTROYED", "BUILDING_KILL", "ELITE_MONSTER_KILL"]),
+                (minute, ["CHAMPION_KILL", "TURRET_PLATE_DESTROYED", "BUILDING_KILL", "ELITE_MONSTER_KILL"], *params),
             )
             events = pd.DataFrame(cursor.fetchall(), columns=["match_id", "team_id", "minute", "type", "monster_type", "n"])
             cursor.execute(
-                f"SELECT match_id, team_id, bool_or(win) AS win FROM participations WHERE match_id IN {chosen} GROUP BY 1, 2"
+                f"SELECT match_id, team_id, bool_or(win) AS win FROM participations WHERE match_id IN {chosen} GROUP BY 1, 2", params
             )
             wins = pd.DataFrame(cursor.fetchall())
     finally:

@@ -12,5 +12,7 @@ fastapi
 pydantic
 uvicorn[standard]
 redis
+celery[redis]==5.6.3
+boto3
 scipy
 psycopg[binary]

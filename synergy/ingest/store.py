@@ -1,6 +1,7 @@
 import gzip
 import json
 import logging
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,38 @@ from ..config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+CRAWL = "crawl"
+EVERYTHING = "all"
+BATCH_NAME = re.compile(r"^batch-\d{8}-\d{6}$")
+MIGRATION = """
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'crawl';
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS batch TEXT;
+CREATE INDEX IF NOT EXISTS matches_batch ON matches (batch);
+CREATE TABLE IF NOT EXISTS batches (
+    batch           TEXT PRIMARY KEY,
+    source          TEXT NOT NULL,
+    location        TEXT,
+    matches         INTEGER NOT NULL DEFAULT 0,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at     TIMESTAMPTZ
+);
+"""
+
+
+def parse_batches(selection: str) -> list[str]:
+    chosen = [part.strip() for part in str(selection or EVERYTHING).split(",") if part.strip()]
+    for part in chosen:
+        if part not in (EVERYTHING, CRAWL) and not BATCH_NAME.match(part):
+            raise ValueError(f"unknown corpus batch {part!r}, use all, crawl or batch-YYYYMMDD-HHMMSS")
+    return chosen or [EVERYTHING]
+
+
+def batch_filter(selection: str, alias: str = "m") -> tuple[str, list]:
+    chosen = parse_batches(selection)
+    if EVERYTHING in chosen:
+        return "TRUE", []
+    crawl = f"{alias}.source = 'crawl'" if CRAWL in chosen else "FALSE"
+    return f"({crawl} OR {alias}.batch = ANY(%s))", [[part for part in chosen if part != CRAWL]]
 
 
 def season_of(patch: str) -> int | None:
@@ -74,6 +107,13 @@ class Store:
             with self._tx() as cursor:
                 cursor.execute(SCHEMA.read_text(encoding="utf-8"))
             self._apply_timescale()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        with self._tx() as cursor:
+            cursor.execute("SELECT 1 FROM information_schema.columns WHERE table_name = 'matches' AND column_name = 'batch'")
+            if cursor.fetchone() is None:
+                cursor.execute(MIGRATION)
 
     def _apply_timescale(self) -> None:
         if not self.settings.timescale:
@@ -325,9 +365,47 @@ class Store:
         return len(frames), len(events)
 
     def match_ids(self) -> list[str]:
+        clause, params = batch_filter(self.settings.corpus_batches)
         with self._tx() as cursor:
-            cursor.execute("SELECT match_id FROM matches ORDER BY game_creation NULLS LAST, match_id")
+            cursor.execute(f"SELECT m.match_id FROM matches m WHERE {clause} ORDER BY m.game_creation NULLS LAST, m.match_id", params)
             return [row["match_id"] for row in cursor.fetchall()]
+
+    def corpus_ids(self) -> list[str]:
+        clause, params = batch_filter(self.settings.corpus_batches)
+        with self._tx() as cursor:
+            cursor.execute(f"SELECT m.match_id FROM matches m WHERE {clause} ORDER BY m.match_id", params)
+            return [row["match_id"] for row in cursor.fetchall()]
+
+    def known_matches(self, match_ids: list[str]) -> set[str]:
+        with self._tx() as cursor:
+            cursor.execute("SELECT match_id FROM matches WHERE match_id = ANY(%s)", (list(match_ids),))
+            return {row["match_id"] for row in cursor.fetchall()}
+
+    def player_ranks(self, puuids: list[str]) -> dict[str, int]:
+        with self._tx() as cursor:
+            cursor.execute("SELECT puuid, lp_value FROM players WHERE puuid = ANY(%s) AND lp_value IS NOT NULL", (list(puuids),))
+            return {row["puuid"]: int(row["lp_value"]) for row in cursor.fetchall()}
+
+    def batch_counts(self) -> dict[str, int]:
+        clause, params = batch_filter(self.settings.corpus_batches)
+        with self._tx() as cursor:
+            cursor.execute(
+                f"SELECT COALESCE(m.batch, '{CRAWL}') AS batch, COUNT(*) AS matches FROM matches m WHERE {clause} GROUP BY 1 ORDER BY 1",
+                params,
+            )
+            return {row["batch"]: int(row["matches"]) for row in cursor.fetchall()}
+
+    def open_batch(self, batch: str, source: str, location: str) -> None:
+        with self._tx() as cursor:
+            cursor.execute("INSERT INTO batches (batch, source, location) VALUES (%s, %s, %s)", (batch, source, location))
+
+    def tag_batch(self, match_id: str, source: str, batch: str) -> None:
+        with self._tx() as cursor:
+            cursor.execute("UPDATE matches SET source = %s, batch = %s WHERE match_id = %s", (source, batch, match_id))
+
+    def close_batch(self, batch: str, matches: int) -> None:
+        with self._tx() as cursor:
+            cursor.execute("UPDATE batches SET matches = %s, finished_at = now() WHERE batch = %s", (matches, batch))
 
     def _record_identities(self, cursor, participants: list[dict]) -> int:
         cursor.executemany(

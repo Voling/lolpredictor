@@ -341,9 +341,7 @@ def build_stream(
     settings = settings or get_settings()
     store = Store(settings)
     try:
-        with store.conn.cursor() as cursor:
-            cursor.execute("SELECT match_id FROM matches ORDER BY match_id")
-            match_ids = [row["match_id"] for row in cursor.fetchall()]
+        match_ids = store.corpus_ids()
     finally:
         store.close()
     if limit:

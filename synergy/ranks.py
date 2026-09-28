@@ -48,3 +48,17 @@ def pick_solo_entry(entries: list[dict]) -> dict | None:
         if entry.get("queueType") == "RANKED_SOLO_5x5":
             return entry
     return None
+
+
+def rank_fields(entry: dict, floor: int, ceiling: int) -> dict:
+    tier = entry.get("tier")
+    index = tier_index(tier)
+    return {
+        "tier": tier,
+        "division": entry.get("rank"),
+        "league_points": entry.get("leaguePoints"),
+        "lp_value": rank_to_lp(tier, entry.get("rank"), entry.get("leaguePoints")),
+        "wins": entry.get("wins"),
+        "losses": entry.get("losses"),
+        "in_scope": 0 <= index and floor <= index <= ceiling,
+    }

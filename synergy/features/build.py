@@ -1,8 +1,6 @@
 import json
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor
-from itertools import repeat
 from itertools import combinations
 
 import pandas as pd
@@ -203,10 +201,9 @@ def build_tables(
         if len(chunks) == 1:
             results = [_extract(settings, chunks[0], 0)]
         else:
-            with ProcessPoolExecutor(max_workers=len(chunks)) as pool:
-                results = list(
-                    pool.map(_extract, repeat(settings), chunks, range(len(chunks)))
-                )
+            from ..queue import fan_out
+
+            results = fan_out("features", settings, [(chunk, index) for index, chunk in enumerate(chunks)])
         counts = {name: _merge(settings, name, len(chunks)) for name in results[0]}
         participations = pd.read_parquet(settings.processed_dir / FILENAMES["participations"])
         pairs = pd.read_parquet(settings.processed_dir / FILENAMES["pairs"])

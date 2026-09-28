@@ -6,6 +6,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["FEATURE_MINUTES"] = "15"
+os.environ["TASK_EAGER"] = "1"
+os.environ["BROKER_URL"] = "memory://"
+os.environ["RESULT_URL"] = "cache+memory://"
 
 import psycopg
 

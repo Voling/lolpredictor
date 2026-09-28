@@ -1,5 +1,5 @@
 import json
-from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -54,7 +54,16 @@ def _alive(rows: list[tuple], deaths: list[tuple]) -> np.ndarray:
     return alive
 
 
-def _shard(settings: Settings, match_ids: list[str], shard: int) -> tuple:
+def _shard(settings: Settings, match_ids: list[str], shard: int) -> str:
+    players, train, test = _count(settings, match_ids, shard)
+    folder = settings.processed_dir / "shards"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"movement_counts.{shard:03d}.npz"
+    np.savez(path, players=np.array(players, dtype=str), train=train, test=test)
+    return str(path)
+
+
+def _count(settings: Settings, match_ids: list[str], shard: int) -> tuple:
     store = Store(settings)
     try:
         with store.conn.cursor(row_factory=tuple_row) as cursor:
@@ -102,9 +111,7 @@ def _split(items: list, parts: int) -> list[list]:
 def all_matches(settings: Settings) -> list[str]:
     store = Store(settings)
     try:
-        with store.conn.cursor() as cursor:
-            cursor.execute("SELECT match_id FROM matches ORDER BY match_id")
-            return [row["match_id"] for row in cursor.fetchall()]
+        return store.corpus_ids()
     finally:
         store.close()
 
@@ -112,26 +119,30 @@ def all_matches(settings: Settings) -> list[str]:
 def player_counts(
     settings: Settings, workers: int = WORKERS, match_ids: list[str] | None = None
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    from ..queue import fan_out
+
     match_ids = list(match_ids) if match_ids is not None else all_matches(settings)
     chunks = _split(match_ids, workers)
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        results = list(
-            pool.map(_shard, [settings] * len(chunks), chunks, range(len(chunks)))
-        )
+    paths = fan_out("movement", settings, [(chunk, index) for index, chunk in enumerate(chunks)])
+    return combine_counts([Path(path) for path in paths])
 
+
+def combine_counts(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, list[str]]:
     seats: dict[str, int] = {}
-    for players, _, _ in results:
-        for puuid in players:
-            seats.setdefault(puuid, len(seats))
+    for path in paths:
+        with np.load(path) as shard:
+            for puuid in shard["players"]:
+                seats.setdefault(str(puuid), len(seats))
     size = len(REGIONS)
     train = np.zeros((len(seats), size, size), np.int32)
     test = np.zeros((len(seats), size, size), np.int32)
-    for players, part_train, part_test in results:
-        if not players:
-            continue
-        index = np.array([seats[puuid] for puuid in players])
-        np.add.at(train, index, part_train)
-        np.add.at(test, index, part_test)
+    for path in paths:
+        with np.load(path) as shard:
+            if len(shard["players"]):
+                index = np.array([seats[str(puuid)] for puuid in shard["players"]])
+                np.add.at(train, index, shard["train"])
+                np.add.at(test, index, shard["test"])
+        path.unlink(missing_ok=True)
     return train, test, sorted(seats, key=seats.get)
 
 

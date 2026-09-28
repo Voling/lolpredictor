@@ -72,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     pipeline_cmd.add_argument("--until", dest="stop", default=None, help="last step to run")
     pipeline_cmd.add_argument("--network", action="store_true", help="also write the pair network report")
     pipeline_cmd.add_argument("--no-promote", action="store_true", help="build without switching what is served")
+    pipeline_cmd.add_argument("--batches", default=None, help="corpus batches to train on: all, crawl, or a comma list")
+    sub.add_parser("contributed", help="import contributed games that meet the corpus rules, after you confirm")
+    worker_cmd = sub.add_parser("worker", help="run the Celery workers that take the pipeline's parallel jobs")
+    worker_cmd.add_argument("--concurrency", type=int, default=8)
     sub.add_parser("runs", help="list pipeline runs and which one is served")
     promote_cmd = sub.add_parser("promote", help="serve a run's artifacts, or snapshot the working artifacts as a new run")
     promote_cmd.add_argument("--id", default=None, help="run to serve, default snapshots the working artifacts")
@@ -249,11 +253,49 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "pipeline":
+        from .ingest.lock import CorpusBusy
+        from .ingest.store import parse_batches
         from .pipeline import run_pipeline
+        from .queue import WorkersMissing
 
-        manifest = run_pipeline(settings, start=args.start, stop=args.stop, network=args.network, promote_after=not args.no_promote)
+        if args.batches:
+            try:
+                settings.corpus_batches = ",".join(parse_batches(args.batches))
+            except ValueError as problem:
+                print(problem, file=sys.stderr)
+                return 2
+        try:
+            manifest = run_pipeline(settings, start=args.start, stop=args.stop, network=args.network, promote_after=not args.no_promote)
+        except (CorpusBusy, WorkersMissing) as problem:
+            print(problem, file=sys.stderr)
+            return 1
         _report({key: manifest.get(key) for key in ("id", "status", "steps", "served", "metrics")})
         return 0 if manifest["status"] in ("built", "served") else 1
+
+    if args.command == "contributed":
+        from .ingest.contributed import contribute
+        from .ingest.lock import CorpusBusy
+
+        def confirm(summary: dict, batch: str) -> bool:
+            for name, count in summary.items():
+                print(f"{name:>28}: {count:,}")
+            try:
+                return input(f"Import {summary['qualified']:,} games as {batch}? [y/N] ").strip().lower() == "y"
+            except EOFError:
+                return False
+
+        try:
+            _report(contribute(settings, confirm))
+        except CorpusBusy as problem:
+            print(problem, file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command == "worker":
+        from .queue import start_worker
+
+        start_worker(args.concurrency)
+        return 0
 
     if args.command == "runs":
         from .pipeline import list_runs

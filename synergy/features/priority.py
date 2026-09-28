@@ -1,4 +1,3 @@
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -30,9 +29,7 @@ TRACK = "positions_10s.parquet"
 TABLE = "priority.parquet"
 EVIDENCE = "evidence_priority.parquet"
 COUNTS = "priority_counts.npy"
-WORKERS = 8
 CHUNK_MATCHES = 400
-RECYCLE = 4
 TICK_UNIT = float(len(TICKS))
 _zones = {
     prefix: np.array([REGION_INDEX[f"{prefix}_{depth}"] for depth in ("OWN", "NEUTRAL", "ENEMY")])
@@ -252,13 +249,11 @@ def _complete(track: Path, counted: Path) -> bool:
         return False
 
 
-def build_priority(settings: Settings | None = None, workers: int = WORKERS, limit: int | None = None, resume: bool = False) -> dict:
+def build_priority(settings: Settings | None = None, limit: int | None = None, resume: bool = False) -> dict:
     settings = settings or get_settings()
     store = Store(settings)
     try:
-        with store.conn.cursor() as cursor:
-            cursor.execute("SELECT match_id FROM matches ORDER BY match_id")
-            match_ids = [row["match_id"] for row in cursor.fetchall()]
+        match_ids = store.corpus_ids()
     finally:
         store.close()
     if limit:
@@ -274,10 +269,10 @@ def build_priority(settings: Settings | None = None, workers: int = WORKERS, lim
         else:
             pending.append((number, chunk))
     print(f"priority: {len(written)} shards kept, {len(pending)} to build", flush=True)
-    for start in range(0, len(pending), workers * RECYCLE):
-        batch = pending[start : start + workers * RECYCLE]
-        with ProcessPoolExecutor(max_workers=min(workers, len(batch))) as pool:
-            written.extend(pool.map(_shard, [settings] * len(batch), [chunk for _, chunk in batch], [number for number, _ in batch]))
+    if pending:
+        from ..queue import fan_out
+
+        written.extend(tuple(item) for item in fan_out("priority", settings, [(chunk, number) for number, chunk in pending]))
     written.sort()
     rows = merge([Path(track) for track, _ in written], settings.processed_dir / TRACK)
     for track, _ in written:

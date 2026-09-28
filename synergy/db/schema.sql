@@ -25,9 +25,21 @@ CREATE TABLE IF NOT EXISTS matches (
     game_duration   INTEGER,
     patch           TEXT,
     window_minutes  SMALLINT,
-    end_result      TEXT
+    end_result      TEXT,
+    source          TEXT NOT NULL DEFAULT 'crawl',
+    batch           TEXT
 );
 CREATE INDEX IF NOT EXISTS matches_created ON matches (game_creation DESC);
+CREATE INDEX IF NOT EXISTS matches_batch ON matches (batch);
+
+CREATE TABLE IF NOT EXISTS batches (
+    batch           TEXT PRIMARY KEY,
+    source          TEXT NOT NULL,
+    location        TEXT,
+    matches         INTEGER NOT NULL DEFAULT 0,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at     TIMESTAMPTZ
+);
 
 CREATE TABLE IF NOT EXISTS player_names (
     puuid       TEXT NOT NULL REFERENCES players (puuid) ON DELETE CASCADE,

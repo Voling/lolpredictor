@@ -28,6 +28,19 @@ services:
       timeout: 3s
       retries: 20
 
+  broker:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:6381:6379"
+    volumes:
+      - broker:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   api:
     build: .
     env_file: .env
@@ -60,13 +73,36 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      broker:
+        condition: service_healthy
     environment:
       DATA_DIR: /app/data
       DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+      BROKER_URL: redis://broker:6379/0
+      RESULT_URL: redis://broker:6379/1
     volumes:
       - ./data:/app/data
     entrypoint: ["python", "-m", "synergy"]
     command: ["status"]
+    profiles: ["tools"]
+
+  worker:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /app/data
+      DATABASE_URL: postgresql://synergy:synergy@postgres:5432/synergy
+      BROKER_URL: redis://broker:6379/0
+      RESULT_URL: redis://broker:6379/1
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "synergy"]
+    command: ["worker"]
     profiles: ["tools"]
 
   trainer:
@@ -96,3 +132,4 @@ services:
 
 volumes:
   postgres:
+  broker:

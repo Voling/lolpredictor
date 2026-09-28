@@ -1,7 +1,5 @@
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor
-from itertools import repeat
 
 from ..config import Settings, get_settings
 from .store import Store
@@ -72,8 +70,9 @@ def build_windows(
     if len(chunks) == 1:
         results = [_window_chunk(settings, chunks[0], minutes)]
     else:
-        with ProcessPoolExecutor(max_workers=len(chunks)) as pool:
-            results = list(pool.map(_window_chunk, repeat(settings), chunks, repeat(minutes)))
+        from ..queue import fan_out
+
+        results = fan_out("windows", settings, [(chunk, minutes) for chunk in chunks])
     written = sum(item[0] for item in results)
     skipped = sum(item[1] for item in results)
     logger.info("wrote %s truncated timelines across %s workers", written, len(chunks))

@@ -11,6 +11,7 @@ from .config import Settings, get_settings
 
 ROOT = Path(__file__).resolve().parent.parent
 STEPS = ("window", "features", "stream", "profiles", "blocks", "evaluation", "mirrored", "scores", "duos")
+WORKER_STEPS = ("window", "features", "blocks")
 COMMANDS = {
     "window": ("window", "--workers", "4"),
     "features": ("features", "--workers", "4"),
@@ -85,7 +86,7 @@ def corpus_counts(settings: Settings) -> dict:
     except Exception as error:
         return {"error": str(error)[:200]}
     try:
-        return {name: int(value) for name, value in store.counts().items()}
+        return {**{name: int(value) for name, value in store.counts().items()}, "batches": store.batch_counts()}
     finally:
         store.close()
 
@@ -94,7 +95,7 @@ def run_step(settings: Settings, step: str, log_path: Path, runner=None) -> int:
     command = [sys.executable, "-m", "synergy", *COMMANDS[step]]
     if runner is not None:
         return int(runner(step, command, log_path))
-    env = {**os.environ, "DATA_DIR": str(settings.data_dir.resolve()), "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "DATA_DIR": str(settings.data_dir.resolve()), "CORPUS_BATCHES": settings.corpus_batches, "PYTHONIOENCODING": "utf-8"}
     with open(log_path, "w", encoding="utf-8") as log:
         return subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=ROOT).returncode
 
@@ -133,6 +134,19 @@ def run_pipeline(
 ) -> dict:
     settings = settings or get_settings()
     steps = plan(start, stop, network)
+    if runner is not None:
+        return _run(settings, steps, promote_after, runner, counts)
+    if set(steps) & set(WORKER_STEPS):
+        from .queue import require_workers
+
+        require_workers()
+    from .ingest.lock import corpus_lock
+
+    with corpus_lock(settings, "a pipeline run"):
+        return _run(settings, steps, promote_after, runner, counts)
+
+
+def _run(settings: Settings, steps: list[str], promote_after: bool, runner, counts) -> dict:
     run_id, manifest = _new_run(settings, "", counts)
     run_dir = settings.runs_dir / run_id
     (run_dir / "logs").mkdir(parents=True, exist_ok=True)
