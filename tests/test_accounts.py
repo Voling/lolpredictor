@@ -10,6 +10,7 @@ from synergy.api import server
 from synergy.api.accounts import (
     Accounts,
     AuthError,
+    CHECK_SECONDS,
     Busy,
     DynamoTable,
     LinkError,
@@ -223,20 +224,21 @@ def test_a_riot_id_needs_a_name_and_a_tag():
             riot_id_of(text)
 
 
-def test_linking_asks_for_a_new_icon_and_only_verifies_once_it_is_set():
+def test_linking_asks_for_a_new_icon_and_only_verifies_once_riot_shows_it():
     # given
-    accounts = _accounts()
+    now = {"t": START}
+    accounts = _accounts(clock=lambda: now["t"])
 
     # when
     started = accounts.start_link("user-1", "a#na1")
-    with pytest.raises(LinkError) as early:
-        accounts.verify_link("user-1")
+    early = accounts.verify_link("user-1")
     accounts.riot.icons["puuid-a"] = started["pending"]["icon"]
+    now["t"] += CHECK_SECONDS
     done = accounts.verify_link("user-1")
 
     # then
     assert started["pending"] == {"riot_id": "a#NA1", "icon": 0} and started["verified"] is False
-    assert "icon 0" in str(early.value)
+    assert early["verified"] is False and early["pending"] == started["pending"]
     assert done["verified"] is True and done["riot_id"] == "a#NA1" and done["pending"] is None
     assert accounts.linked_puuid("user-1") == "puuid-a"
 
@@ -249,13 +251,12 @@ def test_pending_links_on_one_riot_account_never_share_an_icon_so_the_owner_cann
     # when
     owner = accounts.start_link("owner", "a#na1")["pending"]["icon"]
     accounts.riot.icons["puuid-a"] = owner
-    for index in range(5):
-        with pytest.raises(LinkError):
-            accounts.verify_link(f"attacker-{index}")
+    refused = [accounts.verify_link(f"attacker-{index}") for index in range(5)]
     done = accounts.verify_link("owner")
 
     # then
     assert len(set(attackers + [owner])) == 6 and done["verified"] is True
+    assert not any(found["verified"] for found in refused)
     assert accounts.linked_puuid("owner") == "puuid-a"
 
 
@@ -277,13 +278,15 @@ def test_a_pending_link_expires_after_15_minutes():
 
 def test_starting_a_new_link_keeps_the_verified_one_until_the_new_one_is_proven():
     # given
-    accounts = _accounts(attempts=10)
+    now = {"t": START}
+    accounts = _accounts(clock=lambda: now["t"], attempts=10)
     _link(accounts, "user-1", "a#na1")
 
     # when
     accounts.start_link("user-1", "b#na1")
     during = accounts.linked_puuid("user-1")
     accounts.riot.icons["puuid-b"] = accounts.status("user-1")["pending"]["icon"]
+    now["t"] += CHECK_SECONDS
     accounts.verify_link("user-1")
 
     # then
@@ -308,20 +311,61 @@ def test_a_riot_account_links_to_only_one_lolpredictor_account():
         accounts.linked_puuid("user-2")
 
 
-def test_starting_and_verifying_links_share_one_daily_allowance():
+def test_icon_checks_never_use_the_daily_allowance_and_reach_riot_at_most_every_10_seconds():
     # given
-    accounts = _accounts()
+    now = {"t": START}
+    accounts = _accounts(clock=lambda: now["t"])
     accounts.start_link("user-1", "b#na1")
 
     # when
-    for _ in range(2):
-        with pytest.raises(LinkError):
-            accounts.verify_link("user-1")
-    with pytest.raises(QuotaExceeded) as capped:
+    for _ in range(3):
         accounts.verify_link("user-1")
+    now["t"] += CHECK_SECONDS
+    waiting = accounts.verify_link("user-1")
 
     # then
-    assert "3 times a day" in str(capped.value) and accounts.riot.calls == 4
+    assert accounts.riot.calls == 4 and waiting["verified"] is False and waiting["pending"] is not None
+    assert accounts.table.get("user#user-1", f"links#{accounts.day()}")["used"] == 1
+
+
+def test_entering_the_same_riot_id_again_keeps_its_icon_and_costs_nothing():
+    # given
+    accounts = _accounts()
+    first = accounts.start_link("user-1", "a#na1")
+
+    # when
+    again = accounts.start_link("user-1", " A#NA1 ")
+
+    # then
+    assert again["pending"] == first["pending"] and accounts.riot.calls == 2
+    assert accounts.table.get("user#user-1", f"links#{accounts.day()}")["used"] == 1
+
+
+def test_the_daily_allowance_caps_new_links():
+    # given
+    accounts = _accounts()
+    for name in ("a", "b", "a"):
+        accounts.start_link("user-1", f"{name}#na1")
+
+    # when
+    with pytest.raises(QuotaExceeded) as capped:
+        accounts.start_link("user-1", "b#na1")
+
+    # then
+    assert "3 times a day" in str(capped.value) and accounts.riot.calls == 6
+
+
+def test_an_icon_check_waits_instead_of_failing_when_riot_is_busy():
+    # given
+    accounts = _accounts(riot_budget=2)
+    started = accounts.start_link("user-1", "a#na1")
+    accounts.riot.icons["puuid-a"] = started["pending"]["icon"]
+
+    # when
+    waiting = accounts.verify_link("user-1")
+
+    # then
+    assert waiting["verified"] is False and waiting["pending"] == started["pending"] and accounts.riot.calls == 2
 
 
 def test_riot_calls_stop_at_the_shared_budget_and_the_refused_attempt_is_given_back():

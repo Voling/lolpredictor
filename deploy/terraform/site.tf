@@ -5,8 +5,6 @@ locals {
   api_domain             = local.live ? trimsuffix(trimprefix(aws_lambda_function_url.api[0].function_url, "https://"), "/") : ""
   custom_domain          = var.domain_name != ""
   site_host              = local.custom_domain ? var.domain_name : (local.live ? aws_cloudfront_distribution.site[0].domain_name : "")
-  site_hosts             = compact([local.custom_domain ? var.domain_name : "", local.live ? aws_cloudfront_distribution.site[0].domain_name : ""])
-  auth_origin            = "https://${aws_cognito_user_pool_domain.users.domain}.auth.${var.region}.amazoncognito.com"
   cognito_api            = "https://cognito-idp.${var.region}.amazonaws.com"
   api_methods            = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
 }
@@ -84,7 +82,7 @@ resource "aws_cloudfront_response_headers_policy" "site" {
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: https://ddragon.leagueoflegends.com",
         "font-src 'self' data:",
-        "connect-src 'self' ${local.auth_origin} ${local.cognito_api}",
+        "connect-src 'self' ${local.cognito_api}",
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",

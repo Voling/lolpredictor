@@ -14,10 +14,6 @@ output "repository_url" {
   value = aws_ecr_repository.api.repository_url
 }
 
-output "cognito_domain" {
-  value = local.auth_origin
-}
-
 output "cognito_client_id" {
   value = local.live ? aws_cognito_user_pool_client.site[0].id : ""
 }

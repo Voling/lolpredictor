@@ -18,6 +18,7 @@ TIMEOUT = 5.0
 KEYS_REFRESH = 600.0
 KEYS_RETRY = 10.0
 PENDING_SECONDS = 900
+CHECK_SECONDS = 10
 RIOT_BUDGET = "riot#budget"
 RIOT_PER_SECOND = 10
 CONFLICT_TRIES = 3
@@ -359,6 +360,10 @@ class Accounts:
 
     def start_link(self, user: str, text: str) -> dict:
         riot_id = riot_id_of(text)
+        link = self.link(user)
+        pending = self._pending(link)
+        if pending and pending["riot_id"].lower() == riot_id.lower():
+            return self.status(user)
         self._attempt(user, 2)
         account = self.riot.account(riot_id)
         puuid = account["puuid"]
@@ -370,7 +375,6 @@ class Accounts:
         )
         if icon is None:
             raise LinkError("Too many people are linking that Riot account right now. Try again in 15 minutes.")
-        link = self.link(user)
         if link.get("pending_puuid") and (link["pending_puuid"], link["pending_icon"]) != (puuid, icon):
             self.table.release(f"puuid#{link['pending_puuid']}", f"pending#{link['pending_icon']}", user)
         name = f"{account.get('gameName', riot_id.partition('#')[0])}#{account.get('tagLine', riot_id.partition('#')[2])}"
@@ -390,9 +394,11 @@ class Accounts:
             self.table.release(f"puuid#{link['pending_puuid']}", f"pending#{link['pending_icon']}", user)
             self.table.put(self._user(user), LINK, self._verified(link))
             raise LinkError("That link expired. Enter your Riot ID again.")
-        self._attempt(user, 1)
+        now = int(self.clock())
+        if self.table.add(self._user(user), f"check#{now // CHECK_SECONDS}", 1, 1, now + DAY) is None or not self._riot_calls(1):
+            return self.status(user)
         if self.riot.icon(pending["puuid"]) != pending["icon"]:
-            raise LinkError(f"Your profile icon isn't icon {pending['icon']} yet. Change it in the League client, then try again.")
+            return self.status(user)
         if not self.table.claim(f"puuid#{pending['puuid']}", "owner", user):
             raise LinkError("That Riot account is already linked to another lolpredictor account.")
         if link.get("verified") and link.get("puuid") != pending["puuid"]:

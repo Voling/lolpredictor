@@ -52,34 +52,17 @@ resource "aws_wafv2_web_acl" "users" {
         name        = "AWSManagedRulesAnonymousIpList"
 
         scope_down_statement {
-          or_statement {
-            statement {
-              byte_match_statement {
-                positional_constraint = "STARTS_WITH"
-                search_string         = "/signup"
-                field_to_match {
-                  uri_path {}
-                }
-                text_transformation {
-                  priority = 0
-                  type     = "LOWERCASE"
-                }
+          byte_match_statement {
+            positional_constraint = "EXACTLY"
+            search_string         = local.signup_targets[0]
+            field_to_match {
+              single_header {
+                name = "x-amz-target"
               }
             }
-            statement {
-              byte_match_statement {
-                positional_constraint = "EXACTLY"
-                search_string         = local.signup_targets[0]
-                field_to_match {
-                  single_header {
-                    name = "x-amz-target"
-                  }
-                }
-                text_transformation {
-                  priority = 0
-                  type     = "NONE"
-                }
-              }
+            text_transformation {
+              priority = 0
+              type     = "NONE"
             }
           }
         }
@@ -129,32 +112,6 @@ resource "aws_wafv2_web_acl" "users" {
             }
             statement {
               or_statement {
-                statement {
-                  byte_match_statement {
-                    positional_constraint = "STARTS_WITH"
-                    search_string         = "/signup"
-                    field_to_match {
-                      uri_path {}
-                    }
-                    text_transformation {
-                      priority = 0
-                      type     = "LOWERCASE"
-                    }
-                  }
-                }
-                statement {
-                  byte_match_statement {
-                    positional_constraint = "STARTS_WITH"
-                    search_string         = "/forgotpassword"
-                    field_to_match {
-                      uri_path {}
-                    }
-                    text_transformation {
-                      priority = 0
-                      type     = "LOWERCASE"
-                    }
-                  }
-                }
                 dynamic "statement" {
                   for_each = local.signup_targets
                   content {

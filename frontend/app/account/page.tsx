@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { startLink, verifyLink, type Me } from "@/lib/api";
 import { useAccount } from "@/lib/account";
 import { signIn, signOut } from "@/lib/auth";
 
 const ICONS = "https://ddragon.leagueoflegends.com/cdn/14.1.1/img/profileicon";
+const CHECK_MS = 10_000;
 
 export default function AccountPage() {
   const account = useAccount();
@@ -14,7 +15,32 @@ export default function AccountPage() {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [fresh, setFresh] = useState<Me | null>(null);
+  const [watching, setWatching] = useState(false);
   const me = fresh ?? account.me;
+
+  useEffect(() => {
+    if (!watching) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      try {
+        const found = await verifyLink();
+        if (stopped) return;
+        setFresh(found);
+        if (found.pending) timer = setTimeout(check, CHECK_MS);
+        else setWatching(false);
+      } catch (error) {
+        if (stopped) return;
+        setProblem(error instanceof Error ? error.message : String(error));
+        setWatching(false);
+      }
+    };
+    check();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [watching]);
 
   async function run(action: () => Promise<Me>) {
     setBusy(true);
@@ -30,7 +56,13 @@ export default function AccountPage() {
 
   function link(event: FormEvent) {
     event.preventDefault();
+    setWatching(false);
     run(() => startLink(riotId));
+  }
+
+  function watch() {
+    setProblem(null);
+    setWatching(true);
   }
 
   return (
@@ -60,7 +92,8 @@ export default function AccountPage() {
             <div className="link-check">
               <p>To prove {me.pending.riot_id} is yours, set your profile icon to this one in the League client within 15 minutes. Then press Verify.</p>
               <img src={`${ICONS}/${me.pending.icon}.png`} alt={`Profile icon ${me.pending.icon}`} width={64} height={64} />
-              <p><button type="button" onClick={() => run(verifyLink)} disabled={busy}>Verify</button></p>
+              {watching && <p>Checking every 10 seconds. Riot can take a few minutes to show a new icon, so keep this page open.</p>}
+              <p><button type="button" onClick={watch} disabled={busy || watching}>{watching ? "Checking…" : "Verify"}</button></p>
             </div>
           )}
           {!me.verified && !me.pending && <p>No Riot account linked yet.</p>}

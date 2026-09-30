@@ -30,23 +30,16 @@ resource "aws_cognito_user_pool" "users" {
   }
 }
 
-resource "aws_cognito_user_pool_domain" "users" {
-  domain                = "${var.name}-${substr(var.account_id, 0, 6)}"
-  user_pool_id          = aws_cognito_user_pool.users.id
-  managed_login_version = 1
-}
-
 resource "aws_cognito_user_pool_client" "site" {
   count                                = local.live ? 1 : 0
   name                                 = "${var.name}-site"
   user_pool_id                         = aws_cognito_user_pool.users.id
   generate_secret                      = false
-  allowed_oauth_flows                  = ["code"]
-  allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = ["openid", "email"]
-  supported_identity_providers         = ["COGNITO"]
-  callback_urls                        = [for host in local.site_hosts : "https://${host}/auth/"]
-  logout_urls                          = [for host in local.site_hosts : "https://${host}/"]
+  allowed_oauth_flows_user_pool_client = false
+  allowed_oauth_flows                  = []
+  allowed_oauth_scopes                 = []
+  callback_urls                        = []
+  logout_urls                          = []
   explicit_auth_flows                  = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
   prevent_user_existence_errors        = "ENABLED"
   enable_token_revocation              = true
