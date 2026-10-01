@@ -30,7 +30,7 @@ export class ApiError extends Error {
 
 export type Reading = { gold: number; score: number; percentile: number };
 
-export type Together = { gold: number; games: number };
+export type Together = { gold: number; games: number; customs?: number };
 
 export type PairScore = {
   score: number | null;

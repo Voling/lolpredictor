@@ -13,7 +13,7 @@ from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
-from .serving import duo_between, hinge_between, known_names, lineup_between, position_profile
+from .serving import custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ class SynergyService:
             raise ValueError(f"We don't know which position {riot_id(a) if not chosen['left'] else riot_id(b)} plays. Pick one.")
         raise ValueError(f"{riot_id(a)} and {riot_id(b)} both play {spoken(chosen['left'])}. Pick a different position for one of you.")
 
-    def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True) -> dict | None:
+    def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True, customs=None) -> dict | None:
         if positions is None:
             return None
         for profile, side in ((a, "left"), (b, "right")):
@@ -221,7 +221,8 @@ class SynergyService:
                 if not required:
                     return None
                 raise ValueError(f"{riot_id(profile)} has no games as {spoken(positions[side])} in our data.")
-        return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
+        games = customs(a["puuid"], b["puuid"]) if customs else []
+        return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings, custom_residuals(games, self.settings))
 
     @staticmethod
     def _warnings(a: pd.Series, b: pd.Series, interaction: dict | None) -> list[str]:
@@ -244,6 +245,7 @@ class SynergyService:
         right_position: str | None = None,
         positions_required: bool = True,
         details: bool = True,
+        customs=None,
     ) -> dict:
         self._require()
         a = self.resolve(left)
@@ -254,7 +256,7 @@ class SynergyService:
         history = self._pair_history(a["puuid"], b["puuid"]) if details else {}
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
-        interaction = self._interaction(a, b, positions, positions_required)
+        interaction = self._interaction(a, b, positions, positions_required, customs)
         return {
             "score": interaction["score"] if interaction else None,
             "projected_gold": interaction["projected_gold"] if interaction else None,
@@ -374,7 +376,7 @@ class SynergyService:
             pair["left"], pair["right"] = names[pair["left"]], names[pair["right"]]
         return {**result, "warnings": warnings, "players": summaries}
 
-    def friends(self, me: str, friends: list[str], me_position: str | None = None, details: bool = True) -> dict:
+    def friends(self, me: str, friends: list[str], me_position: str | None = None, details: bool = True, customs=None) -> dict:
         self._require()
         anchor = self.resolve(me)
         rows, own = [], None
@@ -384,7 +386,7 @@ class SynergyService:
             if not name:
                 continue
             try:
-                found = self.pair_score(me, name, me_position, wanted.strip() or None, details=details)
+                found = self.pair_score(me, name, me_position, wanted.strip() or None, details=details, customs=customs)
             except UnknownPlayer:
                 rows.append({"riot_id": name, "note": "Not in our data yet."})
                 continue

@@ -272,7 +272,7 @@ def test_the_duo_score_adds_the_record_together_to_both_readings_and_the_fit(ser
 
     # then
     assert forward["projected_gold"] == backward["projected_gold"] == 195.0
-    assert forward["edge"]["record"] == {"gold": 40.0, "games": 12}
+    assert forward["edge"]["record"] == {"gold": 40.0, "games": 12, "customs": 0}
     assert forward["edge"]["total"] == 195.0 and forward["edge"]["fit"]["gold"] == 5.0
     assert forward["percentile"] == 74.4 and forward["score"] == backward["score"] == 57.0
 
@@ -285,7 +285,7 @@ def test_a_duo_never_seen_together_scores_on_its_readings_and_fit_alone(serving_
     found = duo_between("a", "TOP", "c", "MIDDLE", serving_settings)
 
     # then
-    assert found["edge"]["record"] == {"gold": 0.0, "games": 0}
+    assert found["edge"]["record"] == {"gold": 0.0, "games": 0, "customs": 0}
     assert found["projected_gold"] == 140.0
 
 

@@ -15,11 +15,13 @@ from ..ml.score import UnknownPlayer, get_service, reload_service
 from ..ml.serving import warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
+from .customs import SharedCustoms
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
 POSITION = 12
 _accounts: Accounts | None = None
+_customs: SharedCustoms | None = None
 _verifier = None
 
 
@@ -43,6 +45,26 @@ def get_accounts() -> Accounts:
         riot = RiotAccounts(key, settings.platform, settings.region)
         _accounts = Accounts(DynamoTable(settings.accounts_table), riot, settings.daily_duos, settings.link_attempts, settings.riot_budget)
     return _accounts
+
+
+def get_customs() -> SharedCustoms:
+    global _customs
+    if _customs is None:
+        settings = get_settings()
+        accounts = get_accounts()
+        _customs = SharedCustoms(accounts.riot, DynamoTable(settings.accounts_table), accounts.riot_calls, settings.target_minute)
+    return _customs
+
+
+def _customs_between(left: str, right: str) -> list[dict]:
+    try:
+        games, complete = get_customs().between(left, right)
+        if not complete:
+            logger.info("customs between %s and %s are incomplete this time", left[:8], right[:8])
+        return games
+    except Exception:
+        logger.exception("customs lookup failed")
+        return []
 
 
 def get_verifier():
@@ -180,7 +202,7 @@ def _public_routes(app: FastAPI) -> None:
         x_auth: str | None = Header(None),
     ):
         query = ("pair", b, a_position, b_position)
-        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False), remember=_remember_pair))
+        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_customs_between), remember=_remember_pair))
 
     @app.get("/api/friends")
     def friends(
@@ -197,7 +219,7 @@ def _public_routes(app: FastAPI) -> None:
                 x_auth,
                 query,
                 len(friends),
-                lambda me, service: service.friends(me, friends, me_position, details=False),
+                lambda me, service: service.friends(me, friends, me_position, details=False, customs=_customs_between),
                 lambda found: sum(1 for row in found["friends"] if row.get("score") is None),
                 remember=_remember_friends,
             )

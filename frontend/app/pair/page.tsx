@@ -39,6 +39,9 @@ function Result({ pair }: { pair: PairScore }) {
       {thin.map((player) => (
         <p key={player.name} className="hint">{player.name} has {gameCount(player.games)} as {positionName(player.position)}. Treat this score as rough.</p>
       ))}
+      {(found.edge.record?.customs ?? 0) > 0 && (
+        <p className="hint">Counting {gameCount(found.edge.record!.customs!)} you two played together in customs.</p>
+      )}
       <p className="sub">50 is an average duo for these positions. Higher is better.</p>
     </>
   );

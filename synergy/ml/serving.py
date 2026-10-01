@@ -395,26 +395,59 @@ def pair_between(
     }
 
 
-def _record_index(path: Path) -> dict[tuple[str, str], tuple[int, float]]:
-    table = pd.read_parquet(path, columns=["a", "b", "games", "record"])
-    return {(a, b): (int(games), float(record)) for a, b, games, record in zip(table["a"], table["b"], table["games"], table["record"])}
+def _record_index(path: Path) -> dict[tuple[str, str], tuple[int, float, float]]:
+    table = pd.read_parquet(path, columns=["a", "b", "games", "mean", "record"])
+    return {
+        (a, b): (int(games), float(mean), float(record))
+        for a, b, games, mean, record in zip(table["a"], table["b"], table["games"], table["mean"], table["record"])
+    }
 
 
-def record_between(left: str, right: str, settings: Settings | None = None) -> dict:
-    records = cached((settings or get_settings()).served_model_dir / DUO_RECORDS, "records", _record_index)
-    games, gold = (records or {}).get((left, right) if left < right else (right, left), (0, 0.0))
-    return {"gold": round(gold, 1), "games": games}
+def record_between(left: str, right: str, settings: Settings | None = None, extra: list[float] | tuple[float, ...] = ()) -> dict:
+    settings = settings or get_settings()
+    records = cached(settings.served_model_dir / DUO_RECORDS, "records", _record_index)
+    games, mean, gold = (records or {}).get((left, right) if left < right else (right, left), (0, 0.0, 0.0))
+    report = cached(settings.served_model_dir / DUO_REPORT, "json", _json) if extra else None
+    counted = 0
+    if report and float(report.get("spread", 0.0)) > 0.0 and float(report.get("noise", 0.0)) > 0.0:
+        between, noise = float(report["spread"]) ** 2, float(report["noise"])
+        counted = len(extra)
+        pooled = (mean * games + float(sum(extra))) / (games + counted)
+        gold = pooled * between / (between + noise**2 / (games + counted))
+    return {"gold": round(gold, 1), "games": games + counted, "customs": counted}
+
+
+def _expected(loaded, puuid: str, position: str, settings: Settings) -> float:
+    _, _, seats, _, vectors = loaded
+    row = vectors["at"].get((puuid, position))
+    if row is None:
+        return 0.0
+    z = vectors["matrix"][row].astype(float)
+    return seat_reading(seats, z, position, player_history(puuid, position, settings), _seat_quantiles(settings, position), _seat_calibration(settings, position))["gold"]
+
+
+def custom_residuals(games: list[dict], settings: Settings | None = None) -> list[float]:
+    settings = settings or get_settings()
+    loaded = _loaded(settings)
+    if loaded is None or not games:
+        return []
+    residuals = []
+    for game in games:
+        edge = sum(seat["gold"] - seat["enemy_gold"] for seat in game["seats"])
+        guess = sum(_expected(loaded, seat["puuid"], seat["position"], settings) - _expected(loaded, seat["enemy"], seat["position"], settings) for seat in game["seats"])
+        residuals.append(float(edge - guess))
+    return residuals
 
 
 def duo_between(
-    left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None
+    left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None, customs: list[float] | tuple[float, ...] = ()
 ) -> dict | None:
     settings = settings or get_settings()
     found = pair_between(left, left_position, right, right_position, settings)
     scores = _duo_scores(settings)
     if found is None or scores is None:
         return found
-    record = record_between(left, right, settings)
+    record = record_between(left, right, settings, customs)
     with_fit = bool(scores["with_fit"]) if "with_fit" in scores else True
     edge = found["edge"]
     total = round(edge["left"]["gold"] + edge["right"]["gold"] + (edge["fit"]["gold"] if with_fit else 0.0) + record["gold"], 1)

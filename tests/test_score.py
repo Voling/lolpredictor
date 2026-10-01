@@ -136,7 +136,7 @@ def test_friends_are_ranked_by_the_duo_score_which_carries_the_record_together(s
     assert gamma["riot_id"] == "Gamma#NA1" and beta["riot_id"] == "Beta#NA1"
     assert gamma["projected_gold"] == 190.0 and beta["projected_gold"] == 55.0
     assert gamma["score"] > beta["score"]
-    assert beta["record"] == {"gold": -100.0, "games": 20}
+    assert beta["record"] == {"gold": -100.0, "games": 20, "customs": 0}
 
 
 def test_a_lean_pair_keeps_the_score_and_skips_the_details_no_page_shows(service):

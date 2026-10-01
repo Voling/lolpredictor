@@ -291,6 +291,15 @@ class RiotAccounts:
     def icon(self, puuid: str) -> int:
         return int(self._get(f"{self.platform_host}/lol/summoner/v4/summoners/by-puuid/{quote(puuid, safe='')}")["profileIconId"])
 
+    def match_ids(self, puuid: str, kind: str, count: int = 100) -> list[str]:
+        return list(self._get(f"{self.account_host}/lol/match/v5/matches/by-puuid/{quote(puuid, safe='')}/ids?type={kind}&count={count}"))
+
+    def match(self, match_id: str) -> dict:
+        return self._get(f"{self.account_host}/lol/match/v5/matches/{quote(match_id, safe='')}")
+
+    def timeline(self, match_id: str) -> dict:
+        return self._get(f"{self.account_host}/lol/match/v5/matches/{quote(match_id, safe='')}/timeline")
+
 
 def ssm_key(name: str):
     found = {}
@@ -332,7 +341,7 @@ class Accounts:
     def _day(self, kind: str) -> tuple[str, int]:
         return f"{kind}#{self.day()}", int(self.clock()) + 2 * DAY
 
-    def _riot_calls(self, calls: int) -> bool:
+    def riot_calls(self, calls: int) -> bool:
         now = int(self.clock())
         minute = f"minute#{now // 60}"
         if self.table.add(RIOT_BUDGET, minute, calls, self.riot_budget, now + DAY) is None:
@@ -346,7 +355,7 @@ class Accounts:
         key, expires = self._day("links")
         if self.table.add(self._user(user), key, 1, self.attempts, expires) is None:
             raise QuotaExceeded(f"You can try linking {self.attempts} times a day. Try again tomorrow.")
-        if not self._riot_calls(riot_calls):
+        if not self.riot_calls(riot_calls):
             self.table.add(self._user(user), key, -1, self.attempts + 1, expires)
             raise LinkError("Riot is busy right now. Try again in a few minutes.")
 
@@ -413,7 +422,7 @@ class Accounts:
         now = int(self.clock())
         if self.table.add(self._user(user), f"check#{now // CHECK_SECONDS}", 1, 1, now + DAY) is None:
             return self.status(user)
-        if self.table.add(RIOT_BUDGET, f"checks#{now // 60}", 1, self.riot_budget // 2, now + DAY) is None or not self._riot_calls(1):
+        if self.table.add(RIOT_BUDGET, f"checks#{now // 60}", 1, self.riot_budget // 2, now + DAY) is None or not self.riot_calls(1):
             return self.status(user)
         if self.riot.icon(pending["puuid"]) != pending["icon"]:
             return self.status(user)
