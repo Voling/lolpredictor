@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { getStatus } from "@/lib/api";
+import { getRecent, getStatus } from "@/lib/api";
 import { useAccount } from "@/lib/account";
 import { authEnabled } from "@/lib/auth";
 import { DemoCarousel } from "@/lib/demo";
+import { RecentDuos } from "@/lib/recent";
 import { useRemote } from "@/lib/remote";
 import { Verdict } from "@/lib/verdict";
 
@@ -19,6 +20,8 @@ export default function Home() {
   const account = useAccount();
   const canAsk = !authEnabled || account.signedIn;
   const { data: status, error } = useRemote(canAsk ? getStatus : null, `status|${canAsk}`);
+  const { data: recent } = useRemote(authEnabled && account.signedIn ? getRecent : null, `recent|${account.signedIn}`);
+  const daily = account.me?.daily;
 
   return (
     <main>
@@ -27,7 +30,7 @@ export default function Home() {
       <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/pair/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}</p>
 
       <h3>How to use it</h3>
-      {authEnabled && <p>Sign in and link your Riot account first. Each account gets 20 duo checks a day.</p>}
+      {authEnabled && <p>Sign in and link your Riot account first. Each account gets {daily ? `${daily} duo checks a day` : "a daily allowance of duo checks"}.</p>}
       <p><Link href="/friends/">Rank your friends</Link>. Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a score.</p>
       <p><Link href="/pair/">Check one duo</Link>. Enter your Riot ID and one friend&apos;s Riot ID to get a score for the two of you.</p>
 
@@ -38,6 +41,13 @@ export default function Home() {
           <li key={band.range}><Verdict score={band.score} /> {band.range}</li>
         ))}
       </ul>
+
+      {recent && recent.duos.length > 0 && (
+        <>
+          <h3>Recent predictions</h3>
+          <RecentDuos duos={recent.duos} />
+        </>
+      )}
 
       <h3>Top Challenger pairs</h3>
       <DemoCarousel />

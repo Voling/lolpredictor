@@ -23,7 +23,7 @@ function Result({ found }: { found: Friends }) {
       )}
       <table>
         <thead>
-          <tr><th>Friend</th><th>Their position</th><th className="num">Score</th><th>Verdict</th></tr>
+          <tr><th>Friend</th><th>Position</th><th className="num">Score</th><th>Verdict</th></tr>
         </thead>
         <tbody>
           {found.friends.map((row) =>
@@ -79,7 +79,7 @@ function FriendsQuery() {
         </label>
         <button type="submit">Rank</button>
       </form>}
-      <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>
+      {accountReady(account) && <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>}
       {loading && <p className="sub">Ranking your friends…</p>}
       {error && <div className="gate"><strong>Can&apos;t rank these friends.</strong>{error}</div>}
       {found && <Result found={found} />}

@@ -5,8 +5,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { startLink, verifyLink, type Me } from "@/lib/api";
 import { useAccount } from "@/lib/account";
 import { signIn, signOut } from "@/lib/auth";
+import { profileIcon } from "@/lib/ddragon";
 
-const ICONS = "https://ddragon.leagueoflegends.com/cdn/14.1.1/img/profileicon";
 const CHECK_MS = 10_000;
 
 export default function AccountPage() {
@@ -91,7 +91,7 @@ export default function AccountPage() {
           {me.pending && (
             <div className="link-check">
               <p>To prove {me.pending.riot_id} is yours, set your profile icon to this one in the League client within 15 minutes. Then press Verify.</p>
-              <img src={`${ICONS}/${me.pending.icon}.png`} alt={`Profile icon ${me.pending.icon}`} width={64} height={64} />
+              <img src={profileIcon(me.pending.icon)} alt={`Profile icon ${me.pending.icon}`} width={64} height={64} />
               {watching && <p>Checking every 10 seconds. Riot can take a few minutes to show a new icon, so keep this page open.</p>}
               <p><button type="button" onClick={watch} disabled={busy || watching}>{watching ? "Checking…" : "Verify"}</button></p>
             </div>

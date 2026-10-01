@@ -73,3 +73,13 @@ button:disabled { opacity: 0.5; cursor: default; }
   .demo-window { overflow-y: auto; }
 }
 footer.legal { margin-top: 3rem; font-size: 0.72rem; opacity: 0.5; }
+ul.recent { list-style: none; margin: 0.75rem 0 1rem; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
+ul.recent li { padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); }
+ul.recent li:last-child { border-bottom: 0; }
+ul.recent .demo-names { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.seat { display: inline-flex; align-items: center; gap: 0.4rem; }
+.seat img { width: 28px; height: 28px; }
+@media (max-width: 480px) {
+  th, td { padding: 0.4rem 0.35rem; }
+  .few { display: block; margin: 0.1rem 0 0; }
+}

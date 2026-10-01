@@ -16,6 +16,10 @@ export type Status = {
   } | null;
 };
 
+export type RecentSeat = { champion: string | null; tier: string | null; division: string | null; position: string | null };
+export type RecentDuo = { left: RecentSeat; right: RecentSeat; score: number; gold: number; minute: number; at: number };
+export type Recent = { duos: RecentDuo[] };
+
 export type Me = { riot_id: string | null; verified: boolean; pending: { riot_id: string; icon: number } | null; daily: number; remaining: number };
 
 export class ApiError extends Error {
@@ -139,6 +143,7 @@ async function post<T>(path: string, payload: unknown): Promise<T> {
 
 export const getStatus = () => get<Status>("/api/status");
 export const getMe = () => get<Me>("/api/me");
+export const getRecent = () => get<Recent>("/api/recent");
 export const startLink = (riotId: string) => post<Me>("/api/link", { riot_id: riotId });
 export const verifyLink = () => post<Me>("/api/link/verify", {});
 export const getPair = (a: string, b: string, aPosition?: string, bPosition?: string) => {

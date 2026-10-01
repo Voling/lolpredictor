@@ -129,6 +129,7 @@ def build_profiles(
 
     identity = grouped.agg(
         main_position=("position", lambda s: s.value_counts().idxmax()),
+        main_champion=("champion_name", lambda s: s.value_counts().idxmax()),
         champion_pool=("champion_name", "nunique"),
     )
     for column in ("game_name", "tag_line", "tier", "division"):

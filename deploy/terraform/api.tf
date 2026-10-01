@@ -54,7 +54,7 @@ resource "aws_iam_role_policy" "api" {
       {
         Sid      = "AccountsAndDailyLimits"
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
         Resource = aws_dynamodb_table.accounts.arn
       },
       {

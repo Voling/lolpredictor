@@ -18,6 +18,9 @@ TIMEOUT = 5.0
 KEYS_REFRESH = 600.0
 KEYS_RETRY = 10.0
 PENDING_SECONDS = 900
+RECENT = "recent"
+RECENT_LIMIT = 5
+RECENT_DAYS = 30
 CHECK_SECONDS = 10
 RIOT_BUDGET = "riot#budget"
 RIOT_PER_SECOND = 10
@@ -112,7 +115,8 @@ def request_key(kind: str, day: str, *parts) -> str:
 def _value(item: dict):
     kind, value = next(iter(item.items()))
     if kind == "N":
-        return int(value)
+        number = float(value)
+        return int(number) if number.is_integer() else number
     if kind == "BOOL":
         return bool(value)
     return value
@@ -121,9 +125,11 @@ def _value(item: dict):
 def _item(values: dict) -> dict:
     out = {}
     for name, value in values.items():
+        if value is None:
+            continue
         if isinstance(value, bool):
             out[name] = {"BOOL": value}
-        elif isinstance(value, int):
+        elif isinstance(value, (int, float)):
             out[name] = {"N": str(value)}
         else:
             out[name] = {"S": str(value)}
@@ -171,6 +177,16 @@ class DynamoTable:
 
     def delete(self, pk: str, sk: str) -> None:
         self._retry(lambda: self.client.delete_item(TableName=self.name, Key=self._key(pk, sk)))
+
+    def latest(self, pk: str, limit: int) -> list[dict]:
+        found = self.client.query(
+            TableName=self.name,
+            KeyConditionExpression="pk = :pk",
+            ExpressionAttributeValues={":pk": {"S": pk}},
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        return [{name: _value(value) for name, value in item.items()} for item in found.get("Items", [])]
 
     def claim(self, pk: str, sk: str, owner: str) -> bool:
         try:
@@ -408,6 +424,15 @@ class Accounts:
         self.table.release(f"puuid#{pending['puuid']}", f"pending#{pending['icon']}", user)
         self.table.put(self._user(user), LINK, {"riot_id": pending["riot_id"], "puuid": pending["puuid"], "verified": True})
         return self.status(user)
+
+    def remember(self, duos: list[dict]) -> None:
+        now = int(self.clock() * 1000)
+        for index, duo in enumerate(duos):
+            kept = {name: value for name, value in duo.items() if value is not None}
+            self.table.put(RECENT, f"{now:014d}#{index}#{random.SystemRandom().randrange(1 << 20):06x}", {**kept, "at": now // 1000, "expires": now // 1000 + RECENT_DAYS * DAY})
+
+    def recent(self, limit: int = RECENT_LIMIT) -> list[dict]:
+        return [{name: value for name, value in item.items() if name not in ("pk", "sk", "expires")} for item in self.table.latest(RECENT, limit)]
 
     def linked_puuid(self, user: str) -> str:
         link = self.link(user)

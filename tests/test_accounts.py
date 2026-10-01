@@ -58,6 +58,10 @@ class MemoryTable:
         if self.items.get((pk, sk), {}).get("owner") == owner:
             del self.items[(pk, sk)]
 
+    def latest(self, pk, limit):
+        keys = sorted((key for key in self.items if key[0] == pk), key=lambda key: key[1], reverse=True)[:limit]
+        return [{"pk": key[0], "sk": key[1], **self.items[key]} for key in keys]
+
     def add(self, pk, sk, amount, limit, expires):
         found = self.items.get((pk, sk))
         if found is not None and found["used"] > limit - amount:
@@ -605,3 +609,54 @@ def test_icon_checks_use_at_most_half_the_riot_budget_so_new_links_still_start()
 
     # then
     assert accounts.riot.calls == 8 and all(found["pending"] for found in waiting) and started["pending"] is not None
+
+
+def test_recent_duos_come_back_newest_first_capped_at_five_and_without_names():
+    # given
+    now = {"t": START}
+    accounts = _accounts(clock=lambda: now["t"])
+    for index in range(7):
+        now["t"] += 1
+        accounts.remember([{"left_champion": "Ahri", "left_tier": "DIAMOND", "left_division": "II", "left_position": "MIDDLE", "right_champion": "LeeSin", "right_tier": "MASTER", "right_division": None, "right_position": "JUNGLE", "score": 50.0 + index, "gold": 12.5, "minute": 20}])
+
+    # when
+    found = accounts.recent()
+
+    # then
+    assert [duo["score"] for duo in found] == [56.0, 55.0, 54.0, 53.0, 52.0]
+    assert found[0]["at"] == int(START) + 7 and "riot_id" not in found[0] and "right_division" not in found[0]
+    assert set(found[0]) == {"left_champion", "left_tier", "left_division", "left_position", "right_champion", "right_tier", "right_position", "score", "gold", "minute", "at"}
+
+
+def test_dynamo_items_round_trip_floats_and_drop_missing_values():
+    # given
+    from synergy.api.accounts import _item, _value
+
+    stored = _item({"score": 57.9, "games": 10, "ok": True, "name": "x", "gone": None})
+
+    # when
+    back = {name: _value(value) for name, value in stored.items()}
+
+    # then
+    assert stored["score"] == {"N": "57.9"} and "gone" not in stored
+    assert back == {"score": 57.9, "games": 10, "ok": True, "name": "x"}
+
+
+def test_the_dynamo_table_reads_the_latest_rows_in_reverse_key_order():
+    # given
+    class _Client:
+        exceptions = _Recorder.exceptions
+
+        def query(self, **request):
+            self.request = request
+            return {"Items": [{"pk": {"S": "recent"}, "sk": {"S": "2#0"}, "score": {"N": "61.5"}}, {"pk": {"S": "recent"}, "sk": {"S": "1#0"}, "score": {"N": "48"}}]}
+
+    client = _Client()
+    table = DynamoTable("accounts", client=client)
+
+    # when
+    found = table.latest("recent", 5)
+
+    # then
+    assert [row["score"] for row in found] == [61.5, 48]
+    assert client.request["ScanIndexForward"] is False and client.request["Limit"] == 5 and client.request["ExpressionAttributeValues"] == {":pk": {"S": "recent"}}

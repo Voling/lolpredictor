@@ -50,7 +50,7 @@ test("friends are ranked by one duo score with a verdict and an unknown friend k
   const rows = page.locator("tbody tr");
   await expect(rows).toHaveCount(3);
   await expect(page.getByRole("heading", { level: 2 })).toContainText("Your duo scores as top");
-  await expect(page.locator("thead th")).toHaveText(["Friend", "Their position", "Score", "Verdict"]);
+  await expect(page.locator("thead th")).toHaveText(["Friend", "Position", "Score", "Verdict"]);
   const scores = [
     Number(await rows.nth(0).locator("td").nth(2).innerText()),
     Number(await rows.nth(1).locator("td").nth(2).innerText()),

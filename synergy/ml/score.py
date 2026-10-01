@@ -284,6 +284,7 @@ class SynergyService:
             "games": int(profile["games"]),
             "winrate": round(float(profile["winrate"]), 4),
             "main_position": profile.get("main_position"),
+            "main_champion": profile.get("main_champion"),
             "champion_pool": int(profile.get("champion_pool", 0)),
             "style_confidence": round(float(profile.get("style_confidence", 1.0)), 3),
             "style": {

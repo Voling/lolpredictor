@@ -21,6 +21,7 @@ The module is `server.py`, not `app.py`: a submodule named `app` shadows the `ap
 | `GET /api/players/{riot_id}` | Profile, trait percentiles, tendencies |
 | `GET /api/partners/{riot_id}?limit=` | Best and worst modelled partners |
 | `GET /api/pair?a=&b=` | One pairing: score, synergy, drivers, shared play |
+| `GET /api/recent` | The last five duo checks across everyone, as champion, rank and position with the score; empty without accounts |
 | `POST /api/team` | `{"players": [...]}`, two to five, pairwise matrix and group score |
 | `GET /api/outsider/{riot_id}` | Feature percentiles for a player outside the corpus |
 | `GET /api/outsider-pair?a=&b=` | Two such players, largest style gaps, teammate and opponent games |

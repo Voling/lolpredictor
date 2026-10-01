@@ -76,7 +76,7 @@ def _handle(call):
         raise HTTPException(400, str(exc)) from exc
 
 
-def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda found: 0) -> dict:
+def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda found: 0, remember=lambda found, me, service: []) -> dict:
     user = get_verifier().subject(token)
     accounts = get_accounts()
     me = accounts.linked_puuid(user)
@@ -94,13 +94,75 @@ def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda 
     back = unscored(found) if charged else 0
     if back:
         accounts.refund(user, back)
+    if charged:
+        try:
+            duos = remember(found, me, service)
+            if duos:
+                accounts.remember(duos)
+        except Exception:
+            logger.exception("could not remember the duo")
     return {**found, "remaining": left + back}
+
+
+def _seat(profile, position: str, prefix: str) -> dict:
+    return {
+        f"{prefix}_champion": profile.get("main_champion"),
+        f"{prefix}_tier": profile.get("tier"),
+        f"{prefix}_division": profile.get("division"),
+        f"{prefix}_position": position,
+    }
+
+
+def _memory(me_profile, me_position: str, friend_profile, friend_position: str, score: float, gold: float, minute: int) -> dict:
+    return {
+        **_seat(me_profile, me_position, "left"),
+        **_seat(friend_profile, friend_position, "right"),
+        "score": round(float(score), 1),
+        "gold": round(float(gold), 1),
+        "minute": int(minute),
+    }
+
+
+def _remember_pair(found: dict, me: str, service) -> list[dict]:
+    interaction = found.get("interaction")
+    if not interaction:
+        return []
+    friend = service.resolve(found["players"][1]["riot_id"])
+    return [_memory(service.profiles.loc[me], interaction["positions"]["left"], friend, interaction["positions"]["right"], interaction["score"], interaction["edge"]["total"], interaction["minute"])]
+
+
+def _remember_friends(found: dict, me: str, service) -> list[dict]:
+    own = found["me"]
+    return [
+        _memory(service.profiles.loc[me], own["position"], service.resolve(row["riot_id"]), row["position"], row["score"], row["total"], own["minute"])
+        for row in found["friends"]
+        if row.get("score") is not None
+    ]
+
+
+def _shape(duo: dict) -> dict:
+    return {
+        "left": {name: duo.get(f"left_{name}") for name in ("champion", "tier", "division", "position")},
+        "right": {name: duo.get(f"right_{name}") for name in ("champion", "tier", "division", "position")},
+        "score": duo.get("score"),
+        "gold": duo.get("gold"),
+        "minute": duo.get("minute"),
+        "at": duo.get("at"),
+    }
 
 
 def _public_routes(app: FastAPI) -> None:
     @app.get("/api/me")
     def me(x_auth: str | None = Header(None)):
         return _handle(lambda: get_accounts().status(get_verifier().subject(x_auth)))
+
+    @app.get("/api/recent")
+    def recent(x_auth: str | None = Header(None)):
+        def read():
+            get_verifier().subject(x_auth)
+            return {"duos": [_shape(duo) for duo in get_accounts().recent()]}
+
+        return _handle(read)
 
     @app.post("/api/link")
     def link(request: LinkRequest, x_auth: str | None = Header(None)):
@@ -118,7 +180,7 @@ def _public_routes(app: FastAPI) -> None:
         x_auth: str | None = Header(None),
     ):
         query = ("pair", b, a_position, b_position)
-        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False)))
+        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False), remember=_remember_pair))
 
     @app.get("/api/friends")
     def friends(
@@ -137,6 +199,7 @@ def _public_routes(app: FastAPI) -> None:
                 len(friends),
                 lambda me, service: service.friends(me, friends, me_position, details=False),
                 lambda found: sum(1 for row in found["friends"] if row.get("score") is None),
+                remember=_remember_friends,
             )
         )
 
@@ -246,6 +309,10 @@ def create_app(public: bool | None = None) -> FastAPI:
         @app.get("/api/health")
         def health():
             return {"ok": True}
+
+        @app.get("/api/recent")
+        def recent():
+            return {"duos": []}
 
         @app.get("/api/status")
         def status():
