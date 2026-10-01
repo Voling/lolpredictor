@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from synergy.config import Settings
+from synergy.ml import serving
 from synergy.ml.serving import (
     NAMES_TABLE,
     DUO_RECORDS,
@@ -17,7 +18,13 @@ from synergy.ml.serving import (
     cached,
     duo_between,
     known_names,
+    GRID,
+    VECTORS_FILE,
+    _grid,
     lineup_between,
+    percentile_among,
+    warm,
+    write_vectors,
     pair_between,
     position_profile,
 )
@@ -359,3 +366,65 @@ def test_a_style_fit_that_failed_its_shuffles_is_left_out_of_the_duo_score(servi
     assert found["projected_gold"] == found["edge"]["total"] == 100.0 + 50.0 + 40.0
     assert found["edge"]["fit"]["gold"] == 5.0 and found["edge"]["with_fit"] is False
     assert found["reliable"] is True and found["note"] is None
+
+
+def test_the_packed_vectors_serve_the_same_pair_as_the_style_table(serving_settings):
+    # given
+    settings = serving_settings
+    from_table = pair_between("a", "TOP", "b", "JUNGLE", settings)
+
+    # when
+    written = write_vectors(settings.model_dir, settings.processed_dir)
+    (settings.processed_dir / "player_styles.parquet").unlink()
+    from_pack = pair_between("a", "TOP", "b", "JUNGLE", settings)
+
+    # then
+    assert written == settings.model_dir / VECTORS_FILE and from_pack == from_table
+    assert position_profile("b", "JUNGLE", settings) == {"games": 7, "evidence": 0.9}
+
+
+def test_the_pack_keeps_only_profiled_players_but_ranks_them_among_everyone(serving_settings):
+    # given
+    settings = serving_settings
+    pd.DataFrame({"puuid": ["b", "c"]}).to_parquet(settings.processed_dir / "player_profiles.parquet", index=False)
+
+    # when
+    write_vectors(settings.model_dir, settings.processed_dir)
+    (settings.processed_dir / "player_styles.parquet").unlink()
+    found = pair_between("b", "JUNGLE", "c", "MIDDLE", settings)
+
+    # then
+    assert position_profile("a", "TOP", settings) == {"games": 0, "evidence": 0.0}
+    assert found["reading"]["left"]["distinctive"][0]["percentile"] == 50.0
+
+
+def test_a_grid_percentile_matches_counting_the_peers_below_to_a_tenth():
+    # given
+    rng = np.random.default_rng(3)
+    values = rng.normal(size=(20_000, 1)).astype(np.float32)
+    grid = _grid(values)[0]
+    probes = rng.normal(size=50)
+
+    # when
+    exact = [round(float((values[:, 0] < probe).mean() * 100.0), 1) for probe in probes]
+    approximate = [percentile_among(grid, probe) for probe in probes]
+
+    # then
+    assert len(grid) == GRID and max(abs(a - e) for a, e in zip(approximate, exact)) < 0.11
+
+
+def test_warming_up_loads_every_served_table_once(serving_settings, monkeypatch):
+    # given
+    settings = serving_settings
+    _duo_artifacts(settings, [("a", "b", 10, 50.0)], ["JUNGLE+TOP"])
+    loads = []
+    original = serving.cached
+    monkeypatch.setattr(serving, "cached", lambda path, kind, load: original(path, kind, lambda found: loads.append(kind) or load(found)))
+
+    # when
+    warm(settings)
+    again = len(loads)
+    warm(settings)
+
+    # then
+    assert "vectors:2:" in "".join(loads) and "npz" in loads and len(loads) == again

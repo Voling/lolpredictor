@@ -12,6 +12,7 @@ Ranks which friends a League of Legends player should queue with. Each friend ge
 | `python -m synergy contributed` | Import the Master+ games waiting in `CONTRIBUTED_STORE` as a new batch and empty the store, after you confirm |
 | `python -m synergy runs` | List runs and which one is served |
 | `python -m synergy promote --id RUN` | Serve another run, for rollback |
+| `python -m synergy pack` | Pack the served run's style vectors; the pipeline does this on promote, older runs need it before publishing |
 | `uvicorn synergy.api.server:app` | API on :8000 |
 | `cd frontend && npm run dev` | Site on :3000 |
 | `cd frontend && npm run e2e` | Browser tests against a running stack |

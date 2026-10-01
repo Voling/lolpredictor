@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Settings, get_settings
+from .ml.serving import VECTORS_FILE, write_vectors
 
 ROOT = Path(__file__).resolve().parent.parent
 STEPS = ("window", "features", "stream", "profiles", "blocks", "evaluation", "mirrored", "scores", "duos")
@@ -217,6 +218,8 @@ def promote(settings: Settings | None = None, run_id: str | None = None, counts=
                 copied.append(f"{kind}/{name}")
             else:
                 missing.append(f"{kind}/{name}")
+    if write_vectors(run_dir / "serve" / "models", run_dir / "serve" / "processed") is not None:
+        copied.append(f"models/{VECTORS_FILE}")
     manifest["served"] = {"copied": copied, "missing": missing}
     manifest["metrics"] = metrics(run_dir / "serve" / "models")
     manifest.update({"status": "served", "promoted": _now()})

@@ -591,3 +591,17 @@ def test_write_conflicts_are_retried_then_reported_as_busy():
 
     # then
     assert charged == "charged" and len(brief.calls) == 3 and added == 4
+
+
+def test_icon_checks_use_at_most_half_the_riot_budget_so_new_links_still_start():
+    # given
+    accounts = _accounts(attempts=10, riot_budget=8)
+    for index in range(2):
+        accounts.start_link(f"user-{index}", "a#na1")
+
+    # when
+    waiting = [accounts.verify_link(f"user-{index}") for index in range(2)]
+    started = accounts.start_link("user-9", "b#na1")
+
+    # then
+    assert accounts.riot.calls == 8 and all(found["pending"] for found in waiting) and started["pending"] is not None

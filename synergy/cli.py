@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_cmd = sub.add_parser("worker", help="run the Celery workers that take the pipeline's parallel jobs")
     worker_cmd.add_argument("--concurrency", type=int, default=8)
     sub.add_parser("runs", help="list pipeline runs and which one is served")
+    sub.add_parser("pack", help="write the served run's style vectors so the API starts without the style table")
     promote_cmd = sub.add_parser("promote", help="serve a run's artifacts, or snapshot the working artifacts as a new run")
     promote_cmd.add_argument("--id", default=None, help="run to serve, default snapshots the working artifacts")
     premades_cmd = sub.add_parser(
@@ -309,6 +310,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
         )
         return 0
+
+    if args.command == "pack":
+        from .ml.serving import write_vectors
+
+        written = write_vectors(settings.served_model_dir, settings.served_processed_dir)
+        _report({"run": settings.served_run(), "written": None if written is None else str(written)})
+        return 0 if written is not None else 1
 
     if args.command == "promote":
         from .pipeline import promote

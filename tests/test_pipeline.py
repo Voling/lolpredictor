@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from synergy.config import Settings
@@ -124,3 +125,18 @@ def test_promoting_a_run_that_was_served_before_only_moves_the_pointer(tmp_path)
     assert rolled["status"] == "served" and not kept
     assert not (settings.runs_dir / first / "serve" / "models" / "seat_report.json").exists()
     assert (settings.runs_dir / second / "serve" / "models" / "seat_report.json").exists()
+
+
+def test_promoting_packs_the_style_vectors_next_to_the_models(tmp_path):
+    # given
+    settings = Settings(data_dir=tmp_path)
+    _working(settings)
+    np.savez(settings.model_dir / "interaction_matrix.npz", matrix=np.eye(1), columns=np.array(["tend_dive_tmb_own"]))
+    pd.DataFrame({"puuid": ["a"], "position": ["TOP"], "tend_dive_tmb_own": [1.0], "seats": [3]}).to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
+
+    # when
+    manifest = promote(settings, counts=lambda _: {"matches": 1})
+
+    # then
+    assert "models/style_vectors.npz" in manifest["served"]["copied"]
+    assert (settings.served_model_dir / "style_vectors.npz").exists()

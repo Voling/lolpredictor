@@ -1,4 +1,5 @@
 import json
+import threading
 from itertools import combinations
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from ..config import Settings, get_settings
 from ..features.describe import describe, describe_situation, named, situation_of
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
-from ..features.positions import KEY, POSITIONS, combination, spoken
+from ..features.positions import POSITIONS, combination, spoken
 
 TEAM_SIZE = 5
 TEAM_PAIRS = TEAM_SIZE * (TEAM_SIZE - 1) // 2
@@ -26,25 +27,31 @@ DUO_RECORDS = "duo_records.parquet"
 DUO_SCORES = "duo_scores.npz"
 DUO_REPORT = "duo_report.json"
 PLAYER_HISTORY = "player_history.parquet"
+VECTORS_FILE = "style_vectors.npz"
+STYLES_TABLE = "player_styles.parquet"
+PROFILES_TABLE = "player_profiles.parquet"
+GRID = 1001
 CHAMPION_EFFECTS = "champion_effects.parquet"
 UNRELIABLE = "the fit did not beat shuffled partners on this corpus, so it is shown for inspection only"
 
 _held: dict[tuple[str, str], tuple[tuple[int, int], object]] = {}
+_lock = threading.RLock()
 
 
 def cached(path: Path, kind: str, load):
     key = (str(path), kind)
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        _held.pop(key, None)
-        return None
-    version = (stat.st_mtime_ns, stat.st_size)
-    held = _held.get(key)
-    if held is None or held[0] != version:
-        held = (version, load(path))
-        _held[key] = held
-    return held[1]
+    with _lock:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            _held.pop(key, None)
+            return None
+        version = (stat.st_mtime_ns, stat.st_size)
+        held = _held.get(key)
+        if held is None or held[0] != version:
+            held = (version, load(path))
+            _held[key] = held
+        return held[1]
 
 
 def _npz(path: Path) -> dict:
@@ -54,13 +61,6 @@ def _npz(path: Path) -> dict:
 
 def _json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _indexed_styles(path: Path) -> pd.DataFrame | None:
-    table = pd.read_parquet(path)
-    if "position" not in table.columns:
-        return None
-    return table.set_index(KEY).sort_index()
 
 
 def _indexed_hinge(path: Path) -> pd.DataFrame:
@@ -76,21 +76,90 @@ def _name_index(path: Path) -> dict[tuple[str, str], str]:
     }
 
 
-def _styles(settings: Settings) -> pd.DataFrame | None:
-    return cached(settings.served_processed_dir / "player_styles.parquet", "styles", _indexed_styles)
+def _grid(values: np.ndarray) -> np.ndarray:
+    ordered = np.sort(values, axis=0)
+    picks = np.linspace(0, len(ordered) - 1, min(len(ordered), GRID)).round().astype(int)
+    return np.ascontiguousarray(ordered[picks].T)
 
 
-def _style_rows(path: Path, columns: list[str]) -> dict:
-    table = pd.read_parquet(path, columns=[*KEY, *columns])
+def percentile_among(grid: np.ndarray, value: float) -> float:
+    return round(float(np.searchsorted(grid, value, side="left") / len(grid) * 100.0), 1)
+
+
+def _pack(columns, puuid, position, seats, evidence, matrix, grid) -> dict:
     return {
-        "at": {key: index for index, key in enumerate(zip(table["puuid"], table["position"]))},
-        "matrix": table[columns].to_numpy(dtype=np.float32),
+        "columns": list(columns),
+        "puuid": puuid,
+        "position": position,
+        "at": {key: index for index, key in enumerate(zip(puuid, position))},
+        "seats": seats,
+        "evidence": evidence,
+        "matrix": matrix,
+        "grid": grid,
     }
 
 
+def build_vectors(path: Path, columns: list[str], keep=None) -> dict | None:
+    table = pd.read_parquet(path)
+    if "position" not in table.columns or any(column not in table.columns for column in columns):
+        return None
+    matrix = table[columns].to_numpy(dtype=np.float32)
+    position = table["position"].to_numpy(dtype=str)
+    grid = {name: _grid(matrix[position == name]) for name in np.unique(position)}
+    kept = np.ones(len(table), dtype=bool) if keep is None else table["puuid"].isin(keep).to_numpy()
+    evidence = table["evidence"].to_numpy(dtype=np.float32) if "evidence" in table.columns else np.full(len(table), np.nan, dtype=np.float32)
+    return _pack(
+        columns,
+        table["puuid"].to_numpy(dtype=str)[kept],
+        position[kept],
+        table["seats"].to_numpy(dtype=np.int32)[kept],
+        evidence[kept],
+        matrix[kept],
+        grid,
+    )
+
+
+def _read_vectors(path: Path) -> dict:
+    data = _npz(path)
+    grid = {name.removeprefix("grid_"): data[name] for name in data if name.startswith("grid_")}
+    return _pack([str(name) for name in data["columns"]], data["puuid"], data["position"], data["seats"], data["evidence"], data["matrix"], grid)
+
+
+def _profiled(processed_dir: Path) -> set[str] | None:
+    path = processed_dir / PROFILES_TABLE
+    return set(pd.read_parquet(path, columns=["puuid"])["puuid"]) if path.exists() else None
+
+
 def _vectors(settings: Settings, columns: list[str]) -> dict | None:
+    packed = cached(settings.served_model_dir / VECTORS_FILE, "vectors", _read_vectors)
+    if packed is not None and packed["columns"] == list(columns):
+        return packed
     kind = f"vectors:{len(columns)}:{hash(tuple(columns))}"
-    return cached(settings.served_processed_dir / "player_styles.parquet", kind, lambda path: _style_rows(path, columns))
+    processed = settings.served_processed_dir
+    return cached(processed / STYLES_TABLE, kind, lambda path: build_vectors(path, list(columns), _profiled(processed)))
+
+
+def write_vectors(model_dir: Path, processed_dir: Path) -> Path | None:
+    if not (model_dir / MATRIX_FILE).exists() or not (processed_dir / STYLES_TABLE).exists():
+        return None
+    saved = _npz(model_dir / MATRIX_FILE)
+    if "columns" not in saved:
+        return None
+    pack = build_vectors(processed_dir / STYLES_TABLE, [str(name) for name in saved["columns"]], _profiled(processed_dir))
+    if pack is None:
+        return None
+    target = model_dir / VECTORS_FILE
+    np.savez(
+        target,
+        columns=np.array(pack["columns"]),
+        puuid=pack["puuid"],
+        position=pack["position"],
+        seats=pack["seats"],
+        evidence=pack["evidence"],
+        matrix=pack["matrix"],
+        **{f"grid_{name}": grid for name, grid in pack["grid"].items()},
+    )
+    return target
 
 
 def _matrix(settings: Settings) -> dict | None:
@@ -108,6 +177,25 @@ def _seats(settings: Settings) -> dict | None:
 def _informative(settings: Settings) -> bool:
     report = cached(settings.served_model_dir / REPORT_FILE, "json", _json)
     return bool(report and report.get("informative", False))
+
+
+def _duo_scores(settings: Settings) -> dict | None:
+    return cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+
+
+def _model_columns(settings: Settings) -> list[str] | None:
+    saved = _matrix(settings)
+    return [str(name) for name in saved["columns"]] if saved is not None and "columns" in saved else None
+
+
+def warm(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    _loaded(settings)
+    _duo_scores(settings)
+    _informative(settings)
+    known_names(settings)
+    record_between("", "", settings)
+    player_history("", "", settings)
 
 
 def known_names(settings: Settings) -> dict[tuple[str, str], str] | None:
@@ -135,20 +223,20 @@ def hinge_between(left: str, right: str, settings: Settings | None = None) -> di
 
 
 def position_profile(puuid: str, position: str, settings: Settings | None = None) -> dict | None:
-    styles = _styles(settings or get_settings())
-    if styles is None:
+    settings = settings or get_settings()
+    columns = _model_columns(settings)
+    vectors = _vectors(settings, columns) if columns else None
+    if vectors is None:
         return None
-    if (puuid, position) not in styles.index:
+    row = vectors["at"].get((puuid, position))
+    if row is None:
         return {"games": 0, "evidence": 0.0}
-    row = styles.loc[(puuid, position)]
-    evidence = float(row["evidence"]) if "evidence" in styles.columns and pd.notna(row["evidence"]) else None
-    return {"games": int(row["seats"]), "evidence": None if evidence is None else round(evidence, 3)}
+    return {"games": int(vectors["seats"][row]), "evidence": _evidence(vectors, row)}
 
 
-def _evidence(styles: pd.DataFrame, puuid: str, position: str) -> float | None:
-    if "evidence" not in styles.columns or pd.isna(styles.loc[(puuid, position), "evidence"]):
-        return None
-    return round(float(styles.loc[(puuid, position), "evidence"]), 3)
+def _evidence(vectors: dict, row: int) -> float | None:
+    value = float(vectors["evidence"][row])
+    return None if np.isnan(value) else round(value, 3)
 
 
 def _quantiles(scores: dict, key: str, combo: str | None) -> np.ndarray:
@@ -196,7 +284,7 @@ def player_history(puuid: str, position: str, settings: Settings) -> tuple[float
 
 
 def _seat_quantiles(settings: Settings, position: str) -> np.ndarray | None:
-    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    scores = _duo_scores(settings)
     if scores is None or "seat_quantiles" not in scores:
         return None
     names = [str(name) for name in scores["seat_positions"]]
@@ -204,7 +292,7 @@ def _seat_quantiles(settings: Settings, position: str) -> np.ndarray | None:
 
 
 def _seat_calibration(settings: Settings, position: str) -> float:
-    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    scores = _duo_scores(settings)
     if scores is None or "reading_scale" not in scores:
         return 1.0
     names = [str(name) for name in scores["seat_positions"]]
@@ -235,14 +323,15 @@ def seat_reading(
     }
 
 
-def _loaded(settings: Settings) -> tuple[pd.DataFrame, dict, dict, dict, list[str], dict] | None:
-    styles, saved, scores, seats = _styles(settings), _matrix(settings), _scores(settings), _seats(settings)
-    if styles is None or saved is None or scores is None or seats is None or "columns" not in saved:
+def _loaded(settings: Settings) -> tuple[dict, dict, dict, list[str], dict] | None:
+    saved, scores, seats = _matrix(settings), _scores(settings), _seats(settings)
+    if saved is None or scores is None or seats is None or "columns" not in saved:
         return None
     columns = [str(name) for name in saved["columns"]]
-    if any(name not in styles.columns for name in columns) or [str(name) for name in seats["columns"]] != columns:
+    if [str(name) for name in seats["columns"]] != columns:
         return None
-    return styles, saved, scores, seats, columns, _vectors(settings, columns)
+    vectors = _vectors(settings, columns)
+    return None if vectors is None else (saved, scores, seats, columns, vectors)
 
 
 def pair_between(
@@ -254,12 +343,13 @@ def pair_between(
     loaded = _loaded(settings)
     if loaded is None:
         return None
-    styles, saved, scores, seats, columns, vectors = loaded
+    saved, scores, seats, columns, vectors = loaded
     for puuid, position in ((left, left_position), (right, right_position)):
         if (puuid, position) not in vectors["at"]:
             raise NoGamesInPosition(puuid, position)
-    a = vectors["matrix"][vectors["at"][(left, left_position)]].astype(float)
-    b = vectors["matrix"][vectors["at"][(right, right_position)]].astype(float)
+    row_a, row_b = vectors["at"][(left, left_position)], vectors["at"][(right, right_position)]
+    a = vectors["matrix"][row_a].astype(float)
+    b = vectors["matrix"][row_b].astype(float)
     matrix = saved["matrix"]
     dim = matrix.shape[0]
     terms = np.outer(a, b) * matrix / (TEAM_PAIRS * dim)
@@ -284,10 +374,10 @@ def pair_between(
         "reliable": reliable,
         "note": None if reliable else UNRELIABLE,
         "positions": {"left": left_position, "right": right_position},
-        "left_games": int(styles.loc[(left, left_position), "seats"]),
-        "right_games": int(styles.loc[(right, right_position), "seats"]),
-        "left_evidence": _evidence(styles, left, left_position),
-        "right_evidence": _evidence(styles, right, right_position),
+        "left_games": int(vectors["seats"][row_a]),
+        "right_games": int(vectors["seats"][row_b]),
+        "left_evidence": _evidence(vectors, row_a),
+        "right_evidence": _evidence(vectors, row_b),
         "edge": {
             "left": left_edge,
             "right": right_edge,
@@ -299,8 +389,8 @@ def pair_between(
             for k in strongest
         ],
         "reading": {
-            "left": _reading(styles, left_position, columns, a, terms.sum(axis=1)),
-            "right": _reading(styles, right_position, columns, b, terms.sum(axis=0)),
+            "left": _reading(vectors, left_position, columns, a, terms.sum(axis=1)),
+            "right": _reading(vectors, right_position, columns, b, terms.sum(axis=0)),
         },
     }
 
@@ -321,7 +411,7 @@ def duo_between(
 ) -> dict | None:
     settings = settings or get_settings()
     found = pair_between(left, left_position, right, right_position, settings)
-    scores = cached(settings.served_model_dir / DUO_SCORES, "npz", _npz)
+    scores = _duo_scores(settings)
     if found is None or scores is None:
         return found
     record = record_between(left, right, settings)
@@ -340,8 +430,8 @@ def duo_between(
     }
 
 
-def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
-    peers = styles.index.get_level_values("position") == position
+def _reading(vectors: dict, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
+    grid = vectors["grid"][position]
     keep = [index for index, cell in enumerate(columns) if named(cell)]
     order = sorted(keep, key=lambda index: -abs(z[index]))[:DISTINCTIVE]
     distinctive = [
@@ -349,7 +439,7 @@ def _reading(styles: pd.DataFrame, position: str, columns: list[str], z: np.ndar
             "cell": columns[index],
             "words": describe(columns[index]),
             "z": round(float(z[index]), 3),
-            "percentile": round(float((styles[columns[index]].to_numpy(dtype=float)[peers] < z[index]).mean() * 100.0), 1),
+            "percentile": percentile_among(grid[index], z[index]),
         }
         for index in order
     ]
@@ -374,7 +464,7 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
     loaded = _loaded(settings)
     if loaded is None:
         return None
-    _, saved, scores, seats, _, vectors = loaded
+    saved, scores, seats, _, vectors = loaded
     pairs = []
     for (left_position, left), (right_position, right) in combinations(
         [(position, assignments[position]) for position in POSITIONS], 2

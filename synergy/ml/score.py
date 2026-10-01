@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from itertools import combinations
 
 import numpy as np
@@ -449,16 +450,19 @@ class SynergyService:
 
 
 _service: SynergyService | None = None
+_service_lock = threading.Lock()
 
 
 def get_service() -> SynergyService:
     global _service
-    if _service is None:
-        _service = SynergyService().load()
-    return _service
+    with _service_lock:
+        if _service is None:
+            _service = SynergyService().load()
+        return _service
 
 
 def reload_service() -> SynergyService:
     global _service
-    _service = SynergyService().load()
-    return _service
+    with _service_lock:
+        _service = SynergyService().load()
+        return _service

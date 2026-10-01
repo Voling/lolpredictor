@@ -151,3 +151,32 @@ def test_a_lean_pair_keeps_the_score_and_skips_the_details_no_page_shows(service
     assert lean["score"] == full["score"] and lean["interaction"] == full["interaction"]
     assert full["shared_play"] == {"pair_close_share": 0.4} and full["games_together"] == 4
     assert lean["hinge"] is None and lean["games_together"] is None and lean["shared_play"] == {}
+
+
+def test_concurrent_first_requests_load_the_service_once(monkeypatch):
+    # given
+    import threading
+    import time
+
+    from synergy.ml import score
+
+    loads = []
+
+    def slow_load(self):
+        loads.append(1)
+        time.sleep(0.05)
+        return self
+
+    monkeypatch.setattr(score, "_service", None)
+    monkeypatch.setattr(score.SynergyService, "load", slow_load)
+
+    # when
+    found = []
+    threads = [threading.Thread(target=lambda: found.append(score.get_service())) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # then
+    assert len(loads) == 1 and len({id(service) for service in found}) == 1

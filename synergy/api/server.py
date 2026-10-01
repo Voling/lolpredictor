@@ -1,5 +1,8 @@
 import logging
 import os
+import threading
+import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +12,7 @@ from ..cache import get_cache
 from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml.score import UnknownPlayer, get_service, reload_service
+from ..ml.serving import warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
 
@@ -192,7 +196,25 @@ def _local_routes(app: FastAPI) -> None:
         return {"rows": payload["rows"], "columns": payload["columns"]}
 
 
+def _warm_up():
+    clock = time.time()
+    try:
+        get_service()
+        warm(get_settings())
+        logger.info("warm up done in %.1fs", time.time() - clock)
+    except Exception:
+        logger.exception("warm up failed")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    if app.state.public:
+        threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
+    yield
+
+
 def create_app(public: bool | None = None) -> FastAPI:
+    logging.basicConfig(level=logging.INFO)
     public = get_settings().public_api if public is None else public
     app = FastAPI(
         title="lolpredictor",
@@ -200,7 +222,9 @@ def create_app(public: bool | None = None) -> FastAPI:
         docs_url=None if public else "/docs",
         redoc_url=None,
         openapi_url=None if public else "/openapi.json",
+        lifespan=_lifespan,
     )
+    app.state.public = public
     origins = [origin for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if origin]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "x-auth"])

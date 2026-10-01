@@ -395,7 +395,9 @@ class Accounts:
             self.table.put(self._user(user), LINK, self._verified(link))
             raise LinkError("That link expired. Enter your Riot ID again.")
         now = int(self.clock())
-        if self.table.add(self._user(user), f"check#{now // CHECK_SECONDS}", 1, 1, now + DAY) is None or not self._riot_calls(1):
+        if self.table.add(self._user(user), f"check#{now // CHECK_SECONDS}", 1, 1, now + DAY) is None:
+            return self.status(user)
+        if self.table.add(RIOT_BUDGET, f"checks#{now // 60}", 1, self.riot_budget // 2, now + DAY) is None or not self._riot_calls(1):
             return self.status(user)
         if self.riot.icon(pending["puuid"]) != pending["icon"]:
             return self.status(user)
