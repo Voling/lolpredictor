@@ -78,7 +78,7 @@ resource "aws_iam_role_policy" "github_backend" {
           "ecr:PutImage",
           "ecr:UploadLayerPart",
         ]
-        Resource = aws_ecr_repository.api.arn
+        Resource = [aws_ecr_repository.api.arn, aws_ecr_repository.evaluator.arn]
       },
       {
         Sid      = "UpdateFunction"

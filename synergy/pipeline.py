@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Settings, get_settings
+from .evaluate import BUNDLE, write_bundle
 from .ml.serving import VECTORS_FILE, write_vectors
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -220,6 +221,11 @@ def promote(settings: Settings | None = None, run_id: str | None = None, counts=
                 missing.append(f"{kind}/{name}")
     if write_vectors(run_dir / "serve" / "models", run_dir / "serve" / "processed") is not None:
         copied.append(f"models/{VECTORS_FILE}")
+    try:
+        write_bundle(settings, run_dir / "serve" / BUNDLE)
+        copied.append(BUNDLE)
+    except FileNotFoundError as exc:
+        missing.append(f"{BUNDLE}: {exc}")
     manifest["served"] = {"copied": copied, "missing": missing}
     manifest["metrics"] = metrics(run_dir / "serve" / "models")
     manifest.update({"status": "served", "promoted": _now()})

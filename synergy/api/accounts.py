@@ -40,6 +40,12 @@ class LinkError(Exception):
     pass
 
 
+class RateLimited(LinkError):
+    def __init__(self, retry_after: float):
+        self.retry_after = retry_after
+        super().__init__("Riot is busy right now. Try again in a few minutes.")
+
+
 class Busy(Exception):
     pass
 
@@ -279,7 +285,7 @@ class RiotAccounts:
         if response.status_code == 404:
             raise LinkError("Riot doesn't know that Riot ID. Check the name and tag.")
         if response.status_code == 429:
-            raise LinkError("Riot is busy right now. Try again in a few minutes.")
+            raise RateLimited(float(response.headers.get("Retry-After") or 10.0))
         if response.status_code != 200:
             raise LinkError("We couldn't reach Riot. Try again later.")
         return response.json()
@@ -287,6 +293,12 @@ class RiotAccounts:
     def account(self, riot_id: str) -> dict:
         name, _, tag = riot_id.partition("#")
         return self._get(f"{self.account_host}/riot/account/v1/accounts/by-riot-id/{quote(name, safe='')}/{quote(tag, safe='')}")
+
+    def account_by_puuid(self, puuid: str) -> dict:
+        return self._get(f"{self.account_host}/riot/account/v1/accounts/by-puuid/{quote(puuid, safe='')}")
+
+    def league(self, puuid: str) -> list[dict]:
+        return list(self._get(f"{self.platform_host}/lol/league/v4/entries/by-puuid/{quote(puuid, safe='')}"))
 
     def icon(self, puuid: str) -> int:
         return int(self._get(f"{self.platform_host}/lol/summoner/v4/summoners/by-puuid/{quote(puuid, safe='')}")["profileIconId"])

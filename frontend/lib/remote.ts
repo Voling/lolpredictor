@@ -14,7 +14,7 @@ export function useRemote<T>(load: (() => Promise<T>) | null, key: string) {
       return;
     }
     let live = true;
-    setState({ data: null, error: null, loading: true });
+    setState((current) => ({ data: current.data, error: null, loading: true }));
     load()
       .then((data) => live && setState({ data, error: null, loading: false }))
       .catch((error) => live && setState({ data: null, error: error instanceof Error ? error.message : String(error), loading: false }));

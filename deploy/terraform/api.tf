@@ -52,6 +52,42 @@ resource "aws_iam_role_policy" "api" {
         Resource = "${aws_s3_bucket.contributed.arn}/*"
       },
       {
+        Sid      = "ServedModelRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.models.arn}/*"
+      },
+      {
+        Sid      = "ServedModelList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.models.arn
+      },
+      {
+        Sid      = "EvaluatedGames"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${aws_s3_bucket.evaluated.arn}/*"
+      },
+      {
+        Sid      = "EvaluatedGamesList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.evaluated.arn
+      },
+      {
+        Sid      = "QueueEvaluations"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.evaluate.arn
+      },
+      {
+        Sid      = "EvaluatedStoreSize"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricStatistics"]
+        Resource = "*"
+      },
+      {
         Sid      = "AccountsAndDailyLimits"
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
@@ -80,14 +116,18 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 resource "aws_lambda_function" "api" {
-  count                          = local.live ? 1 : 0
-  function_name                  = "${var.name}-api"
-  role                           = aws_iam_role.api.arn
-  package_type                   = "Image"
-  image_uri                      = var.image_uri
-  architectures                  = ["x86_64"]
-  memory_size                    = var.memory_mb
-  timeout                        = 60
+  count         = local.live ? 1 : 0
+  function_name = "${var.name}-api"
+  role          = aws_iam_role.api.arn
+  package_type  = "Image"
+  image_uri     = var.image_uri
+  architectures = ["x86_64"]
+  memory_size   = var.memory_mb
+  timeout       = 60
+
+  ephemeral_storage {
+    size = 1024
+  }
   reserved_concurrent_executions = var.api_concurrency
   depends_on                     = [aws_iam_role_policy.api, aws_cloudwatch_log_group.api]
 
@@ -104,6 +144,12 @@ resource "aws_lambda_function" "api" {
       RIOT_KEY_PARAMETER = local.riot_key_parameter
       DAILY_DUOS         = tostring(var.daily_duos)
       MAX_FRIENDS        = tostring(var.max_friends)
+      MODEL_STORE        = "s3://${aws_s3_bucket.models.bucket}"
+      EVALUATED_STORE    = "s3://${aws_s3_bucket.evaluated.bucket}"
+      EVALUATED_CAP_GB   = tostring(var.evaluated_cap_gb)
+      DAILY_EVALUATIONS  = tostring(var.daily_evaluations)
+      USER_EVALUATIONS   = tostring(var.user_evaluations)
+      EVALUATE_QUEUE     = aws_sqs_queue.evaluate.url
     }
   }
 }

@@ -76,11 +76,11 @@ def _delta(series: list[float], index: int) -> float:
     return series[index] - (series[index - 1] if index > 0 else 0.0)
 
 
-def encode_match(match: dict, timeline: dict) -> list[dict]:
+def encode_match(match: dict, timeline: dict, minutes: int = MAX_MINUTES) -> list[dict]:
     parsed = ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
-    span = min(len(parsed.minutes), MAX_MINUTES)
+    span = min(len(parsed.minutes), minutes)
     champions, wins = {}, {}
     for participant in match["info"]["participants"]:
         pid = int(participant.get("participantId", 0)) or parsed.puuid_to_pid.get(participant["puuid"], 0)
@@ -89,14 +89,14 @@ def encode_match(match: dict, timeline: dict) -> list[dict]:
     junglers = {team: parsed.role_pid(team, "JUNGLE") for team in (100, 200)}
     supports = {team: parsed.role_pid(team, "UTILITY") for team in (100, 200)}
 
-    counters = {pid: np.zeros((MAX_MINUTES, COUNTER_SLOTS), dtype=np.float32) for pid in parsed.pid_to_puuid}
+    counters = {pid: np.zeros((minutes, COUNTER_SLOTS), dtype=np.float32) for pid in parsed.pid_to_puuid}
     event_regions = {
-        pid: np.full(MAX_MINUTES, NO_EVENT_REGION, dtype=np.int16) for pid in parsed.pid_to_puuid
+        pid: np.full(minutes, NO_EVENT_REGION, dtype=np.int16) for pid in parsed.pid_to_puuid
     }
     for event in parsed.events:
         kind = event.get("type")
         minute = _minute(event)
-        if minute >= MAX_MINUTES:
+        if minute >= minutes:
             continue
         if kind in ("WARD_PLACED", "WARD_KILL") and event.get("wardType") not in VISION_WARDS:
             continue
@@ -122,10 +122,10 @@ def encode_match(match: dict, timeline: dict) -> list[dict]:
                         parsed.teams.get(actor, 100),
                     )
 
-    team_gold = np.zeros((2, MAX_MINUTES), dtype=np.float32)
+    team_gold = np.zeros((2, minutes), dtype=np.float32)
     for pid, series in parsed.gold.items():
         side = 0 if parsed.teams.get(pid, 100) == 100 else 1
-        for index in range(min(len(series), MAX_MINUTES)):
+        for index in range(min(len(series), minutes)):
             team_gold[side, index] += series[index]
 
     rows = []
@@ -149,9 +149,9 @@ def encode_match(match: dict, timeline: dict) -> list[dict]:
         cs = parsed.cs.get(pid) or []
         jungle = parsed.jungle_cs.get(pid) or []
         levels = parsed.levels.get(pid) or []
-        regions = np.full(MAX_MINUTES, REGIONS.index("UNKNOWN"), dtype=np.int16)
-        numeric = np.zeros((MAX_MINUTES, len(NUMERIC_FEATURES)), dtype=np.float32)
-        mask = np.zeros(MAX_MINUTES, dtype=bool)
+        regions = np.full(minutes, REGIONS.index("UNKNOWN"), dtype=np.int16)
+        numeric = np.zeros((minutes, len(NUMERIC_FEATURES)), dtype=np.float32)
+        mask = np.zeros(minutes, dtype=bool)
         for index in range(min(span, len(positions))):
             x, y = positions[index]
             regions[index] = region_of(x, y, team)
@@ -179,7 +179,7 @@ def encode_match(match: dict, timeline: dict) -> list[dict]:
             if index < len(enemy_track):
                 ex, ey = enemy_track[index]
                 numeric[index, 19] = float(REGIONS[region_of(ex, ey, team)] in OWN_JUNGLE)
-            numeric[index, 23] = index / MAX_MINUTES
+            numeric[index, 23] = index / minutes
         rows.append(
             {
                 "match_id": match["metadata"]["matchId"],

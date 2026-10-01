@@ -140,3 +140,29 @@ def test_promoting_packs_the_style_vectors_next_to_the_models(tmp_path):
     # then
     assert "models/style_vectors.npz" in manifest["served"]["copied"]
     assert (settings.served_model_dir / "style_vectors.npz").exists()
+
+
+def test_promoting_bundles_the_saved_fits_for_the_evaluator_or_says_what_is_missing(tmp_path):
+    # given
+    import json
+
+    from synergy.evaluate import BUNDLE, BUNDLE_FILES
+
+    settings = Settings(data_dir=tmp_path)
+    _working(settings)
+    np.savez(settings.model_dir / "interaction_matrix.npz", matrix=np.eye(1), columns=np.array(["tend_dive_tmb_own"]))
+    pd.DataFrame({"puuid": ["a"], "position": ["TOP"], "tend_dive_tmb_own": [1.0], "seats": [3]}).to_parquet(settings.processed_dir / "player_styles.parquet", index=False)
+    bare = promote(settings, counts=lambda _: {"matches": 1})
+    for name in BUNDLE_FILES:
+        (settings.model_dir / name).write_bytes(b"fit")
+    np.savez(settings.model_dir / "movement_transitions.npz", world=np.ones((1, 2, 2)), positions=np.array(["TOP"]), kappa=np.array([1.0]), signature=np.zeros((1, 4)))
+    (settings.processed_dir / "basis").mkdir()
+    (settings.processed_dir / "basis" / "style.json").write_text(json.dumps({"sources": [], "columns": ["tend_dive_tmb_own"]}), encoding="utf-8")
+    np.savez(settings.processed_dir / "basis" / "reduced.npz", key=np.array("k"), centre=np.zeros(1), spread=np.ones(1))
+
+    # when
+    full = promote(settings, counts=lambda _: {"matches": 1})
+
+    # then
+    assert any(entry.startswith(BUNDLE) for entry in bare["served"]["missing"]) and BUNDLE not in bare["served"]["copied"]
+    assert BUNDLE in full["served"]["copied"] and (settings.runs_dir / full["id"] / "serve" / BUNDLE / "standardise.npz").exists()

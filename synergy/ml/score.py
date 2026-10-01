@@ -13,7 +13,8 @@ from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
-from .serving import custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
+from .evaluated import profile_row
+from .serving import adopt_player, custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ def thin_warning(name: str, position: str, games: int, evidence: float | None) -
     )
 
 
+UNKNOWN_NOTE = "Not in our data yet."
+
+
 class UnknownPlayer(LookupError):
     pass
 
@@ -60,6 +64,7 @@ class SynergyService:
         self.report: dict = {}
         self.propensity_report: dict = {}
         self.style_columns: list[str] = list(STYLE_COLUMNS)
+        self.evaluated = None
 
     @property
     def ready(self) -> bool:
@@ -121,8 +126,38 @@ class SynergyService:
         else:
             found = profiles[profiles["game_name"].str.lower() == query.lower()]
         if found.empty:
-            return self._resolve_alias(query)
+            try:
+                return self._resolve_alias(query)
+            except UnknownPlayer:
+                adopted = self.adopt(query)
+                if adopted is None:
+                    raise
+                return adopted
         return found.iloc[0]
+
+    def adopt(self, query: str) -> pd.Series | None:
+        if self.evaluated is None or self.profiles is None:
+            return None
+        found = self.evaluated.find(query)
+        return None if found is None else self._adopt(*found)
+
+    def adopt_puuid(self, puuid: str) -> pd.Series | None:
+        if self.evaluated is None or self.profiles is None:
+            return None
+        found = self.evaluated.load(puuid)
+        return None if found is None else self._adopt(*found)
+
+    def _adopt(self, profile: dict, vectors: dict) -> pd.Series:
+        row = profile_row(profile)
+        if row.name not in self.profiles.index:
+            full = row.reindex(self.profiles.columns.union(row.index, sort=False))
+            numeric = [column for column in self.profiles.select_dtypes("number").columns if column not in row.index]
+            full[[column for column in numeric if column.endswith("_pct")]] = 50.0
+            full[[column for column in numeric if not column.endswith("_pct")]] = 0.0
+            self.profiles = pd.concat([self.profiles, full.to_frame().T])
+            self.profiles["puuid"] = self.profiles.index
+        adopt_player(self.settings, profile, vectors)
+        return self.profiles.loc[row.name]
 
     def _resolve_alias(self, query: str) -> pd.Series:
         _, profiles = self._require()
@@ -388,7 +423,7 @@ class SynergyService:
             try:
                 found = self.pair_score(me, name, me_position, wanted.strip() or None, details=details, customs=customs)
             except UnknownPlayer:
-                rows.append({"riot_id": name, "note": "Not in our data yet."})
+                rows.append({"riot_id": name, "note": UNKNOWN_NOTE})
                 continue
             except ValueError as error:
                 rows.append({"riot_id": name, "note": str(error)})

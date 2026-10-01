@@ -10,6 +10,7 @@ from ..config import Settings, get_settings
 from ..deep.stream import SEATS, _by_match, _seat_points, event_rows, frame_tracks, seat_table
 from ..ingest.store import Store
 from .cells import SeatIndex, evidence_shares, fit_cells, moment_kappa, write_cells
+from .fits import PRIORITY_FIT, save_cells
 from .posterior import bridge_at, dead_mask, load_sigma, progress_moments, region_mass, top_regions, wave_mass
 from .regions import REGION_INDEX
 from .wave import LANE_PREFIX, WAVE_CS
@@ -285,6 +286,7 @@ def build_priority(settings: Settings | None = None, limit: int | None = None, r
         Path(path).unlink(missing_ok=True)
     kappas = [moment_kappa(counts, index, step) for step in range(len(SITUATIONS))]
     fit = fit_cells(counts, index, SITUATIONS, OUTCOMES, "prio", scale=settings.cell_prior_scale, unit=TICK_UNIT, kappa=kappas)
+    save_cells(settings.model_dir / PRIORITY_FIT, fit, index.positions)
     write_cells(settings.processed_dir / TABLE, [(fit, counts)], index, PRIORITY_COLUMNS)
     evidence = evidence_shares(fit, index)
     evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)

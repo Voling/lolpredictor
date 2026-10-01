@@ -11,17 +11,20 @@ from pydantic import BaseModel, Field
 from ..cache import get_cache
 from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
-from ..ml.score import UnknownPlayer, get_service, reload_service
+from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, get_service, reload_service
 from ..ml.serving import warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
+from .artifacts import fetch_run
 from .customs import SharedCustoms
+from .evaluate import GIB, Evaluations, shape, store_size
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
 POSITION = 12
 _accounts: Accounts | None = None
 _customs: SharedCustoms | None = None
+_evaluations: Evaluations | None = None
 _verifier = None
 
 
@@ -67,6 +70,47 @@ def _customs_between(left: str, right: str) -> list[dict]:
         return []
 
 
+def _queue_evaluation(puuid: str) -> None:
+    import json
+
+    import boto3
+
+    boto3.client("sqs").send_message(QueueUrl=get_settings().evaluate_queue, MessageBody=json.dumps({"puuid": puuid}))
+
+
+def get_evaluations() -> Evaluations:
+    global _evaluations
+    if _evaluations is None:
+        settings = get_settings()
+        accounts = get_accounts()
+        table = DynamoTable(settings.accounts_table)
+        _evaluations = Evaluations(
+            table,
+            accounts.riot,
+            accounts.riot_calls,
+            launch=_queue_evaluation if settings.evaluate_queue else None,
+            store_size=(lambda: store_size(settings, table)) if settings.evaluated_store else (lambda: 0),
+            cap_bytes=settings.evaluated_cap_gb * GIB,
+            daily=settings.daily_evaluations,
+            per_user=settings.user_evaluations,
+        )
+    return _evaluations
+
+
+def _pending(user: str, riot_id: str) -> dict | None:
+    if not get_settings().evaluate_queue:
+        return None
+    message = None
+    try:
+        get_evaluations().refuse(user, riot_id)
+    except (LinkError, QuotaExceeded) as exc:
+        message = str(exc)
+    except Exception:
+        logger.exception("could not request an evaluation")
+        return None
+    return shape(get_evaluations().lookup(riot_id), riot_id, message)
+
+
 def get_verifier():
     global _verifier
     if _verifier is None:
@@ -78,6 +122,13 @@ def _ready():
     service = get_service()
     if not service.ready:
         raise HTTPException(503, "The model is not ready yet. Try again later.")
+    settings = get_settings()
+    if getattr(service, "evaluated", None) is None and settings.evaluated_store and settings.accounts_table:
+        import boto3
+
+        from ..ml.evaluated import EvaluatedPlayers
+
+        service.evaluated = EvaluatedPlayers(DynamoTable(settings.accounts_table), boto3.client("s3"), settings.evaluated_store.removeprefix("s3://").split("/", 1)[0])
     return service
 
 
@@ -103,16 +154,33 @@ def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda 
     accounts = get_accounts()
     me = accounts.linked_puuid(user)
     service = _ready()
-    if me not in service.profiles.index:
+    if me not in service.profiles.index and service.adopt_puuid(me) is None:
+        pending = _pending(user, accounts.link(user).get("riot_id") or me)
+        if pending:
+            return {"score": None, "pending": pending, "remaining": accounts.status(user)["remaining"]}
         raise LinkError("Your Riot account isn't in our data yet.")
     request = request_key(*query[:1], accounts.day(), *query[1:])
     left, charged = accounts.spend(user, count, request)
     try:
         found = call(me, service)
+    except UnknownPlayer as exc:
+        if charged:
+            accounts.refund(user, count, request)
+        pending = _pending(user, str(exc))
+        if pending:
+            return {"score": None, "pending": pending, "remaining": accounts.status(user)["remaining"]}
+        raise
     except Exception:
         if charged:
             accounts.refund(user, count, request)
         raise
+    if get_settings().evaluate_queue:
+        for row in found.get("friends", []):
+            if row.get("note") == UNKNOWN_NOTE and row.get("riot_id"):
+                pending = _pending(user, row["riot_id"])
+                if pending:
+                    row["pending"] = pending
+                    row["note"] = pending.get("message") or row["note"]
     back = unscored(found) if charged else 0
     if back:
         accounts.refund(user, back)
@@ -177,6 +245,15 @@ def _public_routes(app: FastAPI) -> None:
     @app.get("/api/me")
     def me(x_auth: str | None = Header(None)):
         return _handle(lambda: get_accounts().status(get_verifier().subject(x_auth)))
+
+    @app.get("/api/evaluations")
+    def evaluations(names: str = Query("", max_length=LIMIT * 12), x_auth: str | None = Header(None)):
+        def read():
+            get_verifier().subject(x_auth)
+            wanted = [name.strip() for name in names.split(",") if name.strip()][: get_settings().max_friends + 1]
+            return {"players": [shape(get_evaluations().lookup(name), name) for name in wanted]}
+
+        return _handle(read)
 
     @app.get("/api/recent")
     def recent(x_auth: str | None = Header(None)):
@@ -284,6 +361,8 @@ def _local_routes(app: FastAPI) -> None:
 def _warm_up():
     clock = time.time()
     try:
+        if get_settings().model_store:
+            fetch_run(get_settings())
         get_service()
         warm(get_settings())
         logger.info("warm up done in %.1fs", time.time() - clock)

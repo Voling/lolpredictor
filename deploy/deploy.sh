@@ -6,8 +6,7 @@ tf="$root/deploy/terraform"
 approve=()
 [ "${AUTO_APPROVE:-0}" = "1" ] && approve=(-auto-approve)
 
-run="$(bash "$root/deploy/stage.sh" "${1:-}")"
-echo "deploying run $run"
+run="$(date -u +%Y%m%d-%H%M%S)"
 
 terraform -chdir="$tf" init -input=false
 terraform -chdir="$tf" apply -input=false -auto-approve -target=aws_ecr_repository.api -target=aws_ecr_lifecycle_policy.api

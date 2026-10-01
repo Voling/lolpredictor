@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
 import { getFriends, type Friends } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
+import { POLL_MS, Progress } from "@/lib/progress";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -27,7 +28,9 @@ function Result({ found }: { found: Friends }) {
         </thead>
         <tbody>
           {found.friends.map((row) =>
-            row.note ? (
+            row.pending ? (
+              <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={3}><Progress pending={row.pending} /></td></tr>
+            ) : row.note ? (
               <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={3}>{row.note}</td></tr>
             ) : (
               <tr key={row.riot_id}>
@@ -56,10 +59,20 @@ function FriendsQuery() {
   const account = useAccount();
   const me = account.enabled ? account.me?.riot_id ?? undefined : query.me;
   const ready = accountReady(account) && Boolean(me && friends.length > 0);
+  const [tick, setTick] = useState(0);
   const { data: found, error, loading } = useRemote(
     ready ? () => getFriends(me!, friends, query.me_position || undefined) : null,
-    `${params.toString()}|${ready}`,
+    `${params.toString()}|${ready}|${tick}`,
   );
+  const waiting = Boolean(
+    (found?.pending && ["requested", "queued", "running"].includes(found.pending.status)) ||
+      found?.friends?.some((row) => row.pending && ["requested", "queued", "running"].includes(row.pending.status)),
+  );
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setTimeout(() => setTick((count) => count + 1), POLL_MS);
+    return () => clearTimeout(timer);
+  }, [waiting, tick]);
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
@@ -80,9 +93,15 @@ function FriendsQuery() {
         <button type="submit">Rank</button>
       </form>}
       {accountReady(account) && <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>}
-      {loading && <p className="sub">Ranking your friends…</p>}
+      {loading && !found && <p className="sub">Ranking your friends…</p>}
       {error && <div className="gate"><strong>Can&apos;t rank these friends.</strong>{error}</div>}
-      {found && <Result found={found} />}
+      {found?.pending && (
+        <>
+          <p>{found.pending.message ?? `We're pulling ${found.pending.riot_id}'s games.`}</p>
+          <Progress pending={found.pending} />
+        </>
+      )}
+      {found && !found.pending && <Result found={found} />}
     </main>
   );
 }

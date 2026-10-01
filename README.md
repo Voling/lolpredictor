@@ -12,11 +12,13 @@ Ranks which friends a League of Legends player should queue with. Each friend ge
 | `python -m synergy contributed` | Import the Master+ games waiting in `CONTRIBUTED_STORE` as a new batch and empty the store, after you confirm |
 | `python -m synergy runs` | List runs and which one is served |
 | `python -m synergy promote --id RUN` | Serve another run, for rollback |
+| `python -m synergy fits` | Save the corpus fitted worlds, kappas and tendency models after a build; the pipeline saves them itself from now on |
+| `python -m synergy bundle` | Copy those fits and the encoders next to the served run for the evaluator, then publish |
 | `python -m synergy pack` | Pack the served run's style vectors; the pipeline does this on promote, older runs need it before publishing |
 | `uvicorn synergy.api.server:app` | API on :8000 |
 | `cd frontend && npm run dev` | Site on :3000 |
 | `cd frontend && npm run e2e` | Browser tests against a running stack |
 | `pytest` | Unit tests |
 | `bash deploy/deploy.sh` | Deploy the served run, the site, Cognito sign in and the WAF to AWS with Terraform, copying `RIOT_API_KEY` into SSM |
-| `bash deploy/publish_model.sh` | Upload the served run to the models bucket so the next backend deploy serves it |
+| `bash deploy/publish_model.sh` | Upload the served run to the models bucket; the API fetches it on its next cold start, no deploy needed |
 | GitHub Actions `backend` and `frontend` | Deploy each side on its own when its files change on main, or by hand from the Actions tab |

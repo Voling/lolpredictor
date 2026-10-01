@@ -9,6 +9,7 @@ from .cells import combine_shares
 from .positions import KEY
 from .priority import CONTEXT_COLUMNS as CONTEXT, priority_context
 from .propensity import COVARIATES, KINDS, _gamma_prior
+from .fits import TENDENCY_FIT, save_tendencies
 
 HELD = 0.65
 HALVES = ("own", "away")
@@ -66,6 +67,8 @@ def build_tendencies(settings: Settings | None = None) -> dict:
     out = seats[["match_id", "puuid"]].copy()
     everyone = seats[KEY].drop_duplicates().set_index(KEY)
     report = {"context": CONTEXT if len(context) else [], "cells": CELLS}
+    fill = {column: float(context[column].mean()) for column in CONTEXT} if len(context) else {column: 0.0 for column in CONTEXT}
+    fits = {}
     shares = []
     for kind in KINDS:
         column = f"tend_{kind}"
@@ -73,6 +76,7 @@ def build_tendencies(settings: Settings | None = None) -> dict:
         subset = with_priority(rows, context).merge(seats, on=["match_id", "puuid"], how="inner")
         del rows
         if len(subset) < MIN_ROWS or subset["outcome"].nunique() < 2:
+            fits[kind] = None
             for cell in CELLS:
                 out[f"{column}_{cell}"] = 0.0
             continue
@@ -95,6 +99,7 @@ def build_tendencies(settings: Settings | None = None) -> dict:
         pooled = frame.groupby(KEY)[["observed", "expected", "variance"]].sum()
         prior = settings.cell_prior_scale * _gamma_prior(pooled["observed"].to_numpy(), pooled["expected"].to_numpy(), pooled["variance"].to_numpy())
         expected = pooled["expected"].reindex(everyone.index, fill_value=0.0)
+        fits[kind] = {"model": model, "columns": list(design.columns), "prior": float(prior), "weight": float(expected.mean()), "fill": fill}
         shares.append((float(expected.mean()), (expected / (expected + prior)).rename("share").reset_index()))
         ratios = leave_one_out_ratio(frame, seats, prior, column)
         out = out.merge(ratios, on=["match_id", "puuid"], how="left")
@@ -105,6 +110,7 @@ def build_tendencies(settings: Settings | None = None) -> dict:
         }
     out = out[["match_id", "puuid", *TENDENCY_COLUMNS]].fillna(0.0)
     out.to_parquet(settings.processed_dir / TABLE, index=False)
+    save_tendencies(settings.model_dir / TENDENCY_FIT, fits)
     evidence = combine_shares(shares) if shares else everyone.assign(share=0.0).reset_index()
     evidence.to_parquet(settings.processed_dir / EVIDENCE, index=False)
     return {

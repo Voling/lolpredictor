@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
 import { getPair, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
+import { POLL_MS, Progress } from "@/lib/progress";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
@@ -21,6 +22,14 @@ function lead(gold: number): string {
 
 function Result({ pair }: { pair: PairScore }) {
   const found = pair.interaction;
+  if (pair.pending) {
+    return (
+      <>
+        <p>{pair.pending.message ?? `We're pulling ${pair.pending.riot_id}'s games.`}</p>
+        <Progress pending={pair.pending} />
+      </>
+    );
+  }
   if (!found) {
     return <div className="gate"><strong>Can&apos;t score this duo.</strong>{pair.note}</div>;
   }
@@ -53,10 +62,17 @@ function PairQuery() {
   const account = useAccount();
   const me = account.enabled ? account.me?.riot_id ?? undefined : query.a;
   const ready = accountReady(account) && Boolean(me && query.b);
+  const [tick, setTick] = useState(0);
   const { data: pair, error, loading } = useRemote(
     ready ? () => getPair(me!, query.b!, query.a_position || undefined, query.b_position || undefined) : null,
-    `${params.toString()}|${ready}`,
+    `${params.toString()}|${ready}|${tick}`,
   );
+  const waiting = Boolean(pair?.pending && ["requested", "queued", "running"].includes(pair.pending.status));
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setTimeout(() => setTick((count) => count + 1), POLL_MS);
+    return () => clearTimeout(timer);
+  }, [waiting, tick]);
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
@@ -79,7 +95,7 @@ function PairQuery() {
         </label>
         <button type="submit">Check</button>
       </form>}
-      {loading && <p className="sub">Checking your duo…</p>}
+      {loading && !pair && <p className="sub">Checking your duo…</p>}
       {error && <div className="gate"><strong>Can&apos;t score this duo.</strong>{error}</div>}
       {pair && <Result pair={pair} />}
     </main>

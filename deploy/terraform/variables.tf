@@ -118,6 +118,54 @@ variable "total_signups" {
   description = "New accounts allowed in total until this is raised"
 }
 
+variable "evaluated_days" {
+  type        = number
+  default     = 14
+  description = "Days a player's pulled games and readings stay in the evaluated store"
+}
+
+variable "evaluated_cap_gb" {
+  type        = number
+  default     = 100
+  description = "Size of the evaluated store at which new pulls are refused"
+}
+
+variable "daily_evaluations" {
+  type        = number
+  default     = 20
+  description = "New players pulled from Riot each UTC day across everyone"
+}
+
+variable "user_evaluations" {
+  type        = number
+  default     = 3
+  description = "New players one account may ask for each UTC day"
+}
+
+variable "evaluator_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units for one evaluation task"
+}
+
+variable "evaluator_memory" {
+  type        = number
+  default     = 3072
+  description = "Fargate memory in MB for one evaluation task"
+}
+
+variable "evaluator_spot" {
+  type        = bool
+  default     = true
+  description = "Run evaluations on Fargate Spot; an interrupted task queues itself again"
+}
+
+variable "riot_budget" {
+  type        = number
+  default     = 60
+  description = "Riot API calls a minute shared by the API and the evaluator"
+}
+
 variable "github_repository" {
   type    = string
   default = "Voling/lolpredictor"

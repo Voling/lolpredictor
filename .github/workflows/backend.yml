@@ -8,9 +8,11 @@ on:
       - "tests/**"
       - "requirements.txt"
       - "requirements-serve.txt"
+      - "requirements-evaluate.txt"
       - "deploy/lambda.Dockerfile"
       - "deploy/lambda.Dockerfile.dockerignore"
-      - "deploy/stage_s3.sh"
+      - "deploy/evaluator.Dockerfile"
+      - "deploy/evaluator.Dockerfile.dockerignore"
       - ".github/workflows/backend.yml"
   workflow_dispatch:
 
@@ -55,6 +57,27 @@ jobs:
       - name: Test
         run: python -m pytest -q -p no:cacheprovider
 
+  evaluator:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.BACKEND_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      - name: Build and push the evaluator image
+        run: |
+          image="${{ vars.EVALUATOR_REPOSITORY }}"
+          docker build --platform linux/amd64 --provenance=false -f deploy/evaluator.Dockerfile -t "$image:${GITHUB_SHA}" -t "$image:latest" .
+          docker push "$image:${GITHUB_SHA}"
+          docker push "$image:latest"
+
   deploy:
     needs: test
     runs-on: ubuntu-latest
@@ -68,8 +91,6 @@ jobs:
         with:
           role-to-assume: ${{ vars.BACKEND_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Stage the served model
-        run: bash deploy/stage_s3.sh "${{ vars.MODEL_BUCKET }}"
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       - name: Build and push the image
         id: image

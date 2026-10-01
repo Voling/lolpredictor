@@ -1,5 +1,4 @@
 **
 !requirements-serve.txt
 !synergy/**
-!deploy/artifacts/**
 **/__pycache__

@@ -26,6 +26,18 @@ output "riot_key_parameter" {
   value = local.riot_key_parameter
 }
 
+output "evaluator_repository_url" {
+  value = aws_ecr_repository.evaluator.repository_url
+}
+
+output "evaluate_queue_url" {
+  value = aws_sqs_queue.evaluate.url
+}
+
+output "evaluated_store" {
+  value = "s3://${aws_s3_bucket.evaluated.bucket}"
+}
+
 output "models_bucket" {
   value = aws_s3_bucket.models.bucket
 }

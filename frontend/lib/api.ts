@@ -32,7 +32,10 @@ export type Reading = { gold: number; score: number; percentile: number };
 
 export type Together = { gold: number; games: number; customs?: number };
 
+export type Pending = { riot_id: string; status: string; step: string; done: number; total: number; percent: number; message: string | null };
+
 export type PairScore = {
+  pending?: Pending | null;
   score: number | null;
   projected_gold: number | null;
   minute: number | null;
@@ -74,6 +77,7 @@ export type PairScore = {
 };
 
 export type FriendRow = {
+  pending?: Pending | null;
   riot_id: string;
   note: string | null;
   position?: string;
@@ -90,6 +94,7 @@ export type FriendRow = {
 };
 
 export type Friends = {
+  pending?: Pending | null;
   me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number; minute?: number };
   friends: FriendRow[];
   remaining?: number;

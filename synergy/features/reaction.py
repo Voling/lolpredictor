@@ -4,6 +4,7 @@ import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
 from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, write_cells
+from .fits import REACTION_FITS, save_cells
 
 TABLE = "reaction.parquet"
 PIECE_ROWS = 2_000_000
@@ -144,6 +145,7 @@ def build_reaction(settings: Settings | None = None) -> dict:
             dense_counts(frame, index, situations, outcomes, out=counts)
         counts.flush()
         fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale)
+        save_cells(settings.model_dir / REACTION_FITS[number], fit, index.positions)
         parts.append((fit, counts))
         paths.append(path)
         shares.append((len(situations) * len(outcomes), evidence_shares(fit, index)))

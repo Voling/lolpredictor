@@ -78,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     worker_cmd.add_argument("--concurrency", type=int, default=8)
     sub.add_parser("runs", help="list pipeline runs and which one is served")
     sub.add_parser("pack", help="write the served run's style vectors so the API starts without the style table")
+    sub.add_parser("fits", help="save the corpus fitted cell worlds, kappas and tendency models so new players can be scored without a rebuild")
+    sub.add_parser("bundle", help="copy the saved fits and encoders next to the served run so the evaluator can score new players")
     promote_cmd = sub.add_parser("promote", help="serve a run's artifacts, or snapshot the working artifacts as a new run")
     promote_cmd.add_argument("--id", default=None, help="run to serve, default snapshots the working artifacts")
     premades_cmd = sub.add_parser(
@@ -309,6 +311,18 @@ def main(argv: list[str] | None = None) -> int:
                 for run in list_runs(settings)
             ]
         )
+        return 0
+
+    if args.command == "bundle":
+        from .evaluate import write_bundle
+
+        _report({"bundle": str(write_bundle(settings))})
+        return 0
+
+    if args.command == "fits":
+        from .features.fits import write_fits
+
+        _report(write_fits(settings))
         return 0
 
     if args.command == "pack":

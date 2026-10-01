@@ -96,7 +96,40 @@ def _pack(columns, puuid, position, seats, evidence, matrix, grid) -> dict:
         "evidence": evidence,
         "matrix": matrix,
         "grid": grid,
+        "extra": {},
+        "extra_history": {},
     }
+
+
+def seat_of(vectors: dict, puuid: str, position: str) -> tuple[np.ndarray, int, float] | None:
+    row = vectors["at"].get((puuid, position))
+    if row is not None:
+        return vectors["matrix"][row].astype(float), int(vectors["seats"][row]), float(vectors["evidence"][row])
+    found = vectors["extra"].get((puuid, position))
+    return None if found is None else (np.asarray(found[0], dtype=float), int(found[1]), float(found[2]))
+
+
+def adopt_player(settings: Settings, profile: dict, vectors: dict) -> None:
+    from .evaluated import pool_effect, seats_of
+
+    columns = _model_columns(settings)
+    pack = _vectors(settings, columns) if columns else None
+    if pack is None:
+        return
+    with _lock:
+        for key, seat in seats_of({**vectors, "puuid": profile["puuid"]}, columns).items():
+            pack["extra"][key] = seat
+            champions = (profile.get("champions") or {}).get(key[1], {})
+            pack["extra_history"][key] = (0.0, pool_effect(settings, key[1], champions), seat[1])
+
+
+def _effects(path: Path) -> dict[tuple[str, str], float]:
+    table = pd.read_parquet(path, columns=["position", "champion", "effect"])
+    return {(position, champion): float(effect) for position, champion, effect in zip(table["position"], table["champion"], table["effect"])}
+
+
+def champion_effects(settings: Settings) -> dict[tuple[str, str], float] | None:
+    return cached(settings.served_model_dir / CHAMPION_EFFECTS, "effects", _effects)
 
 
 def build_vectors(path: Path, columns: list[str], keep=None) -> dict | None:
@@ -228,15 +261,14 @@ def position_profile(puuid: str, position: str, settings: Settings | None = None
     vectors = _vectors(settings, columns) if columns else None
     if vectors is None:
         return None
-    row = vectors["at"].get((puuid, position))
-    if row is None:
+    seat = seat_of(vectors, puuid, position)
+    if seat is None:
         return {"games": 0, "evidence": 0.0}
-    return {"games": int(vectors["seats"][row]), "evidence": _evidence(vectors, row)}
+    return {"games": seat[1], "evidence": _evidence(seat[2])}
 
 
-def _evidence(vectors: dict, row: int) -> float | None:
-    value = float(vectors["evidence"][row])
-    return None if np.isnan(value) else round(value, 3)
+def _evidence(value: float) -> float | None:
+    return None if np.isnan(value) else round(float(value), 3)
 
 
 def _quantiles(scores: dict, key: str, combo: str | None) -> np.ndarray:
@@ -280,7 +312,12 @@ def _history_index(path: Path) -> dict[tuple[str, str], tuple[float, float, int]
 
 def player_history(puuid: str, position: str, settings: Settings) -> tuple[float, float, int] | None:
     found = cached(settings.served_model_dir / PLAYER_HISTORY, "history", _history_index)
-    return (found or {}).get((puuid, position))
+    known = (found or {}).get((puuid, position))
+    if known is not None:
+        return known
+    columns = _model_columns(settings)
+    pack = _vectors(settings, columns) if columns else None
+    return None if pack is None else pack["extra_history"].get((puuid, position))
 
 
 def _seat_quantiles(settings: Settings, position: str) -> np.ndarray | None:
@@ -344,12 +381,11 @@ def pair_between(
     if loaded is None:
         return None
     saved, scores, seats, columns, vectors = loaded
-    for puuid, position in ((left, left_position), (right, right_position)):
-        if (puuid, position) not in vectors["at"]:
+    seat_a, seat_b = seat_of(vectors, left, left_position), seat_of(vectors, right, right_position)
+    for puuid, position, seat in ((left, left_position, seat_a), (right, right_position, seat_b)):
+        if seat is None:
             raise NoGamesInPosition(puuid, position)
-    row_a, row_b = vectors["at"][(left, left_position)], vectors["at"][(right, right_position)]
-    a = vectors["matrix"][row_a].astype(float)
-    b = vectors["matrix"][row_b].astype(float)
+    a, b = seat_a[0], seat_b[0]
     matrix = saved["matrix"]
     dim = matrix.shape[0]
     terms = np.outer(a, b) * matrix / (TEAM_PAIRS * dim)
@@ -374,10 +410,10 @@ def pair_between(
         "reliable": reliable,
         "note": None if reliable else UNRELIABLE,
         "positions": {"left": left_position, "right": right_position},
-        "left_games": int(vectors["seats"][row_a]),
-        "right_games": int(vectors["seats"][row_b]),
-        "left_evidence": _evidence(vectors, row_a),
-        "right_evidence": _evidence(vectors, row_b),
+        "left_games": seat_a[1],
+        "right_games": seat_b[1],
+        "left_evidence": _evidence(seat_a[2]),
+        "right_evidence": _evidence(seat_b[2]),
         "edge": {
             "left": left_edge,
             "right": right_edge,
@@ -419,11 +455,10 @@ def record_between(left: str, right: str, settings: Settings | None = None, extr
 
 def _expected(loaded, puuid: str, position: str, settings: Settings) -> float:
     _, _, seats, _, vectors = loaded
-    row = vectors["at"].get((puuid, position))
-    if row is None:
+    seat = seat_of(vectors, puuid, position)
+    if seat is None:
         return 0.0
-    z = vectors["matrix"][row].astype(float)
-    return seat_reading(seats, z, position, player_history(puuid, position, settings), _seat_quantiles(settings, position), _seat_calibration(settings, position))["gold"]
+    return seat_reading(seats, seat[0], position, player_history(puuid, position, settings), _seat_quantiles(settings, position), _seat_calibration(settings, position))["gold"]
 
 
 def custom_residuals(games: list[dict], settings: Settings | None = None) -> list[float]:
@@ -510,7 +545,7 @@ def lineup_between(assignments: dict[str, str], settings: Settings | None = None
     parts = {
         position: seat_reading(
             seats,
-            vectors["matrix"][vectors["at"][(puuid, position)]].astype(float),
+            seat_of(vectors, puuid, position)[0],
             position,
             player_history(puuid, position, settings),
             _seat_quantiles(settings, position),
