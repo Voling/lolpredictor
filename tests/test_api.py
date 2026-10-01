@@ -41,3 +41,32 @@ def test_an_outsider_pair_separates_teammates_from_opponents(client):
     assert body["as_teammates"] == []
     assert body["as_opponents"] == []
     assert set(body["as_teammates"]) | set(body["as_opponents"]) <= set(body["shared_matches"])
+
+
+def test_a_request_fetches_the_model_from_the_store_when_the_service_is_not_ready(monkeypatch):
+    # given
+    from synergy.api import server
+    from synergy.ml import score
+
+    fetched = []
+
+    class _Settings:
+        model_store = "s3://models"
+
+    class _NotReady:
+        ready = False
+
+    class _Ready:
+        ready = True
+
+    answers = [_NotReady(), _Ready()]
+    monkeypatch.setattr(server, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(server, "fetch_run", lambda settings: fetched.append(settings.model_store))
+    monkeypatch.setattr(server, "get_service", lambda: answers.pop(0))
+    monkeypatch.setattr(score, "_service", None)
+
+    # when
+    service = server._load_service()
+
+    # then
+    assert service.ready is True and fetched == ["s3://models"]

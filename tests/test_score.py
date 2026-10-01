@@ -165,6 +165,7 @@ def test_concurrent_first_requests_load_the_service_once(monkeypatch):
     def slow_load(self):
         loads.append(1)
         time.sleep(0.05)
+        self.model, self.profiles = object(), pd.DataFrame(index=["a"])
         return self
 
     monkeypatch.setattr(score, "_service", None)
@@ -180,3 +181,27 @@ def test_concurrent_first_requests_load_the_service_once(monkeypatch):
 
     # then
     assert len(loads) == 1 and len({id(service) for service in found}) == 1
+
+
+def test_a_service_that_found_no_model_is_loaded_again_on_the_next_request(monkeypatch):
+    # given
+    from synergy.ml import score
+
+    attempts = []
+
+    def load(self):
+        attempts.append(1)
+        if len(attempts) > 1:
+            self.model, self.profiles = object(), pd.DataFrame(index=["a"])
+        return self
+
+    monkeypatch.setattr(score, "_service", None)
+    monkeypatch.setattr(score.SynergyService, "load", load)
+
+    # when
+    first = score.get_service()
+    second = score.get_service()
+    third = score.get_service()
+
+    # then
+    assert first.ready is False and second.ready is True and third is second and len(attempts) == 2

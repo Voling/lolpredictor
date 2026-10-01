@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from ..cache import get_cache
 from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
+from ..ml import score
 from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, get_service, reload_service
 from ..ml.serving import warm
 from ..pipeline import served_summary
@@ -119,7 +120,11 @@ def get_verifier():
 
 
 def _ready():
-    service = get_service()
+    try:
+        service = _load_service()
+    except Exception:
+        logger.exception("could not load the model")
+        raise HTTPException(503, "The model is not ready yet. Try again later.")
     if not service.ready:
         raise HTTPException(503, "The model is not ready yet. Try again later.")
     settings = get_settings()
@@ -358,12 +363,21 @@ def _local_routes(app: FastAPI) -> None:
         return {"rows": payload["rows"], "columns": payload["columns"]}
 
 
+def _load_service():
+    with score._service_lock:
+        service = get_service()
+        if service.ready:
+            return service
+        settings = get_settings()
+        if settings.model_store:
+            fetch_run(settings)
+        return get_service()
+
+
 def _warm_up():
     clock = time.time()
     try:
-        if get_settings().model_store:
-            fetch_run(get_settings())
-        get_service()
+        _load_service()
         warm(get_settings())
         logger.info("warm up done in %.1fs", time.time() - clock)
     except Exception:
@@ -402,8 +416,9 @@ def create_app(public: bool | None = None) -> FastAPI:
         @app.get("/api/status")
         def signed_status(x_auth: str | None = Header(None)):
             _handle(lambda: get_verifier().subject(x_auth))
+            ready = _handle(_load_service).ready
             run = served_summary()
-            return {"ready": get_service().ready, "run": {"id": run["id"]} if run else None}
+            return {"ready": ready, "run": {"id": run["id"]} if run else None}
 
     else:
 

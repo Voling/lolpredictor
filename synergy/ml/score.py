@@ -488,13 +488,13 @@ class SynergyService:
 
 
 _service: SynergyService | None = None
-_service_lock = threading.Lock()
+_service_lock = threading.RLock()
 
 
 def get_service() -> SynergyService:
     global _service
     with _service_lock:
-        if _service is None:
+        if _service is None or not _service.ready:
             _service = SynergyService().load()
         return _service
 
