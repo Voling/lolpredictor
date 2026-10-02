@@ -36,8 +36,19 @@ export type Together = { gold: number; games: number; customs?: number };
 
 export type Pending = { riot_id: string; status: string; step: string; done: number; total: number; percent: number; message: string | null };
 
+export type Player = { riot_id: string; main_position: string; games: number; winrate: number; latest_game?: number | null; refresh_after?: number | null };
+
+export type Evaluations = { players: Pending[] };
+
+export type SavedCheck = { id: string; at: number; kind: string; names: (string | null)[]; positions: (string | null)[]; score: number | null };
+
+export type History = { checks: SavedCheck[] };
+
+export type Refresh = { message: string | null; pending: Pending | null };
+
 export type PairScore = {
   pending?: Pending | null;
+  saved_at?: number;
   score: number | null;
   projected_gold: number | null;
   minute: number | null;
@@ -74,7 +85,7 @@ export type PairScore = {
       }
     >;
   } | null;
-  players: { riot_id: string; main_position: string; games: number; winrate: number }[];
+  players: Player[];
   remaining?: number;
 };
 
@@ -98,6 +109,7 @@ export type FriendRow = {
 
 export type Friends = {
   pending?: Pending | null;
+  saved_at?: number;
   me: { riot_id: string; position?: string; reading?: Reading; evidence?: number | null; games?: number; minute?: number };
   friends: FriendRow[];
   remaining?: number;
@@ -166,3 +178,7 @@ export const getFriends = (me: string, friends: string[], mePosition?: string) =
   for (const friend of friends) query.append("friends", friend);
   return get<Friends>(`/api/friends?${query.toString()}`);
 };
+export const getEvaluations = (names: string[]) => get<Evaluations>(`/api/evaluations?names=${encodeURIComponent(names.join(","))}`);
+export const getHistory = () => get<History>("/api/history");
+export const getSaved = <T>(id: string) => get<T>(`/api/history/${encodeURIComponent(id)}`);
+export const refreshPlayer = (riotId: string) => post<Refresh>("/api/refresh", { riot_id: riotId });

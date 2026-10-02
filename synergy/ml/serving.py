@@ -102,11 +102,13 @@ def _pack(columns, puuid, position, seats, evidence, matrix, grid) -> dict:
 
 
 def seat_of(vectors: dict, puuid: str, position: str) -> tuple[np.ndarray, int, float] | None:
-    row = vectors["at"].get((puuid, position))
-    if row is not None:
-        return vectors["matrix"][row].astype(float), int(vectors["seats"][row]), float(vectors["evidence"][row])
     found = vectors["extra"].get((puuid, position))
-    return None if found is None else (np.asarray(found[0], dtype=float), int(found[1]), float(found[2]))
+    if found is not None:
+        return np.asarray(found[0], dtype=float), int(found[1]), float(found[2])
+    row = vectors["at"].get((puuid, position))
+    if row is None:
+        return None
+    return vectors["matrix"][row].astype(float), int(vectors["seats"][row]), float(vectors["evidence"][row])
 
 
 def adopt_player(settings: Settings, profile: dict, vectors: dict) -> None:

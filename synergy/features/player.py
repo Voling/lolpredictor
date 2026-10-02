@@ -135,6 +135,7 @@ def build_profiles(
     for column in ("game_name", "tag_line", "tier", "division"):
         identity[column] = grouped[column].last() if column in enriched.columns else None
     identity["lp_value"] = grouped["lp_value"].mean() if "lp_value" in enriched.columns else np.nan
+    identity["latest_game"] = grouped["game_creation"].max() // 1000 if "game_creation" in enriched.columns else np.nan
     profile = profile.join(identity)
     if opportunities is not None and not opportunities.empty:
         tendencies, diagnostics = fit_propensities(opportunities)

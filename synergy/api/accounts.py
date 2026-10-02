@@ -184,14 +184,18 @@ class DynamoTable:
     def delete(self, pk: str, sk: str) -> None:
         self._retry(lambda: self.client.delete_item(TableName=self.name, Key=self._key(pk, sk)))
 
-    def latest(self, pk: str, limit: int) -> list[dict]:
-        found = self.client.query(
-            TableName=self.name,
-            KeyConditionExpression="pk = :pk",
-            ExpressionAttributeValues={":pk": {"S": pk}},
-            ScanIndexForward=False,
-            Limit=limit,
-        )
+    def latest(self, pk: str, limit: int, fields: tuple[str, ...] | None = None) -> list[dict]:
+        request = {
+            "TableName": self.name,
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": pk}},
+            "ScanIndexForward": False,
+            "Limit": limit,
+        }
+        if fields:
+            request["ProjectionExpression"] = ", ".join(["sk", *(f"#f{index}" for index in range(len(fields)))])
+            request["ExpressionAttributeNames"] = {f"#f{index}": name for index, name in enumerate(fields)}
+        found = self.client.query(**request)
         return [{name: _value(value) for name, value in item.items()} for item in found.get("Items", [])]
 
     def claim(self, pk: str, sk: str, owner: str) -> bool:

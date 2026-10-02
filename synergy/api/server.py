@@ -4,7 +4,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -12,20 +12,23 @@ from ..cache import get_cache
 from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml import score
-from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, get_service, reload_service
+from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, epoch_of, get_service, reload_service, riot_id
 from ..ml.serving import warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
 from .artifacts import fetch_run
 from .customs import SharedCustoms
 from .evaluate import GIB, Evaluations, shape, store_size
+from .history import History
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
 POSITION = 12
+CHECK_ID = 80
 _accounts: Accounts | None = None
 _customs: SharedCustoms | None = None
 _evaluations: Evaluations | None = None
+_history: History | None = None
 _verifier = None
 
 
@@ -38,6 +41,10 @@ class LineupRequest(BaseModel):
 
 
 class LinkRequest(BaseModel):
+    riot_id: str = Field(min_length=3, max_length=LIMIT)
+
+
+class RefreshRequest(BaseModel):
     riot_id: str = Field(min_length=3, max_length=LIMIT)
 
 
@@ -98,18 +105,48 @@ def get_evaluations() -> Evaluations:
     return _evaluations
 
 
-def _pending(user: str, riot_id: str) -> dict | None:
+def _pending(user: str, name: str) -> dict | None:
     if not get_settings().evaluate_queue:
         return None
     message = None
     try:
-        get_evaluations().refuse(user, riot_id)
+        get_evaluations().refuse(user, name)
     except (LinkError, QuotaExceeded) as exc:
         message = str(exc)
     except Exception:
         logger.exception("could not request an evaluation")
         return None
-    return shape(get_evaluations().lookup(riot_id), riot_id, message)
+    return shape(get_evaluations().lookup(name), name, message)
+
+
+def _refresh(user: str, name: str) -> dict:
+    service = _ready()
+    latest = None
+    try:
+        profile = service.resolve(name)
+        latest, name = epoch_of(profile.get("latest_game")), riot_id(profile)
+    except UnknownPlayer:
+        pass
+    message = None
+    try:
+        get_evaluations().refresh(user, name, latest)
+    except (LinkError, QuotaExceeded) as exc:
+        message = str(exc)
+    return {"message": message, "pending": shape(get_evaluations().lookup(name), name, message)}
+
+
+def get_history() -> History:
+    global _history
+    if _history is None:
+        _history = History(DynamoTable(get_settings().accounts_table))
+    return _history
+
+
+def _save_check(user: str, kind: str, request: str, found: dict) -> None:
+    try:
+        get_history().save(user, kind, request, found)
+    except Exception:
+        logger.exception("could not save the check")
 
 
 def get_verifier():
@@ -186,6 +223,7 @@ def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda 
                 if pending:
                     row["pending"] = pending
                     row["note"] = pending.get("message") or row["note"]
+    _save_check(user, query[0], request, found)
     back = unscored(found) if charged else 0
     if back:
         accounts.refund(user, back)
@@ -259,6 +297,24 @@ def _public_routes(app: FastAPI) -> None:
             return {"players": [shape(get_evaluations().lookup(name), name) for name in wanted]}
 
         return _handle(read)
+
+    @app.get("/api/history")
+    def history(x_auth: str | None = Header(None)):
+        return _handle(lambda: {"checks": get_history().list(get_verifier().subject(x_auth))})
+
+    @app.get("/api/history/{check_id}")
+    def saved_check(check_id: str = Path(max_length=CHECK_ID), x_auth: str | None = Header(None)):
+        def read():
+            found = get_history().load(get_verifier().subject(x_auth), check_id)
+            if found is None:
+                raise HTTPException(404, "That check isn't saved any more.")
+            return found
+
+        return _handle(read)
+
+    @app.post("/api/refresh")
+    def refresh(request: RefreshRequest, x_auth: str | None = Header(None)):
+        return _handle(lambda: _refresh(get_verifier().subject(x_auth), request.riot_id))
 
     @app.get("/api/recent")
     def recent(x_auth: str | None = Header(None)):

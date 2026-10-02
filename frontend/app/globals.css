@@ -76,6 +76,7 @@ footer.legal { margin-top: 3rem; font-size: 0.72rem; opacity: 0.5; }
 ul.habits { margin: 0.25rem 0 0.75rem; padding-left: 1.1rem; }
 ul.habits li { margin: 0.2rem 0; }
 .standout { display: block; font-size: 0.8rem; opacity: 0.65; max-width: 24rem; }
+.refresh { margin: 0.4rem 0 0.8rem; }
 .progress { margin: 0.4rem 0 0.8rem; max-width: 28rem; }
 .progress-bar { height: 0.5rem; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .progress-fill { height: 100%; background: #3b82f6; transition: width 0.6s ease; }

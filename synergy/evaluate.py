@@ -280,9 +280,11 @@ class Evaluator:
 
 
 def profile_of(puuid: str, games: list[tuple[str, dict, dict]], account: dict, league: list[dict], result: dict) -> dict:
-    champions, positions, wins, by_position = {}, {}, [], {}
+    champions, positions, wins, by_position, ended = {}, {}, [], {}, []
     for _, match, _ in games:
-        for participant in match["info"]["participants"]:
+        info = match["info"]
+        ended.append(int(info.get("gameEndTimestamp") or int(info.get("gameCreation", 0)) + int(info.get("gameDuration", 0))))
+        for participant in info["participants"]:
             if participant["puuid"] != puuid:
                 continue
             champion = participant.get("championName", "")
@@ -304,6 +306,7 @@ def profile_of(puuid: str, games: list[tuple[str, dict, dict]], account: dict, l
         "tier": solo.get("tier") if solo else None,
         "division": solo.get("rank") if solo else None,
         "lp_value": solo.get("leaguePoints") if solo else None,
+        "latest_game": max(ended) // 1000 if ended else None,
         "positions": [str(name) for name in result["position"]],
         "seats": [int(count) for count in result["seats"]],
         "champions": by_position,

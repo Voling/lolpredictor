@@ -161,3 +161,27 @@ def test_a_name_riot_does_not_know_gives_the_daily_slots_back():
     assert "doesn't know" in str(unknown.value) and "pulling" in str(started.value) and launched == ["puuid-thiqums"]
     assert evaluations.table.items[("user#user-1", f"evals#{evaluations.day()}")]["used"] == 1
     assert evaluations.table.items[(EVAL, f"day#{evaluations.day()}")]["used"] == 1
+
+
+def test_a_refresh_waits_two_weeks_after_the_newest_game_we_hold_then_pulls_again():
+    # given
+    launched = []
+    now = {"t": START}
+    evaluations = _evaluations(launched, clock=lambda: now["t"], daily=10, per_user=10)
+    with pytest.raises(LinkError):
+        evaluations.refuse("user-1", "thiqums#crocs")
+    evaluations.table.put(EVAL, "puuid-thiqums", {"status": READY, "riot_id": "Thiqums#CROCS", "started": START, "expires": START + 14 * 86400})
+
+    # when
+    with pytest.raises(LinkError) as fresh:
+        evaluations.refresh("user-1", "thiqums#crocs", latest_game=int(START) - 3 * 86400)
+    with pytest.raises(LinkError) as pulling:
+        evaluations.refresh("user-1", "thiqums#crocs", latest_game=int(START) - 15 * 86400)
+    state = evaluations.status("puuid-thiqums")
+    with pytest.raises(LinkError) as busy:
+        evaluations.refresh("user-1", "thiqums#crocs")
+
+    # then
+    assert "from the last two weeks" in str(fresh.value) and "after October 2" in str(fresh.value)
+    assert "newest games" in str(pulling.value) and launched == ["puuid-thiqums", "puuid-thiqums"]
+    assert state["status"] == "requested" and state["started"] == int(START) and "still pulling" in str(busy.value)

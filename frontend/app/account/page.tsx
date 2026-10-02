@@ -103,6 +103,7 @@ export default function AccountPage() {
           </form>
           <h3>Today</h3>
           <p>{me.remaining} of {me.daily} duo checks left. They reset at midnight UTC.</p>
+          <p><Link href="/history/">Past checks</Link></p>
           <p><button type="button" onClick={() => signOut()}>Sign out</button></p>
         </>
       )}

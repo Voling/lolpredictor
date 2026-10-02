@@ -1,19 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
-import { getPair, type PairScore } from "@/lib/api";
+import { getPair, getSaved, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { POLL_MS, Progress } from "@/lib/progress";
 import { Habits, peer, readingSentence, togetherSentence } from "@/lib/habits";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
+import { RefreshButton } from "@/lib/refresh";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
-type Query = { a?: string; b?: string; a_position?: string; b_position?: string };
+type Query = { a?: string; b?: string; a_position?: string; b_position?: string; saved?: string };
 
 function lead(gold: number): string {
   const rounded = Math.round(Math.abs(gold) / 50) * 50;
@@ -21,7 +22,7 @@ function lead(gold: number): string {
   return `about ${rounded.toLocaleString()} gold ${gold > 0 ? "ahead of" : "behind"}`;
 }
 
-function Result({ pair }: { pair: PairScore }) {
+function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => void }) {
   const found = pair.interaction;
   if (pair.pending) {
     return (
@@ -60,21 +61,33 @@ function Result({ pair }: { pair: PairScore }) {
       <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
       <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
       <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} in our data.</p>
+
+      <h3>Newer games</h3>
+      <RefreshButton name={left.riot_id} after={left.refresh_after} onReady={onRefreshed} />
+      <RefreshButton name={right.riot_id} after={right.refresh_after} onReady={onRefreshed} />
     </>
   );
 }
 
 function PairQuery() {
   const params = useSearchParams();
-  const query: Query = { a: params.get("a") ?? undefined, b: params.get("b") ?? undefined, a_position: params.get("a_position") ?? undefined, b_position: params.get("b_position") ?? undefined };
+  const router = useRouter();
+  const query: Query = { a: params.get("a") ?? undefined, b: params.get("b") ?? undefined, a_position: params.get("a_position") ?? undefined, b_position: params.get("b_position") ?? undefined, saved: params.get("saved") ?? undefined };
   const account = useAccount();
   const me = account.enabled ? account.me?.riot_id ?? undefined : query.a;
-  const ready = accountReady(account) && Boolean(me && query.b);
+  const ready = accountReady(account) && Boolean(query.saved || (me && query.b));
   const [tick, setTick] = useState(0);
   const { data: pair, error, loading } = useRemote(
-    ready ? () => getPair(me!, query.b!, query.a_position || undefined, query.b_position || undefined) : null,
+    !ready ? null : query.saved ? () => getSaved<PairScore>(query.saved!) : () => getPair(me!, query.b!, query.a_position || undefined, query.b_position || undefined),
     `${params.toString()}|${ready}|${tick}`,
   );
+  const liveUrl = pair?.players?.length === 2
+    ? `/pair/?a=${encodeURIComponent(pair.players[0].riot_id)}&b=${encodeURIComponent(pair.players[1].riot_id)}${pair.positions ? `&a_position=${positionName(pair.positions.left)}&b_position=${positionName(pair.positions.right)}` : ""}`
+    : "/pair/";
+  const onRefreshed = useCallback(() => {
+    if (query.saved) router.push(liveUrl);
+    else setTick((count) => count + 1);
+  }, [query.saved, liveUrl, router]);
   const waiting = Boolean(pair?.pending && ["requested", "queued", "running"].includes(pair.pending.status));
   useEffect(() => {
     if (!waiting) return;
@@ -105,7 +118,8 @@ function PairQuery() {
       </form>}
       {loading && !pair && <p className="sub">Checking your duo…</p>}
       {error && <div className="gate"><strong>Can&apos;t score this duo.</strong>{error}</div>}
-      {pair && <Result pair={pair} />}
+      {pair?.saved_at && <p className="hint">Saved on {new Date(pair.saved_at * 1000).toLocaleDateString()}. <Link href={liveUrl}>Check again now</Link>.</p>}
+      {pair && <Result pair={pair} onRefreshed={onRefreshed} />}
     </main>
   );
 }

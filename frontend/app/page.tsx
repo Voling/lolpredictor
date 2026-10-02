@@ -27,7 +27,7 @@ export default function Home() {
     <main>
       <h1>lolpredictor</h1>
       <p className="sub">Find out which friends you play best with in ranked.</p>
-      <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/pair/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}</p>
+      <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/pair/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}{authEnabled && <Link href="/history/">Past checks</Link>}</p>
 
       <h3>How to use it</h3>
       {authEnabled && <p>Sign in and link your Riot account first. Each account gets {daily ? `${daily} duo checks a day` : "a daily allowance of duo checks"}.</p>}

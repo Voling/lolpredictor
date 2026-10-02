@@ -660,3 +660,23 @@ def test_the_dynamo_table_reads_the_latest_rows_in_reverse_key_order():
     # then
     assert [row["score"] for row in found] == [61.5, 48]
     assert client.request["ScanIndexForward"] is False and client.request["Limit"] == 5 and client.request["ExpressionAttributeValues"] == {":pk": {"S": "recent"}}
+
+
+def test_the_dynamo_table_can_read_only_some_fields_of_the_latest_rows():
+    # given
+    class _Client:
+        exceptions = _Recorder.exceptions
+
+        def query(self, **request):
+            self.request = request
+            return {"Items": [{"sk": {"S": "2026-10-01#abc"}, "at": {"N": "1790000000"}, "kind": {"S": "pair"}}]}
+
+    client = _Client()
+
+    # when
+    found = DynamoTable("accounts", client=client).latest("checks#u", 50, ("at", "kind", "summary"))
+
+    # then
+    assert found == [{"sk": "2026-10-01#abc", "at": 1790000000, "kind": "pair"}]
+    assert client.request["ProjectionExpression"] == "sk, #f0, #f1, #f2"
+    assert client.request["ExpressionAttributeNames"] == {"#f0": "at", "#f1": "kind", "#f2": "summary"}

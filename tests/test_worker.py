@@ -177,3 +177,21 @@ def test_an_interrupted_evaluation_queues_itself_again_from_the_start():
     state = table.get(EVAL, "me")
     assert state["status"] == "requested" and state["step"] == "queued" and state["percent"] == 0 and state["riot_id"] == "Me#NA1"
     assert sent == [{"QueueUrl": "https://queue", "MessageBody": '{"puuid": "me"}'}]
+
+
+def test_the_profile_notes_the_newest_game_that_was_read():
+    # given
+    from synergy.evaluate import profile_of
+
+    seat = {"puuid": "p", "championName": "Garen", "teamPosition": "TOP", "win": True}
+    games = [
+        ("m1", {"info": {"gameCreation": 1_790_000_000_000, "gameDuration": 1_800_000, "participants": [seat]}}, {}),
+        ("m2", {"info": {"gameCreation": 1_790_100_000_000, "gameDuration": 1500, "gameEndTimestamp": 1_790_101_500_000, "participants": [seat]}}, {}),
+    ]
+    result = {"games": 2, "position": ["TOP"], "seats": [2]}
+
+    # when
+    profile = profile_of("p", games, {"gameName": "P", "tagLine": "NA1"}, [], result)
+
+    # then
+    assert profile["latest_game"] == 1_790_101_500 and profile["main_champion"] == "Garen" and profile["games"] == 2

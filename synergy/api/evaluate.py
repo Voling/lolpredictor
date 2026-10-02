@@ -1,6 +1,7 @@
 import time
 from datetime import datetime, timezone
 
+from ..ml.evaluated import FRESH_SECONDS
 from .accounts import DAY, LinkError, QuotaExceeded, riot_id_of
 
 EVAL = "eval"
@@ -79,12 +80,23 @@ class Evaluations:
                 raise LinkError(f"We couldn't pull {name}'s games. Try again tomorrow.")
         self.request(user, riot_id)
 
+    def refresh(self, user: str, riot_id: str, latest_game: int | None = None):
+        state = self.lookup(riot_id)
+        now = int(self.clock())
+        name = state.get("riot_id", riot_id) if state else riot_id
+        if state and state["status"] in (REQUESTED, RUNNING) and now - int(state.get("started", 0)) < STALE_SECONDS:
+            raise LinkError(f"We're still pulling {name}'s games. Try again in a few minutes.")
+        if latest_game is not None and now - int(latest_game) < FRESH_SECONDS:
+            when = datetime.fromtimestamp(int(latest_game) + FRESH_SECONDS, timezone.utc)
+            raise LinkError(f"We already have {name}'s games from the last two weeks. New games can be pulled after {when:%B} {when.day}.")
+        self.request(user, riot_id, again=True)
+
     def _give_back(self, user: str, expires: int, day: bool) -> None:
         self.table.add(f"user#{user}", f"evals#{self.day()}", -1, self.per_user + 1, expires)
         if day:
             self.table.add(EVAL, f"day#{self.day()}", -1, self.daily + 1, expires)
 
-    def request(self, user: str, riot_id: str):
+    def request(self, user: str, riot_id: str, again: bool = False):
         riot_id = riot_id_of(riot_id)
         if self.store_size() >= self.cap_bytes:
             raise LinkError("Our game store is full right now. Try again tomorrow.")
@@ -116,4 +128,6 @@ class Evaluations:
             except Exception:
                 self.table.put(EVAL, puuid, {**state, "status": FAILED})
                 raise LinkError(f"We couldn't start pulling {name}'s games. Try again later.")
+        if again:
+            raise LinkError(f"We're pulling {name}'s newest games now. Check back in about 10 minutes.")
         raise LinkError(f"We don't know {name} yet. We're pulling their last {GAMES} ranked games now. Check back in about 10 minutes.")

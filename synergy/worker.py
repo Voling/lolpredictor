@@ -148,14 +148,14 @@ def evaluate_player(puuid: str, settings: Settings | None = None, scratch: Path 
         result = Evaluator(bundle, local, progress.step).run(puuid, games)
         account = riot_call(lambda: riot.account_by_puuid(puuid), accounts)
         league = riot_call(lambda: riot.league(puuid), accounts)
-        profile = profile_of(puuid, games, account, league, result)
+        now = int(time.time())
+        profile = {**profile_of(puuid, games, account, league, result), "evaluated_at": now}
         vectors, summary = save_result(scratch / "out", result, profile)
         s3.upload_file(str(vectors), store.bucket, f"vectors/{puuid}.npz")
         s3.upload_file(str(summary), store.bucket, f"profiles/{puuid}.json")
-        now = int(time.time())
         riot_id = f"{profile.get('game_name')}#{profile.get('tag_line')}"
         table.put(NAMES, name_key(riot_id), {"puuid": puuid, "expires": now + 14 * DAY})
-        progress.write(status=READY, step="ready", percent=100, riot_id=riot_id, games=result["games"], expires=now + 14 * DAY)
+        progress.write(status=READY, step="ready", percent=100, riot_id=riot_id, games=result["games"], expires=now + 14 * DAY, finished=now, latest_game=profile.get("latest_game"))
         logger.info("evaluated %s from %s games", riot_id, result["games"])
         return profile
     except Interrupted:

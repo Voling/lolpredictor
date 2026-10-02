@@ -151,3 +151,47 @@ def test_adopting_a_second_player_keeps_the_profile_columns_numeric_so_its_summa
     assert dtypes["games"].kind == "i" and dtypes["winrate"].kind == "f" and dtypes["chances_initiate"].kind == "i"
     assert summary["riot_id"] == "Other#NA1" and summary["games"] == 36 and summary["tendencies"]["initiate"]["chances"] == 0
     assert service.profiles.loc["other", "style_dive_pct"] == 50.0 and service.profiles.loc["other", "champion_pool"] == 0
+
+
+def test_a_newer_evaluation_is_fetched_again_and_replaces_what_was_adopted(serving_settings, tmp_path):
+    # given
+    from synergy.ml.score import SynergyService
+
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    table = _Table({(EVAL, "a"): {"status": READY, "expires": int(START) + 1000, "finished": 100}})
+    client = _S3({**_profile(), "puuid": "a", "game_name": "Alpha", "games": 40, "latest_game": 1_789_000_000}, _vectors(columns))
+    service = SynergyService(serving_settings)
+    service.model = object()
+    service.evaluated = EvaluatedPlayers(table, client, "bucket", tmp_path, clock=lambda: START)
+    service.profiles = pd.DataFrame({"puuid": ["a"], "game_name": ["Alpha"], "tag_line": ["NA1"], "games": [5], "winrate": [0.5], "main_position": ["TOP"], "style_dive_pct": [70.0]}).set_index("puuid", drop=False)
+
+    # when
+    first = service.resolve("Alpha#NA1")
+    calls_first = client.calls
+    again = service.resolve("Alpha#NA1")
+    calls_again = client.calls
+    table.items[(EVAL, "a")]["finished"] = 200
+    client.profile["games"] = 48
+    newer = service.resolve("a")
+    summary = service.player_summary(newer)
+
+    # then
+    assert first["games"] == 40 and first["style_dive_pct"] == 70.0 and first["evaluated"] is True and calls_first == 2
+    assert again["games"] == 40 and calls_again == 2
+    assert newer["games"] == 48 and client.calls == 4 and service.adopted["a"] == 200 and len(service.profiles) == 1
+    assert summary["latest_game"] == 1_789_000_000 and summary["refresh_after"] == 1_789_000_000 + 14 * 86400
+
+
+def test_an_adopted_seat_takes_precedence_over_the_packed_one(serving_settings):
+    # given
+    settings = serving_settings
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    duo_between("a", "TOP", "b", "JUNGLE", settings)
+    before = position_profile("a", "TOP", settings)
+    vectors = {**_vectors(columns), "columns": columns, "position": ["TOP", "JUNGLE"]}
+
+    # when
+    adopt_player(settings, {**_profile(), "puuid": "a"}, vectors)
+
+    # then
+    assert before["games"] > 0 and position_profile("a", "TOP", settings) == {"games": 30, "evidence": 0.7}

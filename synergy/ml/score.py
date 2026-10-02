@@ -13,7 +13,7 @@ from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
-from .evaluated import profile_row
+from .evaluated import FRESH_SECONDS, profile_row
 from .serving import adopt_player, custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,12 @@ class PairingError(ValueError):
     pass
 
 
+def epoch_of(value) -> int | None:
+    if value is None or pd.isna(value) or not value:
+        return None
+    return int(value)
+
+
 def riot_id(profile) -> str:
     name = profile.get("game_name")
     tag = profile.get("tag_line")
@@ -70,6 +76,7 @@ class SynergyService:
         self.propensity_report: dict = {}
         self.style_columns: list[str] = list(STYLE_COLUMNS)
         self.evaluated = None
+        self.adopted: dict[str, int] = {}
 
     @property
     def ready(self) -> bool:
@@ -121,7 +128,7 @@ class SynergyService:
         _, profiles = self._require()
         query = query.strip()
         if query in profiles.index:
-            return profiles.loc[query]
+            return self._freshest(profiles.loc[query])
         if "#" in query:
             name, tag = split_riot_id(query)
             found = profiles[
@@ -132,13 +139,19 @@ class SynergyService:
             found = profiles[profiles["game_name"].str.lower() == query.lower()]
         if found.empty:
             try:
-                return self._resolve_alias(query)
+                return self._freshest(self._resolve_alias(query))
             except UnknownPlayer:
                 adopted = self.adopt(query)
                 if adopted is None:
                     raise
                 return adopted
-        return found.iloc[0]
+        return self._freshest(found.iloc[0])
+
+    def _freshest(self, row: pd.Series) -> pd.Series:
+        if self.evaluated is None:
+            return row
+        found = self.evaluated.load(row["puuid"])
+        return row if found is None else self._adopt(*found)
 
     def adopt(self, query: str) -> pd.Series | None:
         if self.evaluated is None or self.profiles is None:
@@ -154,9 +167,15 @@ class SynergyService:
 
     def _adopt(self, profile: dict, vectors: dict) -> pd.Series:
         row = profile_row(profile)
-        if row.name not in self.profiles.index:
-            self.profiles = pd.concat([self.profiles, self._as_profile(row)])
-            self.profiles["puuid"] = self.profiles.index
+        stamp = int(profile.get("evaluated_at", 0) or 0)
+        if row.name in self.profiles.index:
+            if stamp <= self.adopted.get(row.name, -1):
+                return self.profiles.loc[row.name]
+            row = pd.Series({**self.profiles.loc[row.name].to_dict(), **row.to_dict()}, name=row.name)
+            self.profiles = self.profiles.drop(index=row.name)
+        self.profiles = pd.concat([self.profiles, self._as_profile(row)])
+        self.profiles["puuid"] = self.profiles.index
+        self.adopted[row.name] = stamp
         adopt_player(self.settings, profile, vectors)
         return self.profiles.loc[row.name]
 
@@ -322,6 +341,7 @@ class SynergyService:
         }
 
     def player_summary(self, profile: pd.Series) -> dict:
+        latest = epoch_of(profile.get("latest_game"))
         return {
             "puuid": profile["puuid"],
             "riot_id": riot_id(profile),
@@ -332,6 +352,8 @@ class SynergyService:
             "main_position": profile.get("main_position"),
             "main_champion": profile.get("main_champion"),
             "champion_pool": int(profile.get("champion_pool", 0)),
+            "latest_game": latest,
+            "refresh_after": None if latest is None else latest + FRESH_SECONDS,
             "style_confidence": round(float(profile.get("style_confidence", 1.0)), 3),
             "style": {
                 name: round(float(profile.get(f"style_{name}_pct", 50.0)), 1) for name in STYLE_NAMES
