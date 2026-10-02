@@ -1,7 +1,9 @@
+import logging
+
 import pandas as pd
 import pytest
 
-from synergy.ml.score import SynergyService
+from synergy.ml.score import CANNOT_SCORE, SynergyService
 import numpy as np
 
 from synergy.ml.serving import DUO_RECORDS, DUO_SCORES, NAMES_TABLE
@@ -205,3 +207,18 @@ def test_a_service_that_found_no_model_is_loaded_again_on_the_next_request(monke
 
     # then
     assert first.ready is False and second.ready is True and third is second and len(attempts) == 2
+
+
+def test_a_friend_whose_profile_breaks_the_summary_gets_a_plain_note_and_the_error_is_logged(service, caplog):
+    # given
+    service.profiles["games"] = service.profiles["games"].astype(float)
+    service.profiles.loc["b", "games"] = float("nan")
+
+    # when
+    with caplog.at_level(logging.ERROR, logger="synergy.ml.score"):
+        found = service.friends("Alpha#NA1", ["Beta#NA1", "Gamma#NA1:top"])
+
+    # then
+    notes = {row["riot_id"]: row["note"] for row in found["friends"]}
+    assert notes["Beta#NA1"] == CANNOT_SCORE and "both play top" in notes["Gamma#NA1"]
+    assert "could not score Alpha#NA1 with Beta#NA1" in caplog.text and "cannot convert float NaN to integer" in caplog.text

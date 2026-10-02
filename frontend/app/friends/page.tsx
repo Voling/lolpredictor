@@ -9,6 +9,7 @@ import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { POLL_MS, Progress } from "@/lib/progress";
+import { habitSentence } from "@/lib/habits";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -28,13 +29,18 @@ function Result({ found }: { found: Friends }) {
         </thead>
         <tbody>
           {found.friends.map((row) =>
-            row.pending ? (
+            row.pending && row.pending.status !== "refused" ? (
               <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={3}><Progress pending={row.pending} /></td></tr>
             ) : row.note ? (
               <tr key={row.riot_id}><td>{row.riot_id}</td><td colSpan={3}>{row.note}</td></tr>
             ) : (
               <tr key={row.riot_id}>
-                <td>{row.riot_id}</td>
+                <td>
+                  {row.riot_id}
+                  {row.standout && row.position && (row.standout.percentile >= 80 || row.standout.percentile <= 20) && (
+                    <span className="standout">{habitSentence("", row.standout, row.position).replace(/^ /, "").replace(/^\w/, (letter) => letter.toUpperCase())}</span>
+                  )}
+                </td>
                 <td>{positionName(row.position)}</td>
                 <td className="num">{row.score?.toFixed(0)}</td>
                 <td>

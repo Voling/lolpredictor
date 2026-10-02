@@ -1,4 +1,4 @@
-from synergy.features.describe import describe, describe_situation, named, situation_of
+from synergy.features.describe import phrase, describe, describe_situation, named, situation_of
 from synergy.features.priority import PRIORITY_COLUMNS
 from synergy.features.reaction import REACTION_COLUMNS
 from synergy.features.tendency import TENDENCY_COLUMNS
@@ -48,3 +48,35 @@ def test_cells_group_into_situations_with_their_own_words():
     assert describe_situation("rsp_kill_ours_far") == "after an ally kill from far away"
     assert describe_situation("tend_dive") == "diving"
     assert describe_situation("prio_pre_objective") == "lane state in the minute before an objective"
+
+
+def test_every_named_cell_reads_as_a_present_tense_habit():
+    # given
+    from synergy.features.describe import named
+
+    cells = [
+        "rsp_kill_ours_far_converged",
+        "obj_DRAGON_theirs_far_rotated",
+        "ward_early_lane_middle",
+        "jgl_gank_by5",
+        "jgl_sides_crossed",
+        "prio_all_own_absent_farm",
+        "tend_greed_punished_tm-_away",
+        "tend_dive_tmb_own",
+    ]
+
+    # when
+    phrases = [phrase(cell) for cell in cells]
+
+    # then
+    assert phrases == [
+        "converges on an ally kill from far away",
+        "rotates toward an enemy dragon from far away",
+        "places wards before 5 minutes in the middle of the lane",
+        "ganks first by 5 minutes",
+        "crosses to the other side of the jungle",
+        "is standing on own side, opponent away, farming",
+        "gets punished for greed with top and mid holding priority, on the enemy half",
+        "dives with top, mid and bot holding priority, on own half",
+    ]
+    assert all(named(cell) for cell in cells) and phrase("habit_3") == "habit component 3"

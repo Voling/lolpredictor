@@ -41,9 +41,14 @@ def thin_warning(name: str, position: str, games: int, evidence: float | None) -
 
 
 UNKNOWN_NOTE = "Not in our data yet."
+CANNOT_SCORE = "Can't score this friend right now."
 
 
 class UnknownPlayer(LookupError):
+    pass
+
+
+class PairingError(ValueError):
     pass
 
 
@@ -150,14 +155,18 @@ class SynergyService:
     def _adopt(self, profile: dict, vectors: dict) -> pd.Series:
         row = profile_row(profile)
         if row.name not in self.profiles.index:
-            full = row.reindex(self.profiles.columns.union(row.index, sort=False))
-            numeric = [column for column in self.profiles.select_dtypes("number").columns if column not in row.index]
-            full[[column for column in numeric if column.endswith("_pct")]] = 50.0
-            full[[column for column in numeric if not column.endswith("_pct")]] = 0.0
-            self.profiles = pd.concat([self.profiles, full.to_frame().T])
+            self.profiles = pd.concat([self.profiles, self._as_profile(row)])
             self.profiles["puuid"] = self.profiles.index
         adopt_player(self.settings, profile, vectors)
         return self.profiles.loc[row.name]
+
+    def _as_profile(self, row: pd.Series) -> pd.DataFrame:
+        frame = row.to_frame().T.reindex(columns=self.profiles.columns.union(row.index, sort=False))
+        for column, dtype in self.profiles.dtypes.items():
+            if pd.api.types.is_numeric_dtype(dtype):
+                blank = 50.0 if column.endswith("_pct") else 0.0
+                frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(blank).astype(dtype)
+        return frame
 
     def _resolve_alias(self, query: str) -> pd.Series:
         _, profiles = self._require()
@@ -242,8 +251,8 @@ class SynergyService:
         if not required:
             return None
         if not chosen["left"] or not chosen["right"]:
-            raise ValueError(f"We don't know which position {riot_id(a) if not chosen['left'] else riot_id(b)} plays. Pick one.")
-        raise ValueError(f"{riot_id(a)} and {riot_id(b)} both play {spoken(chosen['left'])}. Pick a different position for one of you.")
+            raise PairingError(f"We don't know which position {riot_id(a) if not chosen['left'] else riot_id(b)} plays. Pick one.")
+        raise PairingError(f"{riot_id(a)} and {riot_id(b)} both play {spoken(chosen['left'])}. Pick a different position for one of you.")
 
     def _interaction(self, a: pd.Series, b: pd.Series, positions: dict | None, required: bool = True, customs=None) -> dict | None:
         if positions is None:
@@ -255,7 +264,7 @@ class SynergyService:
             if known["games"] == 0:
                 if not required:
                     return None
-                raise ValueError(f"{riot_id(profile)} has no games as {spoken(positions[side])} in our data.")
+                raise PairingError(f"{riot_id(profile)} has no games as {spoken(positions[side])} in our data.")
         games = customs(a["puuid"], b["puuid"]) if customs else []
         return duo_between(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings, custom_residuals(games, self.settings))
 
@@ -286,7 +295,7 @@ class SynergyService:
         a = self.resolve(left)
         b = self.resolve(right)
         if a["puuid"] == b["puuid"]:
-            raise ValueError("a player cannot be paired with themselves")
+            raise PairingError("a player cannot be paired with themselves")
         positions = self._positions(a, b, left_position, right_position, positions_required)
         history = self._pair_history(a["puuid"], b["puuid"]) if details else {}
         games = int(history.get("games", 0) or 0)
@@ -354,7 +363,7 @@ class SynergyService:
     def team_report(self, queries: list[str]) -> dict:
         profiles = [self.resolve(query) for query in queries]
         if len(profiles) < 2:
-            raise ValueError("at least two players are required")
+            raise PairingError("at least two players are required")
         entries = []
         for left, right in combinations(range(len(profiles)), 2):
             result = self.pair_score(profiles[left]["puuid"], profiles[right]["puuid"], positions_required=False)
@@ -389,9 +398,9 @@ class SynergyService:
         self._require()
         assignments = {parse_position(position): self.resolve(query) for position, query in players.items()}
         if len(assignments) != len(players):
-            raise ValueError("each position may be given once")
+            raise PairingError("each position may be given once")
         if len({profile["puuid"] for profile in assignments.values()}) != len(assignments):
-            raise ValueError("a player cannot fill two positions")
+            raise PairingError("a player cannot fill two positions")
         names = {profile["puuid"]: riot_id(profile) for profile in assignments.values()}
         summaries = {position: self.player_summary(profile) for position, profile in assignments.items()}
         warnings = []
@@ -400,7 +409,7 @@ class SynergyService:
             if known is None:
                 return {"reliable": False, "note": NOT_FITTED, "players": summaries}
             if known["games"] == 0:
-                raise ValueError(f"{riot_id(profile)} has no games as {spoken(position)} in our data.")
+                raise PairingError(f"{riot_id(profile)} has no games as {spoken(position)} in our data.")
             warning = thin_warning(riot_id(profile), position, known["games"], known["evidence"])
             if warning:
                 warnings.append(warning)
@@ -425,8 +434,12 @@ class SynergyService:
             except UnknownPlayer:
                 rows.append({"riot_id": name, "note": UNKNOWN_NOTE})
                 continue
-            except ValueError as error:
+            except PairingError as error:
                 rows.append({"riot_id": name, "note": str(error)})
+                continue
+            except Exception:
+                logger.exception("could not score %s with %s", me, name)
+                rows.append({"riot_id": name, "note": CANNOT_SCORE})
                 continue
             friend, interaction = found["players"][1], found["interaction"]
             if interaction is None:
@@ -447,6 +460,7 @@ class SynergyService:
                     "games": interaction["right_games"],
                     "evidence": interaction["right_evidence"],
                     "games_together": found["games_together"],
+                    "standout": next(iter(interaction["reading"]["right"]["distinctive"]), None),
                     "thin": any(friend["riot_id"] in warning for warning in found["warnings"]),
                     "note": None,
                 }

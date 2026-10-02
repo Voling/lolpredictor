@@ -39,10 +39,11 @@ def store_size(settings, table) -> int:
 
 def shape(state: dict | None, riot_id: str, message: str | None = None) -> dict:
     state = state or {}
+    status = state.get("status", "refused")
     return {
         "riot_id": state.get("riot_id", riot_id),
-        "status": state.get("status", "refused"),
-        "step": state.get("step", state.get("status", "queued")),
+        "status": status,
+        "step": state.get("step", status),
         "done": int(state.get("done", 0) or 0),
         "total": int(state.get("total", 0) or 0),
         "percent": int(state.get("percent", 0) or 0),
@@ -78,6 +79,11 @@ class Evaluations:
                 raise LinkError(f"We couldn't pull {name}'s games. Try again tomorrow.")
         self.request(user, riot_id)
 
+    def _give_back(self, user: str, expires: int, day: bool) -> None:
+        self.table.add(f"user#{user}", f"evals#{self.day()}", -1, self.per_user + 1, expires)
+        if day:
+            self.table.add(EVAL, f"day#{self.day()}", -1, self.daily + 1, expires)
+
     def request(self, user: str, riot_id: str):
         riot_id = riot_id_of(riot_id)
         if self.store_size() >= self.cap_bytes:
@@ -86,11 +92,16 @@ class Evaluations:
         if self.table.add(f"user#{user}", f"evals#{self.day()}", 1, self.per_user, expires) is None:
             raise QuotaExceeded(f"You can ask for {self.per_user} new players a day. Try again tomorrow.")
         if self.table.add(EVAL, f"day#{self.day()}", 1, self.daily, expires) is None:
-            self.table.add(f"user#{user}", f"evals#{self.day()}", -1, self.per_user + 1, expires)
+            self._give_back(user, expires, day=False)
             raise LinkError("We've pulled as many new players as we can today. Try again tomorrow.")
         if not self.budget(1):
+            self._give_back(user, expires, day=True)
             raise LinkError("Riot is busy right now. Try again in a few minutes.")
-        account = self.riot.account(riot_id)
+        try:
+            account = self.riot.account(riot_id)
+        except Exception:
+            self._give_back(user, expires, day=True)
+            raise
         puuid = account["puuid"]
         name = f"{account.get('gameName', riot_id.partition('#')[0])}#{account.get('tagLine', riot_id.partition('#')[2])}"
         now = int(self.clock())

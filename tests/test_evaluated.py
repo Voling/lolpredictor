@@ -128,3 +128,26 @@ def test_an_adopted_player_fills_the_profile_columns_the_summary_reads(serving_s
     # then
     assert row["games"] == 36 and row["chances_initiate"] == 0.0 and row["style_dive_pct"] == 50.0 and row["champion_pool"] == 0.0
     assert summary["riot_id"] == "New#NA1" and summary["tendencies"]["initiate"]["chances"] == 0 and service.profiles.loc["new", "puuid"] == "new"
+
+
+def test_adopting_a_second_player_keeps_the_profile_columns_numeric_so_its_summary_still_reads(serving_settings):
+    # given
+    from synergy.ml.score import SynergyService
+
+    service = SynergyService(serving_settings)
+    service.model = object()
+    service.profiles = pd.DataFrame({"puuid": ["a"], "game_name": ["a"], "tag_line": ["NA1"], "games": [5], "winrate": [0.5], "main_position": ["TOP"], "chances_initiate": [3], "style_dive_pct": [70.0], "champion_pool": [2]}).set_index("puuid", drop=False)
+    vectors = {**_vectors(["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]), "puuid": "new"}
+    vectors["columns"], vectors["position"] = [str(c) for c in vectors["columns"]], ["TOP", "JUNGLE"]
+    second = {**_profile(), "puuid": "other", "game_name": "Other"}
+
+    # when
+    service._adopt(_profile(), vectors)
+    dtypes = service.profiles.dtypes
+    service._adopt(second, {**vectors, "puuid": "other"})
+    summary = service.player_summary(service.profiles.loc["other"])
+
+    # then
+    assert dtypes["games"].kind == "i" and dtypes["winrate"].kind == "f" and dtypes["chances_initiate"].kind == "i"
+    assert summary["riot_id"] == "Other#NA1" and summary["games"] == 36 and summary["tendencies"]["initiate"]["chances"] == 0
+    assert service.profiles.loc["other", "style_dive_pct"] == 50.0 and service.profiles.loc["other", "champion_pool"] == 0

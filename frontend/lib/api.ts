@@ -28,7 +28,9 @@ export class ApiError extends Error {
   }
 }
 
-export type Reading = { gold: number; score: number; percentile: number };
+export type Reading = { gold: number; score: number; percentile: number; style?: number; form?: number; champion?: number };
+
+export type Standout = { cell: string; words: string; phrase: string; z: number; percentile: number };
 
 export type Together = { gold: number; games: number; customs?: number };
 
@@ -67,7 +69,7 @@ export type PairScore = {
     reading: Record<
       string,
       {
-        distinctive: { cell: string; words: string; z: number; percentile: number }[];
+        distinctive: Standout[];
         situations: { situation: string; words: string; contribution: number }[];
       }
     >;
@@ -77,6 +79,7 @@ export type PairScore = {
 };
 
 export type FriendRow = {
+  standout?: Standout | null;
   pending?: Pending | null;
   riot_id: string;
   note: string | null;

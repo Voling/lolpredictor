@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
-from ..features.describe import describe, describe_situation, named, situation_of
+from ..features.describe import describe, describe_situation, named, phrase, situation_of
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
 from ..features.positions import POSITIONS, combination, spoken
@@ -506,6 +506,7 @@ def _reading(vectors: dict, position: str, columns: list[str], z: np.ndarray, co
         {
             "cell": columns[index],
             "words": describe(columns[index]),
+            "phrase": phrase(columns[index]),
             "z": round(float(z[index]), 3),
             "percentile": percentile_among(grid[index], z[index]),
         }

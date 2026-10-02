@@ -1,7 +1,7 @@
 import pytest
 
 from synergy.api.accounts import LinkError, QuotaExceeded
-from synergy.api.evaluate import EVAL, FAILED, NAMES, READY, Evaluations
+from synergy.api.evaluate import EVAL, FAILED, NAMES, READY, Evaluations, shape
 
 START = 1_790_000_000.0
 
@@ -131,3 +131,33 @@ def test_a_launch_that_fails_marks_the_request_failed():
 
     # then
     assert "couldn't start pulling" in str(refused.value) and evaluations.status("puuid-a")["status"] == FAILED
+
+
+def test_a_refused_request_without_a_state_is_shaped_as_not_started_with_the_reason():
+    # given
+    reason = "You can ask for 3 new players a day. Try again tomorrow."
+
+    # when
+    refused = shape(None, "GodsGlory7#NA1", reason)
+    queued = shape({"status": "requested", "riot_id": "GodsGlory7#NA1"}, "godsglory7#na1")
+
+    # then
+    assert refused == {"riot_id": "GodsGlory7#NA1", "status": "refused", "step": "refused", "done": 0, "total": 0, "percent": 0, "message": reason}
+    assert queued["status"] == queued["step"] == "requested" and queued["riot_id"] == "GodsGlory7#NA1" and queued["message"] is None
+
+
+def test_a_name_riot_does_not_know_gives_the_daily_slots_back():
+    # given
+    launched = []
+    evaluations = _evaluations(launched, daily=2, per_user=1)
+
+    # when
+    with pytest.raises(LinkError) as unknown:
+        evaluations.refuse("user-1", "ghost#NA1")
+    with pytest.raises(LinkError) as started:
+        evaluations.refuse("user-1", "thiqums#crocs")
+
+    # then
+    assert "doesn't know" in str(unknown.value) and "pulling" in str(started.value) and launched == ["puuid-thiqums"]
+    assert evaluations.table.items[("user#user-1", f"evals#{evaluations.day()}")]["used"] == 1
+    assert evaluations.table.items[(EVAL, f"day#{evaluations.day()}")]["used"] == 1

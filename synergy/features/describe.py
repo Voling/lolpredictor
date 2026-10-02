@@ -25,7 +25,7 @@ WARD_ZONES = {
     "own_jungle": "in own jungle",
     "enemy_jungle": "in the enemy jungle",
     "river": "in the river",
-    "other": "elsewhere",
+    "other": "away from lane, jungle and river",
 }
 OPENINGS = {"gank": "first gank", "invade": "first invade"}
 OPENING_BANDS = {"by3": "by 3 minutes", "by5": "by 5 minutes", "by8": "by 8 minutes", "late": "after 8 minutes", "never": "not before 15 minutes"}
@@ -109,6 +109,54 @@ def describe(cell: str) -> str:
         index = parts[-1].removeprefix("e")
         return f"{COMPONENTS[prefix]} {index}"
     return cell
+
+
+PRESENT_RESPONSES = {
+    "converged": "converges on",
+    "held": "holds ground at",
+    "left": "leaves after",
+    "present": "is present at",
+    "absent": "stays away from",
+}
+PRESENT_OBJECTIVE_RESPONSES = {
+    "died": "dies at",
+    "fought": "fights at",
+    "committed": "commits to",
+    "rotated": "rotates toward",
+    "approached": "approaches",
+    "absent": "stays away from",
+}
+PRESENT_OPENINGS = {"gank": "ganks first", "invade": "invades first"}
+PRESENT_JUNGLE_SIDES = {"crossed": "crosses to the other side of the jungle", "stayed": "stays on one side of the jungle"}
+
+
+def phrase(cell: str) -> str:
+    parts = cell.split("_")
+    prefix = parts[0]
+    if prefix == "rsp" and len(parts) == 5:
+        _, trigger, side, band, outcome = parts
+        return f"{PRESENT_RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+    if prefix == "obj" and len(parts) == 5:
+        _, objective, side, band, outcome = parts
+        return f"{PRESENT_OBJECTIVE_RESPONSES[outcome]} an {SIDES[side]} {OBJECTIVES[objective]} {DISTANCE[band]}"
+    if prefix == "ward" and len(parts) >= 3:
+        return f"places wards {WARD_TIMES[parts[1]]} {WARD_ZONES['_'.join(parts[2:])]}"
+    if prefix == "jgl" and parts[1] == "sides":
+        return PRESENT_JUNGLE_SIDES[parts[2]]
+    if prefix == "jgl":
+        return f"{PRESENT_OPENINGS[parts[1]]} {OPENING_BANDS[parts[2]]}"
+    if prefix == "prio":
+        words = describe(cell)
+        if words.startswith("standing"):
+            return f"is {words}"
+        return f"is {words}"
+    if prefix == "tend" and len(parts) >= 4:
+        kind = "_".join(parts[1:-2])
+        words = KINDS[kind]
+        if kind == "greed_punished":
+            words = "gets punished for greed"
+        return f"{words} {_priority(parts[-2])}, {HALVES[parts[-1]]}"
+    return describe(cell)
 
 
 def _lane_outcome(outcome: str) -> tuple[str, str, str]:

@@ -8,6 +8,7 @@ import { getPair, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { POLL_MS, Progress } from "@/lib/progress";
+import { Habits, peer, readingSentence, togetherSentence } from "@/lib/habits";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
@@ -26,7 +27,7 @@ function Result({ pair }: { pair: PairScore }) {
     return (
       <>
         <p>{pair.pending.message ?? `We're pulling ${pair.pending.riot_id}'s games.`}</p>
-        <Progress pending={pair.pending} />
+        {pair.pending.status !== "refused" && <Progress pending={pair.pending} />}
       </>
     );
   }
@@ -48,10 +49,17 @@ function Result({ pair }: { pair: PairScore }) {
       {thin.map((player) => (
         <p key={player.name} className="hint">{player.name} has {gameCount(player.games)} as {positionName(player.position)}. Treat this score as rough.</p>
       ))}
-      {(found.edge.record?.customs ?? 0) > 0 && (
-        <p className="hint">Counting {gameCount(found.edge.record!.customs!)} you two played together in customs.</p>
-      )}
       <p className="sub">50 is an average duo for these positions. Higher is better.</p>
+
+      <h3>What each of you brings</h3>
+      <p>{readingSentence(left.riot_id, found.edge.left, found.minute)}</p>
+      <p>{readingSentence(right.riot_id, found.edge.right, found.minute)}</p>
+      {found.edge.record && <p>{togetherSentence(found.edge.record.gold, found.edge.record.games, found.edge.record.customs ?? 0)}</p>}
+
+      <h3>What stands out</h3>
+      <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
+      <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
+      <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} in our data.</p>
     </>
   );
 }
