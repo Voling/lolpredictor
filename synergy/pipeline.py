@@ -49,6 +49,7 @@ SERVED_PROCESSED = (
     "pair_history.parquet",
     "propensity_report.json",
     "exposure.parquet",
+    "player_champions.parquet",
 )
 KEEP_RUNS = 5
 MANIFEST = "manifest.json"

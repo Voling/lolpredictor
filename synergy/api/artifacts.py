@@ -6,7 +6,7 @@ from pathlib import Path
 from ..config import Settings
 
 logger = logging.getLogger(__name__)
-PROCESSED = ("player_names.parquet", "player_profiles.parquet", "propensity_report.json")
+PROCESSED = ("player_names.parquet", "player_profiles.parquet", "propensity_report.json", "player_champions.parquet")
 EVALUATOR = ("cells_prio.npz", "cells_rsp.npz", "cells_obj.npz", "cells_ward.npz", "cells_jgl.npz", "cells_jgl_sides.npz", "standardise.npz", "tendency_priors.json")
 MANIFEST = "manifest.json"
 

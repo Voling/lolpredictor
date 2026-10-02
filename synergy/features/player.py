@@ -7,6 +7,7 @@ import pandas as pd
 from ..config import Settings, get_settings
 from .early import EARLY_FEATURE_COLUMNS
 from .excursion import EXCURSION_COLUMNS
+from .pools import PLAYER_CHAMPIONS, top_champions
 from .traits import load_traits
 from .wave import WAVE_FEATURE_COLUMNS
 from .normalise import apply_normaliser, fit_normaliser, player_residuals
@@ -155,6 +156,7 @@ def build_profiles(
 
     settings.processed_dir.mkdir(parents=True, exist_ok=True)
     profile.to_parquet(settings.processed_dir / "player_profiles.parquet", index=False)
+    top_champions(participations, set(profile["puuid"])).to_parquet(settings.processed_dir / PLAYER_CHAMPIONS, index=False)
     with open(settings.processed_dir / "normaliser.json", "w", encoding="utf-8") as handle:
         json.dump(stats, handle)
     logger.info("built %s player profiles", len(profile))

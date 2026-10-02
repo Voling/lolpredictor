@@ -195,3 +195,24 @@ def test_an_adopted_seat_takes_precedence_over_the_packed_one(serving_settings):
 
     # then
     assert before["games"] > 0 and position_profile("a", "TOP", settings) == {"games": 30, "evidence": 0.7}
+
+
+def test_champions_follow_the_seat_position_and_an_evaluated_pool_wins_over_the_corpus(serving_settings):
+    # given
+    from synergy.features.pools import PLAYER_CHAMPIONS
+    from synergy.ml.serving import champions_of
+
+    settings = serving_settings
+    pd.DataFrame({"puuid": ["a", "a"], "position": ["TOP", "JUNGLE"], "champions": ["Pantheon,Zaahen,KSante", "Graves,Udyr"]}).to_parquet(settings.processed_dir / PLAYER_CHAMPIONS, index=False)
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    duo_between("a", "TOP", "b", "JUNGLE", settings)
+    vectors = {**_vectors(columns), "columns": columns, "position": ["TOP", "JUNGLE"]}
+
+    # when
+    before = (champions_of("a", "TOP", settings), champions_of("a", "JUNGLE", settings), champions_of("a", "BOTTOM", settings))
+    adopt_player(settings, {**_profile(), "puuid": "a"}, vectors)
+    after = champions_of("a", "TOP", settings)
+
+    # then
+    assert before == (["Pantheon", "Zaahen", "KSante"], ["Graves", "Udyr"], [])
+    assert after == ["Garen", "Darius"] and champions_of("a", "JUNGLE", settings) == ["Amumu"]

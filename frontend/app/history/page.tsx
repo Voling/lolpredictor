@@ -4,6 +4,7 @@ import Link from "next/link";
 import { getHistory, type SavedCheck } from "@/lib/api";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { positionName } from "@/lib/positions";
+import { RecentDuos } from "@/lib/recent";
 import { useRemote } from "@/lib/remote";
 import { Verdict } from "@/lib/verdict";
 
@@ -16,6 +17,8 @@ function title(check: SavedCheck): string {
   return `${names[0]} with ${names.length - 1} ${names.length === 2 ? "friend" : "friends"}`;
 }
 
+const RECENT = 5;
+
 function href(check: SavedCheck): string {
   return `/${check.kind === "pair" ? "pair" : "friends"}/?saved=${encodeURIComponent(check.id)}`;
 }
@@ -24,6 +27,7 @@ export default function HistoryPage() {
   const account = useAccount();
   const ready = account.enabled && accountReady(account);
   const { data, error, loading } = useRemote(ready ? getHistory : null, `history|${ready}`);
+  const recent = (data?.checks ?? []).flatMap((check) => (check.duos ?? []).map((duo) => ({ ...duo, href: href(check) }))).slice(0, RECENT);
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
@@ -33,6 +37,13 @@ export default function HistoryPage() {
       {loading && !data && <p className="sub">Loading your checks…</p>}
       {error && <div className="gate"><strong>Can&apos;t load your checks.</strong>{error}</div>}
       {data && data.checks.length === 0 && <p>Nothing saved yet. Checks appear here after you check a duo or rank your friends.</p>}
+      {recent.length > 0 && (
+        <>
+          <h3>Your recent predictions</h3>
+          <RecentDuos duos={recent} />
+        </>
+      )}
+      {data && data.checks.length > 0 && <h3>All checks</h3>}
       {data && data.checks.length > 0 && (
         <table>
           <thead>

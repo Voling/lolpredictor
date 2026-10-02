@@ -86,7 +86,9 @@ ul.recent li { padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); }
 ul.recent li:last-child { border-bottom: 0; }
 ul.recent .demo-names { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
 .seat { display: inline-flex; align-items: center; gap: 0.4rem; }
-.seat img { width: 28px; height: 28px; }
+.seat img { width: 24px; height: 24px; }
+.seat-champions { display: inline-flex; gap: 2px; }
+.seat-name { font-weight: 600; }
 @media (max-width: 480px) {
   th, td { padding: 0.4rem 0.35rem; }
   .few { display: block; margin: 0.1rem 0 0; }

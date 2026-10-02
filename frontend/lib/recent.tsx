@@ -1,7 +1,10 @@
+import Link from "next/link";
 import type { RecentDuo, RecentSeat } from "./api";
 import { championIcon, rankName } from "./ddragon";
 import { positionName } from "./positions";
 import { Verdict } from "./verdict";
+
+export type ShownDuo = RecentDuo & { href?: string };
 
 function gold(value: number, minute: number): string {
   const rounded = Math.round(Math.abs(value) / 50) * 50;
@@ -12,22 +15,36 @@ function gold(value: number, minute: number): string {
 function Seat({ seat }: { seat: RecentSeat }) {
   return (
     <span className="seat">
-      {seat.champion && <img src={championIcon(seat.champion)} alt={seat.champion} width={28} height={28} />}
+      {seat.name && <span className="seat-name">{seat.name}</span>}
+      {(seat.champions ?? []).length > 0 && (
+        <span className="seat-champions">
+          {(seat.champions ?? []).map((champion) => (
+            <img key={champion} src={championIcon(champion)} alt={champion} title={champion} width={24} height={24} />
+          ))}
+        </span>
+      )}
       {rankName(seat.tier, seat.division)} <span className="demo-position">{seat.position ? positionName(seat.position) : ""}</span>
     </span>
   );
 }
 
-export function RecentDuos({ duos }: { duos: RecentDuo[] }) {
+function Duo({ duo }: { duo: ShownDuo }) {
+  return (
+    <>
+      <div className="demo-names"><Seat seat={duo.left} /> with <Seat seat={duo.right} /></div>
+      <div className="demo-result">
+        <strong>{Math.round(duo.score)}</strong> <Verdict score={duo.score} /> <span className="demo-gold">{gold(duo.gold, duo.minute)}</span>
+        {duo.href && <Link href={duo.href} className="demo-gold">Open</Link>}
+      </div>
+    </>
+  );
+}
+
+export function RecentDuos({ duos }: { duos: ShownDuo[] }) {
   return (
     <ul className="recent">
-      {duos.map((duo) => (
-        <li key={`${duo.at}-${duo.score}-${duo.left.champion}-${duo.right.champion}`}>
-          <div className="demo-names"><Seat seat={duo.left} /> with <Seat seat={duo.right} /></div>
-          <div className="demo-result">
-            <strong>{Math.round(duo.score)}</strong> <Verdict score={duo.score} /> <span className="demo-gold">{gold(duo.gold, duo.minute)}</span>
-          </div>
-        </li>
+      {duos.map((duo, index) => (
+        <li key={`${duo.at}-${duo.score}-${index}`}><Duo duo={duo} /></li>
       ))}
     </ul>
   );

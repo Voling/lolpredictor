@@ -1,5 +1,10 @@
+var OPEN = { "/api/recent": true };
+
 function handler(event) {
   var request = event.request;
+  if (OPEN[request.uri] && (request.method === "GET" || request.method === "HEAD")) {
+    return request;
+  }
   var token = request.headers["x-auth"];
   if (token && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token.value) && token.value.length < 8192) {
     return request;

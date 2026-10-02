@@ -4,7 +4,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Path, Query
+from fastapi import FastAPI, Header, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -13,18 +13,19 @@ from ..config import get_settings
 from ..features.outsider import corpus_quantiles, outsider_pair, outsider_profile
 from ..ml import score
 from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, epoch_of, get_service, reload_service, riot_id
-from ..ml.serving import warm
+from ..ml.serving import champions_of, warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
 from .artifacts import fetch_run
 from .customs import SharedCustoms
 from .evaluate import GIB, Evaluations, shape, store_size
-from .history import History
+from .history import History, duo_view, public
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
 POSITION = 12
 CHECK_ID = 80
+RECENT_CACHE = "public, max-age=30"
 _accounts: Accounts | None = None
 _customs: SharedCustoms | None = None
 _evaluations: Evaluations | None = None
@@ -142,11 +143,19 @@ def get_history() -> History:
     return _history
 
 
-def _save_check(user: str, kind: str, request: str, found: dict) -> None:
+def _save_check(user: str, kind: str, request: str, found: dict, duos: list[dict]) -> None:
     try:
-        get_history().save(user, kind, request, found)
+        get_history().save(user, kind, request, found, duos)
     except Exception:
         logger.exception("could not save the check")
+
+
+def _duos(remember, found: dict, me: str, service) -> list[dict]:
+    try:
+        return remember(found, me, service)
+    except Exception:
+        logger.exception("could not describe the duo")
+        return []
 
 
 def get_verifier():
@@ -223,23 +232,23 @@ def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda 
                 if pending:
                     row["pending"] = pending
                     row["note"] = pending.get("message") or row["note"]
-    _save_check(user, query[0], request, found)
+    duos = _duos(remember, found, me, service)
+    _save_check(user, query[0], request, found, duos)
     back = unscored(found) if charged else 0
     if back:
         accounts.refund(user, back)
-    if charged:
+    if charged and duos:
         try:
-            duos = remember(found, me, service)
-            if duos:
-                accounts.remember(duos)
+            accounts.remember([public(duo) for duo in duos])
         except Exception:
             logger.exception("could not remember the duo")
     return {**found, "remaining": left + back}
 
 
-def _seat(profile, position: str, prefix: str) -> dict:
+def seat_memory(profile, position: str, prefix: str, settings) -> dict:
     return {
-        f"{prefix}_champion": profile.get("main_champion"),
+        f"{prefix}_name": riot_id(profile),
+        f"{prefix}_champions": ",".join(champions_of(profile["puuid"], position, settings)) or None,
         f"{prefix}_tier": profile.get("tier"),
         f"{prefix}_division": profile.get("division"),
         f"{prefix}_position": position,
@@ -247,9 +256,10 @@ def _seat(profile, position: str, prefix: str) -> dict:
 
 
 def _memory(me_profile, me_position: str, friend_profile, friend_position: str, score: float, gold: float, minute: int) -> dict:
+    settings = get_settings()
     return {
-        **_seat(me_profile, me_position, "left"),
-        **_seat(friend_profile, friend_position, "right"),
+        **seat_memory(me_profile, me_position, "left", settings),
+        **seat_memory(friend_profile, friend_position, "right", settings),
         "score": round(float(score), 1),
         "gold": round(float(gold), 1),
         "minute": int(minute),
@@ -271,17 +281,6 @@ def _remember_friends(found: dict, me: str, service) -> list[dict]:
         for row in found["friends"]
         if row.get("score") is not None
     ]
-
-
-def _shape(duo: dict) -> dict:
-    return {
-        "left": {name: duo.get(f"left_{name}") for name in ("champion", "tier", "division", "position")},
-        "right": {name: duo.get(f"right_{name}") for name in ("champion", "tier", "division", "position")},
-        "score": duo.get("score"),
-        "gold": duo.get("gold"),
-        "minute": duo.get("minute"),
-        "at": duo.get("at"),
-    }
 
 
 def _public_routes(app: FastAPI) -> None:
@@ -317,12 +316,9 @@ def _public_routes(app: FastAPI) -> None:
         return _handle(lambda: _refresh(get_verifier().subject(x_auth), request.riot_id))
 
     @app.get("/api/recent")
-    def recent(x_auth: str | None = Header(None)):
-        def read():
-            get_verifier().subject(x_auth)
-            return {"duos": [_shape(duo) for duo in get_accounts().recent()]}
-
-        return _handle(read)
+    def recent(response: Response):
+        response.headers["Cache-Control"] = RECENT_CACHE
+        return _handle(lambda: {"duos": [duo_view(duo) for duo in get_accounts().recent()]})
 
     @app.post("/api/link")
     def link(request: LinkRequest, x_auth: str | None = Header(None)):

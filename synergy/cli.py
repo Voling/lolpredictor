@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("runs", help="list pipeline runs and which one is served")
     sub.add_parser("pack", help="write the served run's style vectors so the API starts without the style table")
     sub.add_parser("exposure", help="count each player's chances per situation so the API can draw behaviour as posteriors")
+    sub.add_parser("champions", help="write each profiled player's three most played champions per position for the served run")
     sub.add_parser("fits", help="save the corpus fitted cell worlds, kappas and tendency models so new players can be scored without a rebuild")
     sub.add_parser("bundle", help="copy the saved fits and encoders next to the served run so the evaluator can score new players")
     promote_cmd = sub.add_parser("promote", help="serve a run's artifacts, or snapshot the working artifacts as a new run")
@@ -337,6 +338,21 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copy2(report["path"], settings.served_processed_dir / EXPOSURE_TABLE)
             report["served"] = str(settings.served_processed_dir / EXPOSURE_TABLE)
         _report(report)
+        return 0
+
+    if args.command == "champions":
+        import pandas as pd
+
+        from .features.pools import PLAYER_CHAMPIONS, top_champions
+
+        seats = pd.read_parquet(settings.processed_dir / "participations.parquet", columns=["puuid", "position", "champion_name", "game_creation"])
+        profiled = set(pd.read_parquet(settings.served_processed_dir / "player_profiles.parquet", columns=["puuid"])["puuid"])
+        table = top_champions(seats, profiled)
+        targets = {settings.processed_dir / PLAYER_CHAMPIONS, settings.served_processed_dir / PLAYER_CHAMPIONS}
+        for target in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            table.to_parquet(target, index=False)
+        _report({"rows": int(len(table)), "players": int(table["puuid"].nunique()), "written": sorted(str(target) for target in targets)})
         return 0
 
     if args.command == "pack":

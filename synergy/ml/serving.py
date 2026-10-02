@@ -9,6 +9,7 @@ import pandas as pd
 from ..config import Settings, get_settings
 from ..features.describe import describe, describe_situation, named, phrase, situation_of
 from ..features.exposure import EXPOSURE_TABLE
+from ..features.pools import PLAYER_CHAMPIONS, ranked_pool
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
 from ..features.positions import POSITIONS, combination, spoken
@@ -103,6 +104,7 @@ def _pack(columns, puuid, position, seats, evidence, matrix, grid, exposure=None
         "extra": {},
         "extra_history": {},
         "extra_exposure": {},
+        "extra_champions": {},
     }
 
 
@@ -139,8 +141,24 @@ def adopt_player(settings: Settings, profile: dict, vectors: dict) -> None:
             pack["extra"][key] = seat
             champions = (profile.get("champions") or {}).get(key[1], {})
             pack["extra_history"][key] = (0.0, pool_effect(settings, key[1], champions), seat[1])
+            pack["extra_champions"][key] = ranked_pool(champions)
             if exposure is not None:
                 pack["extra_exposure"][key] = dict(zip([str(name) for name in vectors["exposure_columns"]], np.asarray(exposure[index], dtype=float)))
+
+
+def _champion_index(path: Path) -> dict[tuple[str, str], list[str]]:
+    table = pd.read_parquet(path, columns=["puuid", "position", "champions"])
+    return {(puuid, position): champions.split(",") for puuid, position, champions in zip(table["puuid"], table["position"], table["champions"])}
+
+
+def champions_of(puuid: str, position: str, settings: Settings) -> list[str]:
+    columns = _model_columns(settings)
+    pack = _vectors(settings, columns) if columns else None
+    adopted = None if pack is None else pack["extra_champions"].get((puuid, position))
+    if adopted is not None:
+        return list(adopted)
+    index = cached(settings.served_processed_dir / PLAYER_CHAMPIONS, "champions", _champion_index)
+    return list((index or {}).get((puuid, position), []))
 
 
 def _effects(path: Path) -> dict[tuple[str, str], float]:
@@ -274,6 +292,7 @@ def warm(settings: Settings | None = None) -> None:
     known_names(settings)
     record_between("", "", settings)
     player_history("", "", settings)
+    champions_of("", "", settings)
 
 
 def known_names(settings: Settings) -> dict[tuple[str, str], str] | None:

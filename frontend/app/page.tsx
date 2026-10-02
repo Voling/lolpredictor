@@ -20,7 +20,7 @@ export default function Home() {
   const account = useAccount();
   const canAsk = !authEnabled || account.signedIn;
   const { data: status, error } = useRemote(canAsk ? getStatus : null, `status|${canAsk}`);
-  const { data: recent } = useRemote(authEnabled && account.signedIn ? getRecent : null, `recent|${account.signedIn}`);
+  const { data: recent } = useRemote(getRecent, "recent");
   const daily = account.me?.daily;
 
   return (

@@ -16,7 +16,7 @@ export type Status = {
   } | null;
 };
 
-export type RecentSeat = { champion: string | null; tier: string | null; division: string | null; position: string | null };
+export type RecentSeat = { champions?: string[]; tier: string | null; division: string | null; position: string | null; name?: string };
 export type RecentDuo = { left: RecentSeat; right: RecentSeat; score: number; gold: number; minute: number; at: number };
 export type Recent = { duos: RecentDuo[] };
 
@@ -48,7 +48,7 @@ export type Player = { riot_id: string; main_position: string; games: number; wi
 
 export type Evaluations = { players: Pending[] };
 
-export type SavedCheck = { id: string; at: number; kind: string; names: (string | null)[]; positions: (string | null)[]; score: number | null };
+export type SavedCheck = { id: string; at: number; kind: string; names: (string | null)[]; positions: (string | null)[]; score: number | null; duos?: RecentDuo[] };
 
 export type History = { checks: SavedCheck[] };
 
