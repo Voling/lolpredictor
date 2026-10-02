@@ -80,3 +80,18 @@ def test_every_named_cell_reads_as_a_present_tense_habit():
         "dives with top, mid and bot holding priority, on own half",
     ]
     assert all(named(cell) for cell in cells) and phrase("habit_3") == "habit component 3"
+
+
+def test_every_outcome_and_tendency_reads_as_words():
+    # given
+    from synergy.features.describe import outcome_words, tendency_words
+    from synergy.features.reaction import OBJECTIVE_RESPONSES, OPENING_OUTCOMES, RESPONSES, SIDES, WARD_ZONES
+    from synergy.ml.posteriors import LANE_ORDER
+
+    # when
+    words = [outcome_words(name) for family in (RESPONSES, OBJECTIVE_RESPONSES, WARD_ZONES, OPENING_OUTCOMES, SIDES, LANE_ORDER) for name in family]
+
+    # then
+    assert all(word and "_" not in word for word in words) and outcome_words("deep_own") == "deep in own half"
+    assert tendency_words("follow", "-m-", "own") == "following into fights with mid holding priority, on own half"
+    assert tendency_words("initiate", "tmb", "away") == "starting fights with top, mid and bot holding priority, on the enemy half"

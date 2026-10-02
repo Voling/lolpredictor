@@ -34,6 +34,14 @@ export type Standout = { cell: string; words: string; phrase: string; z: number;
 
 export type Together = { gold: number; games: number; customs?: number };
 
+export type Band = { mean: number; low: number; high: number };
+
+export type PosteriorOutcome = Band & { name: string; words: string; prior: number };
+
+export type Posterior = { situation: string; words: string; kind: "shares" | "ratio"; n: number; outcomes?: PosteriorOutcome[]; ratio?: Band; observed?: number; expected?: number };
+
+export type Difference = { situation: string; words: string; overlap: number; outcomes: { name: string; words: string; left: Band; right: Band }[] };
+
 export type Pending = { riot_id: string; status: string; step: string; done: number; total: number; percent: number; message: string | null };
 
 export type Player = { riot_id: string; main_position: string; games: number; winrate: number; latest_game?: number | null; refresh_after?: number | null };
@@ -84,6 +92,7 @@ export type PairScore = {
         situations: { situation: string; words: string; contribution: number }[];
       }
     >;
+    posteriors?: { left: Posterior[]; right: Posterior[]; differences: Difference[] };
   } | null;
   players: Player[];
   remaining?: number;

@@ -7,6 +7,7 @@ from ..config import Settings
 
 logger = logging.getLogger(__name__)
 PROCESSED = ("player_names.parquet", "player_profiles.parquet", "propensity_report.json")
+EVALUATOR = ("cells_prio.npz", "cells_rsp.npz", "cells_obj.npz", "cells_ward.npz", "cells_jgl.npz", "cells_jgl_sides.npz", "standardise.npz", "tendency_priors.json")
 MANIFEST = "manifest.json"
 
 
@@ -37,8 +38,9 @@ def _listed(client, bucket: str, prefix: str) -> dict[str, int]:
 def _wanted(client, bucket: str, run: str) -> dict[str, int]:
     models = _listed(client, bucket, f"runs/{run}/models/")
     processed = {key: size for key, size in _listed(client, bucket, f"runs/{run}/processed/").items() if key.rsplit("/", 1)[-1] in PROCESSED}
+    evaluator = {key: size for key, size in _listed(client, bucket, f"runs/{run}/evaluator/").items() if key.rsplit("/", 1)[-1] in EVALUATOR}
     manifest = _listed(client, bucket, f"runs/{run}/{MANIFEST}")
-    return {**models, **processed, **manifest}
+    return {**models, **processed, **evaluator, **manifest}
 
 
 def _target(settings: Settings, run: str, key: str) -> Path:

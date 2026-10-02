@@ -14,6 +14,7 @@ from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
 from .evaluated import FRESH_SECONDS, profile_row
+from .posteriors import duo_posteriors
 from .serving import adopt_player, custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
 
 logger = logging.getLogger(__name__)
@@ -320,6 +321,8 @@ class SynergyService:
         games = int(history.get("games", 0) or 0)
         wins = float(history.get("wins", 0) or 0)
         interaction = self._interaction(a, b, positions, positions_required, customs)
+        if interaction:
+            interaction["posteriors"] = duo_posteriors(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
         return {
             "score": interaction["score"] if interaction else None,
             "projected_gold": interaction["projected_gold"] if interaction else None,

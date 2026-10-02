@@ -63,6 +63,47 @@ KIND_SITUATIONS = {
 LANES = {"t": "top", "m": "mid", "b": "bot"}
 HALVES = {"own": "on own half", "away": "on the enemy half"}
 COMPONENTS = {"habit": "habit component", "move": "movement component", "style": "embedding component"}
+OUTCOME_WORDS = {
+    "converged": "converged",
+    "held": "held ground",
+    "left": "left",
+    "present": "stayed present",
+    "absent": "stayed away",
+    "died": "died",
+    "fought": "fought",
+    "committed": "committed",
+    "rotated": "rotated over",
+    "approached": "approached",
+    "lane_own_side": "own side of lane",
+    "lane_middle": "middle of lane",
+    "lane_enemy_side": "enemy side of lane",
+    "own_jungle": "own jungle",
+    "enemy_jungle": "enemy jungle",
+    "river": "river",
+    "other": "elsewhere",
+    "by3": "by 3 minutes",
+    "by5": "by 5 minutes",
+    "by8": "by 8 minutes",
+    "late": "after 8 minutes",
+    "never": "not before 15",
+    "crossed": "crossed sides",
+    "stayed": "stayed one side",
+    "deep_own": "deep in own half",
+    "own": "own side",
+    "mid": "middle",
+    "theirs": "enemy side",
+    "deep_theirs": "deep in enemy half",
+    "off_lane": "off lane",
+    "dead": "dead",
+}
+
+
+def outcome_words(outcome: str) -> str:
+    return OUTCOME_WORDS.get(outcome, outcome.replace("_", " "))
+
+
+def tendency_words(kind: str, pattern: str, half: str) -> str:
+    return f"{KIND_SITUATIONS[kind]} {_priority(pattern)}, {HALVES[half]}"
 
 
 def _priority(lanes: str) -> str:

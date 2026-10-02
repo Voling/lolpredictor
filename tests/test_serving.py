@@ -428,3 +428,21 @@ def test_warming_up_loads_every_served_table_once(serving_settings, monkeypatch)
 
     # then
     assert "vectors:2:" in "".join(loads) and "npz" in loads and len(loads) == again
+
+
+def test_a_cell_on_which_players_do_not_differ_is_never_a_standout():
+    # given
+    from synergy.ml.serving import _reading
+
+    columns = ["tend_follow_-m-_own", "rsp_kill_ours_far_converged"]
+    rigid = np.full(1001, -0.012)
+    rigid[-1] = 6.5
+    varied = np.linspace(-1.0, 1.0, 1001)
+    vectors = {"grid": {"MIDDLE": np.stack([rigid, varied])}}
+
+    # when
+    reading = _reading(vectors, "MIDDLE", columns, np.array([6.5, 0.9]), np.array([0.3, 0.1]))
+
+    # then
+    assert [entry["cell"] for entry in reading["distinctive"]] == ["rsp_kill_ours_far_converged"]
+    assert reading["distinctive"][0]["percentile"] == 94.9

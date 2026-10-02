@@ -8,6 +8,7 @@ import pandas as pd
 
 from ..config import Settings, get_settings
 from ..features.describe import describe, describe_situation, named, phrase, situation_of
+from ..features.exposure import EXPOSURE_TABLE
 from ..features.hinge import RESPONSES as HINGE_RESPONSES
 from ..features.hinge import TABLE as HINGE_TABLE
 from ..features.positions import POSITIONS, combination, spoken
@@ -31,6 +32,7 @@ VECTORS_FILE = "style_vectors.npz"
 STYLES_TABLE = "player_styles.parquet"
 PROFILES_TABLE = "player_profiles.parquet"
 GRID = 1001
+MIN_GRID = 20
 CHAMPION_EFFECTS = "champion_effects.parquet"
 UNRELIABLE = "the fit did not beat shuffled partners on this corpus, so it is shown for inspection only"
 
@@ -86,7 +88,7 @@ def percentile_among(grid: np.ndarray, value: float) -> float:
     return round(float(np.searchsorted(grid, value, side="left") / len(grid) * 100.0), 1)
 
 
-def _pack(columns, puuid, position, seats, evidence, matrix, grid) -> dict:
+def _pack(columns, puuid, position, seats, evidence, matrix, grid, exposure=None, exposure_columns=()) -> dict:
     return {
         "columns": list(columns),
         "puuid": puuid,
@@ -96,8 +98,11 @@ def _pack(columns, puuid, position, seats, evidence, matrix, grid) -> dict:
         "evidence": evidence,
         "matrix": matrix,
         "grid": grid,
+        "exposure": exposure,
+        "exposure_columns": [str(name) for name in exposure_columns],
         "extra": {},
         "extra_history": {},
+        "extra_exposure": {},
     }
 
 
@@ -111,6 +116,16 @@ def seat_of(vectors: dict, puuid: str, position: str) -> tuple[np.ndarray, int, 
     return vectors["matrix"][row].astype(float), int(vectors["seats"][row]), float(vectors["evidence"][row])
 
 
+def exposure_of(vectors: dict, puuid: str, position: str) -> dict[str, float] | None:
+    found = vectors["extra_exposure"].get((puuid, position))
+    if found is not None:
+        return found
+    row = vectors["at"].get((puuid, position))
+    if row is None or vectors.get("exposure") is None:
+        return None
+    return dict(zip(vectors["exposure_columns"], vectors["exposure"][row].astype(float)))
+
+
 def adopt_player(settings: Settings, profile: dict, vectors: dict) -> None:
     from .evaluated import pool_effect, seats_of
 
@@ -118,11 +133,14 @@ def adopt_player(settings: Settings, profile: dict, vectors: dict) -> None:
     pack = _vectors(settings, columns) if columns else None
     if pack is None:
         return
+    exposure = vectors.get("exposure")
     with _lock:
-        for key, seat in seats_of({**vectors, "puuid": profile["puuid"]}, columns).items():
+        for index, (key, seat) in enumerate(seats_of({**vectors, "puuid": profile["puuid"]}, columns).items()):
             pack["extra"][key] = seat
             champions = (profile.get("champions") or {}).get(key[1], {})
             pack["extra_history"][key] = (0.0, pool_effect(settings, key[1], champions), seat[1])
+            if exposure is not None:
+                pack["extra_exposure"][key] = dict(zip([str(name) for name in vectors["exposure_columns"]], np.asarray(exposure[index], dtype=float)))
 
 
 def _effects(path: Path) -> dict[tuple[str, str], float]:
@@ -134,7 +152,16 @@ def champion_effects(settings: Settings) -> dict[tuple[str, str], float] | None:
     return cached(settings.served_model_dir / CHAMPION_EFFECTS, "effects", _effects)
 
 
-def build_vectors(path: Path, columns: list[str], keep=None) -> dict | None:
+def _exposure_of_table(table: pd.DataFrame, path: Path | None) -> tuple[np.ndarray | None, list[str]]:
+    if path is None or not path.exists():
+        return None, []
+    found = pd.read_parquet(path)
+    names = [column for column in found.columns if column not in ("puuid", "position")]
+    joined = table[["puuid", "position"]].merge(found, on=["puuid", "position"], how="left")
+    return joined[names].fillna(0.0).to_numpy(dtype=np.float16), names
+
+
+def build_vectors(path: Path, columns: list[str], keep=None, exposure_path: Path | None = None) -> dict | None:
     table = pd.read_parquet(path)
     if "position" not in table.columns or any(column not in table.columns for column in columns):
         return None
@@ -143,6 +170,7 @@ def build_vectors(path: Path, columns: list[str], keep=None) -> dict | None:
     grid = {name: _grid(matrix[position == name]) for name in np.unique(position)}
     kept = np.ones(len(table), dtype=bool) if keep is None else table["puuid"].isin(keep).to_numpy()
     evidence = table["evidence"].to_numpy(dtype=np.float32) if "evidence" in table.columns else np.full(len(table), np.nan, dtype=np.float32)
+    exposure, exposure_columns = _exposure_of_table(table, exposure_path)
     return _pack(
         columns,
         table["puuid"].to_numpy(dtype=str)[kept],
@@ -151,13 +179,26 @@ def build_vectors(path: Path, columns: list[str], keep=None) -> dict | None:
         evidence[kept],
         matrix[kept],
         grid,
+        None if exposure is None else exposure[kept],
+        exposure_columns,
     )
 
 
 def _read_vectors(path: Path) -> dict:
     data = _npz(path)
     grid = {name.removeprefix("grid_"): data[name] for name in data if name.startswith("grid_")}
-    return _pack([str(name) for name in data["columns"]], data["puuid"], data["position"], data["seats"], data["evidence"], data["matrix"], grid)
+    exposure = data.get("exposure")
+    return _pack(
+        [str(name) for name in data["columns"]],
+        data["puuid"],
+        data["position"],
+        data["seats"],
+        data["evidence"],
+        data["matrix"],
+        grid,
+        exposure,
+        data["exposure_columns"] if exposure is not None else (),
+    )
 
 
 def _profiled(processed_dir: Path) -> set[str] | None:
@@ -171,7 +212,7 @@ def _vectors(settings: Settings, columns: list[str]) -> dict | None:
         return packed
     kind = f"vectors:{len(columns)}:{hash(tuple(columns))}"
     processed = settings.served_processed_dir
-    return cached(processed / STYLES_TABLE, kind, lambda path: build_vectors(path, list(columns), _profiled(processed)))
+    return cached(processed / STYLES_TABLE, kind, lambda path: build_vectors(path, list(columns), _profiled(processed), processed / EXPOSURE_TABLE))
 
 
 def write_vectors(model_dir: Path, processed_dir: Path) -> Path | None:
@@ -180,10 +221,11 @@ def write_vectors(model_dir: Path, processed_dir: Path) -> Path | None:
     saved = _npz(model_dir / MATRIX_FILE)
     if "columns" not in saved:
         return None
-    pack = build_vectors(processed_dir / STYLES_TABLE, [str(name) for name in saved["columns"]], _profiled(processed_dir))
+    pack = build_vectors(processed_dir / STYLES_TABLE, [str(name) for name in saved["columns"]], _profiled(processed_dir), processed_dir / EXPOSURE_TABLE)
     if pack is None:
         return None
     target = model_dir / VECTORS_FILE
+    extra = {} if pack["exposure"] is None else {"exposure": pack["exposure"], "exposure_columns": np.array(pack["exposure_columns"])}
     np.savez(
         target,
         columns=np.array(pack["columns"]),
@@ -193,6 +235,7 @@ def write_vectors(model_dir: Path, processed_dir: Path) -> Path | None:
         evidence=pack["evidence"],
         matrix=pack["matrix"],
         **{f"grid_{name}": grid for name, grid in pack["grid"].items()},
+        **extra,
     )
     return target
 
@@ -500,9 +543,15 @@ def duo_between(
     }
 
 
+def _varies(grid_row: np.ndarray) -> bool:
+    if len(grid_row) < MIN_GRID:
+        return True
+    return bool(grid_row[len(grid_row) * 3 // 4] - grid_row[len(grid_row) // 4] > 1e-9)
+
+
 def _reading(vectors: dict, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
     grid = vectors["grid"][position]
-    keep = [index for index, cell in enumerate(columns) if named(cell)]
+    keep = [index for index, cell in enumerate(columns) if named(cell) and _varies(grid[index])]
     order = sorted(keep, key=lambda index: -abs(z[index]))[:DISTINCTIVE]
     distinctive = [
         {

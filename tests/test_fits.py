@@ -104,3 +104,29 @@ def test_saved_tendencies_reproduce_the_build_for_the_same_rows_and_fill_missing
         assert np.allclose(merged[column], merged[f"{column}_build"])
     assert set(TENDENCY_COLUMNS) <= set(out.columns) and len(evidence) == len(everyone)
     assert COVARIATES[0] in fit["columns"] and any(column.startswith("role_") for column in fit["columns"])
+
+
+def test_tendency_totals_sum_what_was_seen_and_expected_per_player_and_situation():
+    # given
+    from synergy.features.fits import _with_context, tendency_totals
+    from synergy.features.tendency import CELLS
+
+    rng = np.random.default_rng(5)
+    seats = _seats()
+    kind = KINDS[0]
+    opportunities = _opportunities(rng, seats, kind)
+    context = pd.DataFrame({"match_id": seats.match_id, "puuid": seats.puuid, "minute": 5, **{column: rng.random(len(seats)) for column in CONTEXT}})
+    fill = {column: float(context[column].mean()) for column in CONTEXT}
+    subset = _with_context(opportunities, context, fill).merge(seats, on=["match_id", "puuid"], how="inner")
+    everyone = seats[["puuid", "position"]].drop_duplicates().set_index(["puuid", "position"]).index
+    fit, frame = fit_kind(subset, everyone, 1.0, fill)
+
+    # when
+    totals = tendency_totals({kind: fit}, lambda wanted: opportunities[opportunities["kind"] == wanted], context, seats)
+
+    # then
+    sums = frame.groupby(["puuid", "position", "cell"])[["observed", "expected"]].sum()
+    who, cell = (frame.puuid.iloc[0], frame.position.iloc[0]), frame.cell.iloc[0]
+    row = totals.set_index(["puuid", "position"]).loc[who]
+    assert np.isclose(row[f"tend_{kind}_{cell}_obs"], sums.loc[(*who, cell), "observed"]) and np.isclose(row[f"tend_{kind}_{cell}_exp"], sums.loc[(*who, cell), "expected"])
+    assert len(totals) == len(everyone) and all(f"tend_{kind}_{name}_{part}" in totals.columns for name in CELLS for part in ("obs", "exp"))

@@ -1,3 +1,4 @@
+import json
 import pickle
 from pathlib import Path
 
@@ -16,7 +17,9 @@ from .propensity import COVARIATES, KINDS, _gamma_prior
 PRIORITY_FIT = "cells_prio.npz"
 REACTION_FITS = ("cells_rsp.npz", "cells_obj.npz", "cells_ward.npz", "cells_jgl.npz", "cells_jgl_sides.npz")
 TENDENCY_FIT = "tendency_fit.pkl"
+PRIORS_FILE = "tendency_priors.json"
 FIT_FILES = (PRIORITY_FIT, *REACTION_FITS, TENDENCY_FIT)
+BUNDLE = "evaluator"
 
 
 def save_cells(path: Path, fit: CellFit, positions: list[str]) -> None:
@@ -154,6 +157,34 @@ def load_tendencies(path: Path) -> dict:
         return pickle.load(handle)
 
 
+def save_priors(path: Path, fits: dict) -> None:
+    path.write_text(json.dumps({kind: None if fit is None else fit["prior"] for kind, fit in fits.items()}), encoding="utf-8")
+
+
+def _kind_frame(fit: dict, rows: pd.DataFrame, context: pd.DataFrame, seats: pd.DataFrame) -> pd.DataFrame | None:
+    subset = _with_context(rows, context, fit["fill"]).merge(seats, on=["match_id", "puuid"], how="inner")
+    if subset.empty:
+        return None
+    design = _design(subset).reindex(columns=fit["columns"], fill_value=0.0)
+    return _frame(subset, fit["model"].predict_proba(design)[:, 1])
+
+
+def tendency_totals(fits: dict, rows_of, context: pd.DataFrame, seats: pd.DataFrame) -> pd.DataFrame:
+    from .tendency import CELLS
+
+    out = seats[KEY].drop_duplicates().reset_index(drop=True)
+    for kind in KINDS:
+        fit = fits.get(kind)
+        rows = None if fit is None else rows_of(kind)
+        frame = None if rows is None or rows.empty else _kind_frame(fit, rows, context, seats)
+        if frame is not None:
+            sums = frame.groupby([*KEY, "cell"])[["observed", "expected"]].sum().unstack("cell")
+            sums.columns = [f"tend_{kind}_{cell}_{'obs' if name == 'observed' else 'exp'}" for name, cell in sums.columns]
+            out = out.merge(sums.reset_index(), on=KEY, how="left")
+    missing = [f"tend_{kind}_{cell}_{short}" for kind in KINDS for cell in CELLS for short in ("obs", "exp") if f"tend_{kind}_{cell}_{short}" not in out.columns]
+    return pd.concat([out, pd.DataFrame(0.0, index=out.index, columns=missing)], axis=1).fillna(0.0)
+
+
 def apply_tendencies(fits: dict, opportunities: pd.DataFrame, context: pd.DataFrame, seats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     from .tendency import TENDENCY_COLUMNS, leave_one_out_ratio
 
@@ -165,11 +196,9 @@ def apply_tendencies(fits: dict, opportunities: pd.DataFrame, context: pd.DataFr
         rows = opportunities[opportunities["kind"] == kind]
         if fit is None or rows.empty:
             continue
-        subset = _with_context(rows, context, fit["fill"]).merge(seats, on=["match_id", "puuid"], how="inner")
-        if subset.empty:
+        frame = _kind_frame(fit, rows, context, seats)
+        if frame is None:
             continue
-        design = _design(subset).reindex(columns=fit["columns"], fill_value=0.0)
-        frame = _frame(subset, fit["model"].predict_proba(design)[:, 1])
         expected = frame.groupby(KEY)["expected"].sum().reindex(everyone.index, fill_value=0.0)
         shares.append((fit["weight"], (expected / (expected + fit["prior"])).rename("share").reset_index()))
         out = out.merge(leave_one_out_ratio(frame, seats, fit["prior"], f"tend_{kind}"), on=["match_id", "puuid"], how="left")

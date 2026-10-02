@@ -61,6 +61,9 @@ class EvaluatedPlayers:
                     "evidence": data["evidence"].astype(float),
                     "matrix": data["matrix"].astype(np.float32),
                 }
+                if "exposure" in data.files:
+                    vectors["exposure"] = data["exposure"].astype(np.float32)
+                    vectors["exposure_columns"] = [str(name) for name in data["exposure_columns"]]
         except Exception:
             logger.exception("could not load the evaluated player %s", puuid[:8])
             return None

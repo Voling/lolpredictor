@@ -10,7 +10,22 @@ import pandas as pd
 from .config import Settings, get_settings
 from .features.build import FILENAMES, _extract, _merge
 from .features.cells import SeatIndex, combine_shares, dense_counts
-from .features.fits import FIT_FILES, PRIORITY_FIT, REACTION_FITS, TENDENCY_FIT, apply_cells, apply_tendencies, load_cells, load_tendencies, reaction_sources
+from .features.exposure import exposure_frame, seat_exposure
+from .features.fits import (
+    BUNDLE,
+    FIT_FILES,
+    PRIORITY_FIT,
+    PRIORS_FILE,
+    REACTION_FITS,
+    TENDENCY_FIT,
+    apply_cells,
+    apply_tendencies,
+    load_cells,
+    load_tendencies,
+    reaction_sources,
+    save_priors,
+    tendency_totals,
+)
 from .features.habit import HABIT_COLUMNS, SMOOTHING
 from .features.policy import ACTIONS, STATES
 from .features.positions import KEY
@@ -24,8 +39,7 @@ from .ml.movement import MIN_TRANSITIONS, MOVEMENT_COLUMNS, _count as movement_c
 
 logger = logging.getLogger(__name__)
 EVALUATED = "evaluated"
-BUNDLE = "evaluator"
-TABLES = ("participations", "opportunities", "event_responses", "objectives", "wards", "jungle_openings", "policy")
+TABLES =("participations", "opportunities", "event_responses", "objectives", "wards", "jungle_openings", "policy")
 BUNDLE_FILES = (*FIT_FILES, "habit_basis.npz", "movement_basis.npz", "embedding_basis.npz", "timeline_encoder.pt", "position_sigma.json")
 STEPS = ("fetching", "loading", "features", "positions", "reactions", "tendencies", "habits", "movement", "embedding", "scoring")
 
@@ -40,6 +54,7 @@ def write_bundle(settings: Settings | None = None, target: Path | None = None) -
         raise FileNotFoundError(f"the model dir lacks {', '.join(missing)}; run the blocks and `python -m synergy fits` first")
     for name in BUNDLE_FILES:
         shutil.copy2(settings.model_dir / name, target / name)
+    save_priors(target / PRIORS_FILE, load_tendencies(settings.model_dir / TENDENCY_FIT))
     with np.load(settings.model_dir / "movement_transitions.npz", allow_pickle=True) as moves:
         np.savez(target / "movement_world.npz", world=moves["world"], positions=moves["positions"], kappa=moves["kappa"])
     style = json.loads((settings.processed_dir / "basis" / "style.json").read_text(encoding="utf-8"))
@@ -219,6 +234,7 @@ class Evaluator:
             rows = index.rows(shard["match_id"], shard["puuid"])
             counts[rows[rows >= 0]] = shard["counts"][rows >= 0]
         priority, priority_evidence = apply_cells(bundle.priority, counts, index)
+        exposure_parts = [("prio", bundle.priority["situations"], seat_exposure(counts, index, bundle.priority["situations"], bundle.priority["unit"]))]
         context = priority_context_from(pd.read_parquet(track_path), seats)
         self._step("reactions")
         reaction_parts, shares = [], []
@@ -229,6 +245,7 @@ class Evaluator:
             frame, evidence = apply_cells(bundle.reaction[number], counts, index)
             reaction_parts.append(frame)
             shares.append((len(situations) * len(outcomes), evidence))
+            exposure_parts.append((prefix, situations, seat_exposure(counts, index, situations)))
         reaction = reaction_parts[0]
         for frame in reaction_parts[1:]:
             reaction = reaction.merge(frame, on=["match_id", "puuid"], how="outer")
@@ -236,6 +253,8 @@ class Evaluator:
         self._step("tendencies")
         opportunities = pd.read_parquet(processed / FILENAMES["opportunities"])
         tendency, tendency_evidence = apply_tendencies(bundle.tendency, opportunities, context, seats[["match_id", "puuid", "position"]])
+        totals = tendency_totals(bundle.tendency, lambda kind: opportunities[opportunities["kind"] == kind], context, seats[["match_id", "puuid", "position"]])
+        exposure = exposure_frame(index, exposure_parts).merge(totals, on=KEY, how="left").fillna(0.0).set_index(KEY)
         self._step("habits")
         habits = habit_rows(pd.read_parquet(processed / FILENAMES["policy"], columns=["match_id", "puuid", "state", "action"]), seats, bundle.habit)
         self._step("movement")
@@ -266,6 +285,9 @@ class Evaluator:
         weights = ((len(REACTION_COLUMNS), reaction_evidence), (len(PRIORITY_COLUMNS), priority_evidence), (len(TENDENCY_COLUMNS), tendency_evidence))
         evidence = combine_shares([(weight, frame) for weight, frame in weights]).set_index(KEY)["share"]
         evidence_values = np.array([float(evidence.get((puuid, name), np.nan)) for name in names], dtype=np.float32)
+        exposure_columns = list(exposure.columns)
+        blank = np.zeros(len(exposure_columns), dtype=np.float32)
+        exposure_rows = np.stack([exposure.loc[(puuid, name)].to_numpy(dtype=np.float32) if (puuid, name) in exposure.index else blank for name in names])
         logger.info("evaluate: %s games, %s positions in %.0fs", len(match_ids), len(names), time.time() - clock)
         return {
             "puuid": puuid,
@@ -274,6 +296,8 @@ class Evaluator:
             "seats": seat_counts,
             "evidence": evidence_values,
             "matrix": matrix,
+            "exposure": exposure_rows,
+            "exposure_columns": exposure_columns,
             "games": len(match_ids),
             "seats_total": int(len(mine)),
         }
@@ -316,7 +340,8 @@ def profile_of(puuid: str, games: list[tuple[str, dict, dict]], account: dict, l
 def save_result(folder: Path, result: dict, profile: dict) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
     vectors = folder / f"{result['puuid']}.npz"
-    np.savez(vectors, columns=np.array(result["columns"]), position=result["position"], seats=result["seats"], evidence=result["evidence"], matrix=result["matrix"])
+    extra = {"exposure": result["exposure"], "exposure_columns": np.array(result["exposure_columns"], dtype=str)} if "exposure" in result else {}
+    np.savez(vectors, columns=np.array(result["columns"]), position=result["position"], seats=result["seats"], evidence=result["evidence"], matrix=result["matrix"], **extra)
     summary = folder / f"{result['puuid']}.json"
     summary.write_text(json.dumps(profile), encoding="utf-8")
     return vectors, summary

@@ -44,6 +44,9 @@ def _objects(run="20260927-032318"):
         f"runs/{run}/processed/hinge.parquet": b"x" * 50,
         f"runs/{run}/processed/pair_history.parquet": b"x" * 60,
         f"runs/{run}/processed/player_styles.parquet": b"x" * 70,
+        f"runs/{run}/evaluator/cells_rsp.npz": b"rsp",
+        f"runs/{run}/evaluator/tendency_priors.json": b"{}",
+        f"runs/{run}/evaluator/timeline_encoder.pt": b"x" * 80,
     }
 
 
@@ -61,7 +64,9 @@ def test_the_current_run_is_copied_from_the_bucket_without_the_big_tables(tmp_pa
     assert (settings.served_processed_dir / "player_profiles.parquet").read_bytes() == b"profiles"
     assert (settings.runs_dir / run / "manifest.json").exists()
     assert not (settings.served_processed_dir / "hinge.parquet").exists() and not (settings.served_processed_dir / "player_styles.parquet").exists()
-    assert len(client.downloads) == 7
+    evaluator = settings.served_model_dir.parent / "evaluator"
+    assert (evaluator / "cells_rsp.npz").read_bytes() == b"rsp" and not (evaluator / "timeline_encoder.pt").exists()
+    assert len(client.downloads) == 9
 
 
 def test_a_second_fetch_copies_only_what_changed_and_follows_a_new_run(tmp_path):
@@ -82,4 +87,4 @@ def test_a_second_fetch_copies_only_what_changed_and_follows_a_new_run(tmp_path)
     # then
     assert again == "20260927-032318" and client.downloads[:1] == ["runs/20260927-032318/models/duo_scores.npz"]
     assert moved == "20261001-000000" and settings.served_run() == moved and (settings.served_model_dir / "style_vectors.npz").exists()
-    assert len(client.downloads) == 1 + 7
+    assert len(client.downloads) == 1 + 9

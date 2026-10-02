@@ -91,3 +91,22 @@ ul.recent .demo-names { display: flex; flex-wrap: wrap; align-items: center; gap
   th, td { padding: 0.4rem 0.35rem; }
   .few { display: block; margin: 0.1rem 0 0; }
 }
+
+
+.posterior { margin: 0.5rem 0 1rem; max-width: 36rem; }
+.post-title { margin: 0 0 0.3rem; font-weight: 600; }
+.post-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.15rem 0; font-size: 0.85rem; }
+.post-label { flex: 0 0 8.5rem; text-align: right; opacity: 0.8; }
+.post-track { position: relative; flex: 1 1 auto; height: 14px; background: var(--line); border-radius: 2px; }
+.post-band { position: absolute; top: 4px; height: 6px; border-radius: 3px; opacity: 0.35; }
+.post-dot { position: absolute; top: 2px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; }
+.post-band.left, .post-dot.left { background: #1d4ed8; }
+.post-band.right, .post-dot.right { background: #a16207; }
+.post-prior { position: absolute; top: 3px; width: 8px; height: 8px; margin-left: -4px; border: 2px solid currentColor; opacity: 0.55; transform: rotate(45deg); box-sizing: border-box; }
+.post-note { flex: 0 0 7rem; font-size: 0.8rem; opacity: 0.7; }
+.post-scale { display: flex; justify-content: space-between; margin: 0 7.6rem 0 9.1rem; font-size: 0.75rem; opacity: 0.6; }
+@media (max-width: 600px) {
+  .post-label { flex-basis: 6rem; }
+  .post-note { flex-basis: 4.5rem; }
+  .post-scale { margin: 0 5.1rem 0 6.6rem; }
+}

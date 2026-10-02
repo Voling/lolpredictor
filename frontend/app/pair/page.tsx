@@ -11,6 +11,7 @@ import { POLL_MS, Progress } from "@/lib/progress";
 import { Habits, peer, readingSentence, togetherSentence } from "@/lib/habits";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { RefreshButton } from "@/lib/refresh";
+import { DifferenceChart, SituationChart } from "@/lib/posterior";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -36,6 +37,7 @@ function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => voi
     return <div className="gate"><strong>Can&apos;t score this duo.</strong>{pair.note}</div>;
   }
   const [left, right] = pair.players;
+  const posteriors = found.posteriors;
   const positions = `${positionName(found.positions.left)} and ${positionName(found.positions.right)}`;
   const thin = [
     { name: left.riot_id, games: found.left_games, position: found.positions.left },
@@ -61,6 +63,24 @@ function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => voi
       <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
       <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
       <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} in our data.</p>
+
+      {posteriors && (posteriors.left.length > 0 || posteriors.right.length > 0) && (
+        <>
+          <h3>Behaviour in detail</h3>
+          <p className="sub">Each row is one outcome. The dot is the most likely share, the bar the 80% range, the hollow mark the typical {peer(found.positions.left)} or {peer(found.positions.right)}. More games make the bars narrower.</p>
+          {posteriors.left.length > 0 && <h4>{left.riot_id}</h4>}
+          {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" />)}
+          {posteriors.right.length > 0 && <h4>{right.riot_id}</h4>}
+          {posteriors.right.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="right" />)}
+        </>
+      )}
+      {posteriors && posteriors.differences.length > 0 && (
+        <>
+          <h3>Where you two differ</h3>
+          <p className="sub">{left.riot_id} in blue, {right.riot_id} in amber. Differences across positions are often complementary.</p>
+          {posteriors.differences.map((difference) => <DifferenceChart key={difference.situation} difference={difference} />)}
+        </>
+      )}
 
       <h3>Newer games</h3>
       <RefreshButton name={left.riot_id} after={left.refresh_after} onReady={onRefreshed} />
