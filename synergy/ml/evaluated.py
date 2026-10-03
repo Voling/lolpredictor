@@ -12,6 +12,7 @@ from ..config import Settings
 logger = logging.getLogger(__name__)
 FRESH_DAYS = 14
 FRESH_SECONDS = FRESH_DAYS * 86400
+MATCHED = 0.9
 
 
 class EvaluatedPlayers:
@@ -82,13 +83,16 @@ def profile_row(profile: dict) -> pd.Series:
 
 def seats_of(vectors: dict, columns: list[str]) -> dict[tuple[str, str], tuple[np.ndarray, int, float]]:
     order = pd.Index(vectors["columns"]).get_indexer(columns)
-    if (order < 0).any():
+    known = order >= 0
+    if known.mean() < MATCHED:
         raise ValueError("the evaluated vectors do not match the served columns")
     puuid = vectors.get("puuid")
-    return {
-        (puuid, position): (vectors["matrix"][index][order], int(vectors["seats"][index]), float(vectors["evidence"][index]))
-        for index, position in enumerate(vectors["position"])
-    }
+    found = {}
+    for index, position in enumerate(vectors["position"]):
+        row = np.zeros(len(columns), dtype=np.float32)
+        row[known] = np.asarray(vectors["matrix"][index], dtype=np.float32)[order[known]]
+        found[(puuid, position)] = (row, int(vectors["seats"][index]), float(vectors["evidence"][index]))
+    return found
 
 
 def pool_effect(settings: Settings, position: str, champions: dict[str, int]) -> float:

@@ -40,7 +40,7 @@ export function SituationChart({ posterior, tone }: { posterior: Posterior; tone
   if (posterior.kind === "ratio" && posterior.ratio) {
     return (
       <div className="posterior">
-        <p className="post-title">{capital(posterior.words)}</p>
+        <p className="post-title">{posterior.takeaway ?? capital(posterior.words)}</p>
         <Row label="rate against expected" marks={[{ ...posterior.ratio, tone }]} prior={1} place={logged} note={`${posterior.observed} seen, ${posterior.expected} expected`} />
         <p className="post-scale"><span>¼×</span><span>1×</span><span>4×</span></p>
       </div>
@@ -49,7 +49,8 @@ export function SituationChart({ posterior, tone }: { posterior: Posterior; tone
   const chances = posterior.situation.startsWith("prio") ? `${Math.round(posterior.n)} games` : `${Math.round(posterior.n)} chances`;
   return (
     <div className="posterior">
-      <p className="post-title">{capital(posterior.words)}, {chances}</p>
+      <p className="post-title">{posterior.takeaway ?? capital(posterior.words)}</p>
+      <p className="post-count">{capital(posterior.words)}, {chances}{posterior.own != null ? `: ${share(posterior.own)} their own play, the rest the typical player` : ""}</p>
       {(posterior.outcomes ?? []).map((outcome) => (
         <Row key={outcome.name} label={outcome.words} marks={[{ mean: outcome.mean, low: outcome.low, high: outcome.high, tone }]} prior={outcome.prior} place={linear} note={share(outcome.mean)} />
       ))}
@@ -60,7 +61,7 @@ export function SituationChart({ posterior, tone }: { posterior: Posterior; tone
 export function DifferenceChart({ difference }: { difference: Difference }) {
   return (
     <div className="posterior">
-      <p className="post-title">{capital(difference.words)}, {share(difference.overlap)} alike</p>
+      <p className="post-title">{difference.takeaway ?? capital(difference.words)}</p>
       {difference.outcomes.map((outcome) => (
         <Row
           key={outcome.name}

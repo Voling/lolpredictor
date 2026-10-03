@@ -9,7 +9,7 @@ import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { POLL_MS, Progress } from "@/lib/progress";
-import { habitSentence } from "@/lib/habits";
+import { habitSentence, peer } from "@/lib/habits";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
@@ -21,7 +21,7 @@ function Result({ found }: { found: Friends }) {
     <>
       <h2>Your duo scores{me.position ? ` as ${positionName(me.position)}` : ""}</h2>
       {me.games != null && me.games < FEW_GAMES && (
-        <p className="hint">You have {gameCount(me.games)} as {positionName(me.position)}. Your scores are rough until you play more.</p>
+        <p className="hint">You have only {gameCount(me.games)} as {positionName(me.position)}, so your scores lean on the typical {peer(me.position ?? "")} until we see more.</p>
       )}
       <table>
         <thead>
@@ -53,7 +53,7 @@ function Result({ found }: { found: Friends }) {
         </tbody>
       </table>
       <p className="sub">50 is an average duo for those two positions. Higher is better.</p>
-      <p className="sub">Few games means that friend has under {FEW_GAMES} games in that position. Their score stays near 50 until they play more.</p>
+      <p className="sub">Few games means under {FEW_GAMES} games in that position. We fill the gaps with what a typical player there does, so their score stays near 50 until we see more.</p>
     </>
   );
 }
@@ -109,6 +109,7 @@ function FriendsQuery() {
         <>
           <p>{found.pending.message ?? `We're pulling ${found.pending.riot_id}'s games.`}</p>
           <Progress pending={found.pending} />
+          <p className="sub">Their last 50 ranked games are enough. We read them against every player in the same position, so we don&apos;t need their whole history.</p>
         </>
       )}
       {found && !found.pending && <Result found={found} />}

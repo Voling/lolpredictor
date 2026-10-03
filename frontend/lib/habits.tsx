@@ -11,6 +11,14 @@ export function peer(position: string): string {
   return SINGULAR[position] ?? "player";
 }
 
+export function basisSentence(name: string, games: number, evidence: number | null | undefined, position: string, spoken: string): string {
+  const seen = `${name}: ${games} ${games === 1 ? "game" : "games"} as ${spoken}`;
+  if (evidence == null) return `${seen}.`;
+  if (evidence >= 0.6) return `${seen}, so this is mostly their own play.`;
+  if (evidence >= 0.35) return `${seen}, so this is part their own play and part the typical ${peer(position)}.`;
+  return `${seen}, so this leans on the typical ${peer(position)} until we see more.`;
+}
+
 export function habitSentence(name: string, habit: Standout, position: string): string {
   const more = habit.percentile >= 50;
   const share = Math.round(more ? habit.percentile : 100 - habit.percentile);

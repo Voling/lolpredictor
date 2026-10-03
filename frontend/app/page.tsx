@@ -54,12 +54,17 @@ export default function Home() {
 
       <h3>How it works</h3>
       <p>
-        The score uses your ranked games in our data. It looks at what each of you does in common situations and your usual gold lead at 20 minutes. 
-        If you two have played together, those games count too.
+        Your playstyle is what you do in moments that repeat every game. When a teammate takes dragon across the map, do you rotate, fight or stay?
+        Where do you ward in the first minutes? Where do you stand in lane against your opponent? We count what you did each time.
       </p>
       <p>
-        From that it predicts how far ahead your two positions will be in gold at 20 minutes. Teams that are ahead at 20 minutes win
-        more often.
+        We don&apos;t need all your games. Every reading starts from what a typical player in your position does, learned from over 100,000
+        Master and higher games, and each of your games moves it toward your own habits. Moments that come up often, like plates falling, are learned
+        in a few games. Rare ones, like dragons across the map, take more.
+      </p>
+      <p>
+        From both playstyles, your recent form, your champions and any games you two played together, the score predicts how far ahead your two
+        positions will be in gold at 20 minutes. Teams that are ahead at 20 minutes win more often.
       </p>
       <p className="sub">A score is a prediction, not a promise. Any one game can go either way.</p>
 

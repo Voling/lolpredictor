@@ -37,6 +37,7 @@ from .wave import response_rows, wave_rows
 logger = logging.getLogger(__name__)
 
 COUPLING_SAMPLE = 4000
+REBUILT = ("objectives", "event_responses")
 
 STREAMED_TABLES = {
     "opportunities": opportunity_rows,
@@ -171,6 +172,43 @@ def _extract(settings: Settings, match_ids: list[str], shard: int) -> dict:
         return {name: writer.close() for name, writer in writers.items()}
     finally:
         store.close()
+
+
+def _extract_tables(settings: Settings, match_ids: list[str], shard: int, names: tuple[str, ...]) -> dict:
+    store = Store(settings)
+    shards = settings.processed_dir / "shards"
+    shards.mkdir(parents=True, exist_ok=True)
+    writers = {name: ChunkWriter(shards / f"{name}.{shard:03d}.parquet") for name in names}
+    try:
+        for match_id in match_ids:
+            try:
+                match = store.load_match(match_id)
+                if store.has_window(match_id):
+                    window = store.load_window(match_id)
+                elif store.has_timeline(match_id):
+                    window = truncate_timeline(store.load_timeline(match_id))
+                else:
+                    continue
+            except FileNotFoundError:
+                continue
+            parsed = ParsedTimeline(match, window)
+            for name in names:
+                writers[name].add(STREAMED_TABLES[name](match, window, parsed=parsed))
+        return {name: writer.close() for name, writer in writers.items()}
+    finally:
+        store.close()
+
+
+def rebuild_tables(settings: Settings | None = None, names: tuple[str, ...] = REBUILT, workers: int = 4) -> dict[str, int]:
+    from concurrent.futures import ProcessPoolExecutor
+
+    settings = settings or get_settings()
+    wanted = sorted(pd.read_parquet(settings.processed_dir / FILENAMES["participations"], columns=["match_id"])["match_id"].unique())
+    chunks = _split(wanted, workers)
+    logger.info("rebuilding %s from %s matches across %s workers", ", ".join(names), len(wanted), len(chunks))
+    with ProcessPoolExecutor(max_workers=len(chunks)) as pool:
+        list(pool.map(_extract_tables, [settings] * len(chunks), chunks, range(len(chunks)), [names] * len(chunks)))
+    return {name: _merge(settings, name, len(chunks)) for name in names}
 
 
 def _merge(settings: Settings, name: str, shards: int) -> int:

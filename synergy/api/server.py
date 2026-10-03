@@ -16,20 +16,25 @@ from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, epoch_of, get_service, reloa
 from ..ml.serving import champions_of, warm
 from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
-from .artifacts import fetch_run
+from .artifacts import bucket_of, current_run, fetch_run
 from .customs import SharedCustoms
 from .evaluate import GIB, Evaluations, shape, store_size
 from .history import History, duo_view, public
+from .shares import Shares, pair_puuids, stamp
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
 POSITION = 12
 CHECK_ID = 80
+SHARE_ID = 24
+RUN_SECONDS = 60
 RECENT_CACHE = "public, max-age=30"
 _accounts: Accounts | None = None
 _customs: SharedCustoms | None = None
 _evaluations: Evaluations | None = None
 _history: History | None = None
+_shares: Shares | None = None
+_run_seen: tuple[float, str | None] | None = None
 _verifier = None
 
 
@@ -141,6 +146,77 @@ def get_history() -> History:
     if _history is None:
         _history = History(DynamoTable(get_settings().accounts_table))
     return _history
+
+
+def get_shares() -> Shares:
+    global _shares
+    if _shares is None:
+        _shares = Shares(DynamoTable(get_settings().accounts_table))
+    return _shares
+
+
+def _current_run() -> str | None:
+    global _run_seen
+    settings = get_settings()
+    run = settings.served_run()
+    if run or not settings.model_store:
+        return run
+    if _run_seen is None or time.time() - _run_seen[0] > RUN_SECONDS:
+        import boto3
+
+        _run_seen = (time.time(), current_run(boto3.client("s3"), bucket_of(settings.model_store)))
+    return _run_seen[1]
+
+
+def _version(puuids: list[str]) -> dict:
+    return {"run": _current_run(), "players": {puuid: stamp(get_evaluations().status(puuid)) for puuid in puuids}}
+
+
+def _pair_names(payload: dict) -> str:
+    return " + ".join(str(player.get("riot_id")) for player in payload.get("players", []))
+
+
+def _viewer(x_auth: str | None, owner: str) -> str:
+    if not x_auth:
+        return "anonymous"
+    try:
+        return "owner" if get_verifier().subject(x_auth) == owner else "account"
+    except AuthError:
+        return "anonymous"
+
+
+def _shared_pair(x_auth: str | None, query: tuple, check) -> dict:
+    user = get_verifier().subject(x_auth)
+    query = (*query, get_accounts().linked_puuid(user))
+    shares = get_shares()
+    try:
+        saved = shares.find(user, query)
+        fresh = saved is not None and saved["version"] == _version(pair_puuids(saved["payload"]))
+    except Exception:
+        logger.exception("could not read the saved pair")
+        saved, fresh = None, False
+    if fresh:
+        logger.info("share served share=%s viewer=owner pair=%s age=%ds", saved["token"], _pair_names(saved["payload"]), int(time.time()) - saved["at"])
+        return {**saved["payload"], "share": saved["token"], "remaining": get_accounts().status(user)["remaining"]}
+    found = check()
+    if found.get("interaction"):
+        try:
+            found["share"] = shares.save(user, query, found, _version(pair_puuids(found)))
+        except Exception:
+            logger.exception("could not save the pair for sharing")
+    return found
+
+
+def _open_share(share: str, x_auth: str | None) -> dict:
+    saved = get_shares().load(share)
+    if saved is None:
+        raise HTTPException(404, "This link has expired. Ask for a new one.")
+    payload = saved["payload"]
+    if saved["version"] != _version(pair_puuids(payload)):
+        logger.info("share expired share=%s pair=%s", share, _pair_names(payload))
+        return {"expired": True, "players": payload.get("players", []), "positions": payload.get("positions"), "shared_at": saved["at"]}
+    logger.info("share served share=%s viewer=%s pair=%s age=%ds", share, _viewer(x_auth, saved["owner"]), _pair_names(payload), int(time.time()) - saved["at"])
+    return {**payload, "shared_at": saved["at"]}
 
 
 def _save_check(user: str, kind: str, request: str, found: dict, duos: list[dict]) -> None:
@@ -336,7 +412,15 @@ def _public_routes(app: FastAPI) -> None:
         x_auth: str | None = Header(None),
     ):
         query = ("pair", b, a_position, b_position)
-        return _handle(lambda: _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_customs_between), remember=_remember_pair))
+
+        def check() -> dict:
+            return _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_customs_between), remember=_remember_pair)
+
+        return _handle(lambda: _shared_pair(x_auth, query, check))
+
+    @app.get("/api/shared/{share}")
+    def shared(share: str = Path(max_length=SHARE_ID), x_auth: str | None = Header(None)):
+        return _handle(lambda: _open_share(share, x_auth))
 
     @app.get("/api/friends")
     def friends(

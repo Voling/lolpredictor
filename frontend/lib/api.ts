@@ -38,9 +38,9 @@ export type Band = { mean: number; low: number; high: number };
 
 export type PosteriorOutcome = Band & { name: string; words: string; prior: number };
 
-export type Posterior = { situation: string; words: string; kind: "shares" | "ratio"; n: number; outcomes?: PosteriorOutcome[]; ratio?: Band; observed?: number; expected?: number };
+export type Posterior = { situation: string; words: string; kind: "shares" | "ratio"; n: number; outcomes?: PosteriorOutcome[]; ratio?: Band; observed?: number; expected?: number; takeaway?: string; own?: number };
 
-export type Difference = { situation: string; words: string; overlap: number; outcomes: { name: string; words: string; left: Band; right: Band }[] };
+export type Difference = { situation: string; words: string; overlap: number; takeaway?: string; outcomes: { name: string; words: string; left: Band; right: Band }[] };
 
 export type Pending = { riot_id: string; status: string; step: string; done: number; total: number; percent: number; message: string | null };
 
@@ -57,6 +57,9 @@ export type Refresh = { message: string | null; pending: Pending | null };
 export type PairScore = {
   pending?: Pending | null;
   saved_at?: number;
+  share?: string;
+  shared_at?: number;
+  expired?: boolean;
   score: number | null;
   projected_gold: number | null;
   minute: number | null;
@@ -92,7 +95,7 @@ export type PairScore = {
         situations: { situation: string; words: string; contribution: number }[];
       }
     >;
-    posteriors?: { left: Posterior[]; right: Posterior[]; differences: Difference[] };
+    posteriors?: { left: Posterior[]; right: Posterior[]; differences: Difference[]; measured?: { left: boolean; right: boolean } };
   } | null;
   players: Player[];
   remaining?: number;
@@ -190,4 +193,5 @@ export const getFriends = (me: string, friends: string[], mePosition?: string) =
 export const getEvaluations = (names: string[]) => get<Evaluations>(`/api/evaluations?names=${encodeURIComponent(names.join(","))}`);
 export const getHistory = () => get<History>("/api/history");
 export const getSaved = <T>(id: string) => get<T>(`/api/history/${encodeURIComponent(id)}`);
+export const getShared = (token: string) => get<PairScore>(`/api/shared/${encodeURIComponent(token)}`);
 export const refreshPlayer = (riotId: string) => post<Refresh>("/api/refresh", { riot_id: riotId });

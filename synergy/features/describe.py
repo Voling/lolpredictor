@@ -106,6 +106,58 @@ def tendency_words(kind: str, pattern: str, half: str) -> str:
     return f"{KIND_SITUATIONS[kind]} {_priority(pattern)}, {HALVES[half]}"
 
 
+ACTS = {
+    "converged": ("moves in", "move in"),
+    "held": ("holds ground", "hold ground"),
+    "left": ("leaves", "leave"),
+    "present": ("stays nearby", "stay nearby"),
+    "absent": ("stays away", "stay away"),
+    "died": ("dies", "die"),
+    "fought": ("fights", "fight"),
+    "committed": ("commits", "commit"),
+    "rotated": ("rotates in", "rotate in"),
+    "approached": ("approaches", "approach"),
+    "crossed": ("crosses to the other side", "cross to the other side"),
+    "stayed": ("stays on one side", "stay on one side"),
+    "off_lane": ("leaves lane", "leave lane"),
+    "dead": ("is dead", "be dead"),
+}
+
+
+def act(situation: str, outcome: str) -> tuple[str, str]:
+    if situation.startswith("ward_"):
+        zone = WARD_ZONES[outcome]
+        return f"wards {zone}", f"ward {zone}"
+    if situation.startswith("jgl_") and situation != "jgl_sides":
+        kind = situation.split("_")[1]
+        if outcome == "never":
+            return f"makes no {kind} before 15 minutes", f"make no {kind} before 15 minutes"
+        return f"makes the first {kind} {OPENING_BANDS[outcome]}", f"make the first {kind} {OPENING_BANDS[outcome]}"
+    if situation.startswith("prio_") and outcome in LANE_BANDS:
+        return f"stands {LANE_BANDS[outcome]}", f"stand {LANE_BANDS[outcome]}"
+    return ACTS.get(outcome, (outcome_words(outcome), outcome_words(outcome)))
+
+
+def situation_lead(situation: str) -> str:
+    parts = situation.split("_")
+    if parts[0] == "ward":
+        words = WARD_TIMES[parts[1]]
+    elif parts[0] == "jgl":
+        words = {"gank": "for the first gank", "invade": "for the first invade", "sides": "in the opening clear"}[parts[1]]
+    elif parts[0] == "prio":
+        words = "in the minute before an objective" if situation.endswith("pre_objective") else "in lane"
+    else:
+        words = describe_situation(situation)
+    return words[0].upper() + words[1:]
+
+
+def _objective(side: str, objective: str) -> str:
+    if side == "none":
+        return f"a {OBJECTIVES[objective]} fight with no take"
+    words = f"{SIDES[side]} {OBJECTIVES[objective]}"
+    return words if objective == "HORDE" else f"an {words}"
+
+
 def _priority(lanes: str) -> str:
     held = [LANES[letter] for letter in lanes if letter in LANES]
     if not held:
@@ -123,7 +175,7 @@ def describe(cell: str) -> str:
         return f"{RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
     if prefix == "obj" and len(parts) == 5:
         _, objective, side, band, outcome = parts
-        return f"{OBJECTIVE_RESPONSES[outcome]} an {SIDES[side]} {OBJECTIVES[objective]} {DISTANCE[band]}"
+        return f"{OBJECTIVE_RESPONSES[outcome]} {_objective(side, objective)} {DISTANCE[band]}"
     if prefix == "ward" and len(parts) >= 3:
         zone = "_".join(parts[2:])
         return f"ward placed {WARD_TIMES[parts[1]]} {WARD_ZONES[zone]}"
@@ -179,7 +231,7 @@ def phrase(cell: str) -> str:
         return f"{PRESENT_RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
     if prefix == "obj" and len(parts) == 5:
         _, objective, side, band, outcome = parts
-        return f"{PRESENT_OBJECTIVE_RESPONSES[outcome]} an {SIDES[side]} {OBJECTIVES[objective]} {DISTANCE[band]}"
+        return f"{PRESENT_OBJECTIVE_RESPONSES[outcome]} {_objective(side, objective)} {DISTANCE[band]}"
     if prefix == "ward" and len(parts) >= 3:
         return f"places wards {WARD_TIMES[parts[1]]} {WARD_ZONES['_'.join(parts[2:])]}"
     if prefix == "jgl" and parts[1] == "sides":
@@ -238,7 +290,7 @@ def describe_situation(situation: str) -> str:
     if prefix == "rsp" and len(parts) == 4:
         return f"after an {SIDES[parts[2]]} {TRIGGERS[parts[1]]} {DISTANCE[parts[3]]}"
     if prefix == "obj" and len(parts) == 4:
-        return f"at an {SIDES[parts[2]]} {OBJECTIVES[parts[1]]} {DISTANCE[parts[3]]}"
+        return f"at {_objective(parts[2], parts[1])} {DISTANCE[parts[3]]}"
     if prefix == "ward":
         return f"wards {WARD_TIMES[parts[1]]}"
     if prefix == "jgl":

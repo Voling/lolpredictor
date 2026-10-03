@@ -42,7 +42,7 @@ def test_a_situation_becomes_a_dirichlet_from_the_served_mean_and_the_chances():
     assert rate["ratio"]["mean"] == round(11.0 / 6.0, 3) and rate["ratio"]["low"] < rate["ratio"]["mean"] < rate["ratio"]["high"] and rate["observed"] == 9.0
 
 
-def test_the_strongest_situations_come_first_and_the_lane_state_collapses_to_where_the_player_stands():
+def test_the_clearest_differences_come_first_and_the_lane_state_collapses_to_where_the_player_stands():
     # given
     from synergy.features.priority import OUTCOMES
 
@@ -54,17 +54,19 @@ def test_the_strongest_situations_come_first_and_the_lane_state_collapses_to_whe
         _fit("rsp", ["kill_ours_far"], ["converged", "held"], [[[0.5, 0.5]]], [8.0], ["TOP"]),
     ]
     z = np.zeros(width)
-    z[0], z[-1] = 1.0, 3.0
+    z[0], z[-1] = 20.0, 3.0
 
     # when
     entries = situations_from(z, columns, {"prio_all": 300.0, "rsp_kill_ours_far": 20.0}, "TOP", fits, {}, standard)
     ranked = top_situations(entries, np.random.default_rng(0), top=2)
     lane = next(entry for entry in entries if entry["situation"] == "prio_all")
+    typical = top_situations(situations_from(np.zeros(width), columns, {"prio_all": 300.0, "rsp_kill_ours_far": 20.0}, "TOP", fits, {}, standard), np.random.default_rng(0))
 
     # then
     assert [entry["situation"] for entry in ranked] == ["rsp_kill_ours_far", "prio_all"]
     assert lane["outcomes"] == ["deep_own", "own", "mid", "theirs", "deep_theirs", "off_lane", "dead"]
     assert np.isclose(lane["alpha"].sum(), 305.0) and np.isclose(lane["prior"].sum(), 1.0) and lane["words"] == "lane state"
+    assert typical == [] and ranked[0]["own"] == round(20.0 / 28.0, 3)
 
 
 def test_the_duo_differences_rank_shared_situations_by_how_little_the_posteriors_overlap():
@@ -176,3 +178,48 @@ def test_lane_state_is_ranked_only_among_well_measured_players_and_only_for_a_we
 
     # then
     assert measured[3] == 75.0 and np.isnan(thin[3])
+
+
+def test_each_chart_says_what_the_player_usually_does_and_what_is_unusual():
+    # given
+    from synergy.ml.posteriors import duo_takeaway, ratio_takeaway, share_takeaway
+
+    outcomes = ["died", "fought", "rotated", "absent"]
+    prior = np.array([0.19, 0.47, 0.01, 0.33])
+    mean = np.array([0.04, 0.60, 0.01, 0.35])
+    draws = np.random.default_rng(0).dirichlet(mean * 300, 400)
+
+    # when
+    usual = share_takeaway("obj_HORDE_ours_near", outcomes, mean, prior, draws, "Weaver", "jungler")
+    typical = share_takeaway("obj_HORDE_ours_near", outcomes, prior, prior, np.random.default_rng(0).dirichlet(prior * 300, 400), "Weaver", "jungler")
+    ratio = ratio_takeaway("tend_dive_---_away", 2.1, 1.4, 3.0, "Gakgos", "top laner")
+    duo = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.2, 0.43, 0.33, 0.04]), np.array([0.39, 0.08, 0.01, 0.52]), ("Gryffinn", "Gakgos"))
+    shared = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.1, 0.1, 0.2, 0.6]), np.array([0.3, 0.05, 0.05, 0.6]), ("A", "B"))
+
+    # then
+    assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than the typical jungler: 4% against 19%."
+    assert typical == "At ally void grubs nearby, Weaver usually fights, 47%, like the typical jungler."
+    assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as the typical top laner in the same spots."
+    assert duo == "At an ally dragon from far away, expect Gryffinn to fight, 43%, and Gakgos to stay away, 52%."
+    assert shared == "At an ally dragon from far away, you both usually stay away, but B dies more often: 30% against 10%."
+
+
+def test_situations_whose_events_arrive_in_clusters_are_left_out_of_charts_and_standouts():
+    # given
+    from synergy.ml.posteriors import population_percentiles
+
+    columns = ["obj_HORDE_ours_near_fought", "obj_HORDE_ours_near_absent", "obj_DRAGON_ours_near_fought", "obj_DRAGON_ours_near_absent"]
+    fits = {
+        "cells": [_fit("obj", ["HORDE_ours_near", "DRAGON_ours_near"], ["fought", "absent"], [[[0.4, 0.6]], [[0.4, 0.6]]], [1.9, 115.4], ["JUNGLE"])],
+        "standard": {"columns": np.array(columns), "centre": np.zeros(4), "spread": np.ones(4)},
+        "priors": {},
+    }
+    z = np.array([0.7, 0.3, 0.7, 0.3])
+
+    # when
+    entries = situations_from(z, columns, {"obj_HORDE_ours_near": 30.0, "obj_DRAGON_ours_near": 30.0}, "JUNGLE", fits["cells"], {}, fits["standard"])
+    percentiles = population_percentiles(z, columns, "JUNGLE", fits)
+
+    # then
+    assert [entry["situation"] for entry in entries] == ["obj_DRAGON_ours_near"]
+    assert np.isnan(percentiles[:2]).all() and not np.isnan(percentiles[2:]).any()

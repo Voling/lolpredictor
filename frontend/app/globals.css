@@ -96,7 +96,8 @@ ul.recent .demo-names { display: flex; flex-wrap: wrap; align-items: center; gap
 
 
 .posterior { margin: 0.5rem 0 1rem; max-width: 36rem; }
-.post-title { margin: 0 0 0.3rem; font-weight: 600; }
+.post-title { margin: 0 0 0.15rem; font-weight: 600; }
+.post-count { margin: 0 0 0.3rem; font-size: 0.8rem; opacity: 0.65; }
 .post-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.15rem 0; font-size: 0.85rem; }
 .post-label { flex: 0 0 8.5rem; text-align: right; opacity: 0.8; }
 .post-track { position: relative; flex: 1 1 auto; height: 14px; background: var(--line); border-radius: 2px; }
@@ -112,3 +113,7 @@ ul.recent .demo-names { display: flex; flex-wrap: wrap; align-items: center; gap
   .post-note { flex-basis: 4.5rem; }
   .post-scale { margin: 0 5.1rem 0 6.6rem; }
 }
+.share { margin: 1.5rem 0 0.5rem; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; }
+.share label { flex: 1 1 18rem; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; }
+.share input { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; min-width: 0; }
+.share .sub { flex-basis: 100%; margin: 0; }

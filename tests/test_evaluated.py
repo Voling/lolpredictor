@@ -216,3 +216,20 @@ def test_champions_follow_the_seat_position_and_an_evaluated_pool_wins_over_the_
     # then
     assert before == (["Pantheon", "Zaahen", "KSante"], ["Graves", "Udyr"], [])
     assert after == ["Garen", "Darius"] and champions_of("a", "JUNGLE", settings) == ["Amumu"]
+
+
+def test_vectors_from_before_new_columns_still_load_with_the_new_columns_typical():
+    # given
+    import pytest
+
+    vectors = {"puuid": "new", "columns": [f"c{index}" for index in range(10)], "position": ["TOP"], "seats": np.array([12]), "evidence": np.array([0.5]), "matrix": np.arange(10, dtype=np.float32)[None, :]}
+
+    # when
+    grown = seats_of(vectors, [*vectors["columns"], "c_new"])
+
+    # then
+    row, seats, evidence = grown[("new", "TOP")]
+    assert row.tolist() == [*range(10), 0.0] and seats == 12 and evidence == 0.5
+    with pytest.raises(ValueError):
+        seats_of(vectors, [*vectors["columns"][:5], *(f"other{index}" for index in range(6))])
+

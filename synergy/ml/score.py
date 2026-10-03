@@ -322,7 +322,7 @@ class SynergyService:
         wins = float(history.get("wins", 0) or 0)
         interaction = self._interaction(a, b, positions, positions_required, customs)
         if interaction:
-            interaction["posteriors"] = duo_posteriors(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings)
+            interaction["posteriors"] = duo_posteriors(a["puuid"], positions["left"], b["puuid"], positions["right"], self.settings, (riot_id(a), riot_id(b)))
         return {
             "score": interaction["score"] if interaction else None,
             "projected_gold": interaction["projected_gold"] if interaction else None,

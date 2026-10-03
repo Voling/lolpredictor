@@ -4,7 +4,7 @@ import numpy as np
 from scipy import stats
 
 from ..config import Settings, get_settings
-from ..features.describe import describe_situation, outcome_words, tendency_words
+from ..features.describe import act, describe_situation, outcome_words, phrase, situation_lead, tendency_words
 from ..features.fits import BUNDLE, PRIORITY_FIT, PRIORS_FILE, REACTION_FITS, load_cells
 from ..features.priority import BANDS, FARMING, OPPONENT
 from ..features.propensity import KINDS
@@ -16,6 +16,10 @@ TOP = 3
 RANGE = (10.0, 90.0)
 FLOOR = 1e-3
 RARE = 0.01
+CLUSTERED = 5.0
+SURE = 0.9
+GAP = 0.03
+ROLES = {"TOP": "top laner", "JUNGLE": "jungler", "MIDDLE": "mid laner", "BOTTOM": "bot laner", "UTILITY": "support"}
 MEASURED_GAMES = 20
 MEASURED_PLAYERS = 100
 STANDARDISE = "standardise.npz"
@@ -43,6 +47,10 @@ def _cell_index(fits: list[dict]) -> dict[str, tuple[dict, int, int]]:
         for step, situation in enumerate(fit["situations"])
         for k, outcome in enumerate(fit["outcomes"])
     }
+
+
+def trusted(fit: dict, step: int) -> bool:
+    return fit["prefix"] == "prio" or float(fit["kappa"][step]) >= CLUSTERED
 
 
 def _lane_situation(cell: str) -> str:
@@ -85,7 +93,7 @@ def population_percentiles(z, columns: list[str], position: str, fits: dict, pac
             if position not in fit["positions"]:
                 continue
             share = float(fit["worlds"][step, fit["positions"].index(position), k])
-            if share < RARE:
+            if share < RARE or trusted(fit, step) is False:
                 continue
             if cell.startswith("prio_"):
                 measured = float((exposure or {}).get(_lane_situation(cell), 0.0) or 0.0) >= MEASURED_GAMES
@@ -126,6 +134,8 @@ def situations_from(z, columns: list[str], exposure: dict, position: str, fits: 
         prefix, outcomes = fit["prefix"], list(fit["outcomes"])
         for step, situation in enumerate(fit["situations"]):
             key = f"{prefix}_{situation}"
+            if trusted(fit, step) is False:
+                continue
             chances = float(exposure.get(key, 0.0) or 0.0)
             cells = [f"{key}_{outcome}" for outcome in outcomes]
             if chances <= 0.0 or any(cell not in at or cell not in standard_at for cell in cells):
@@ -174,7 +184,80 @@ def _shown(name: str, high: float, prior: float, *others: float) -> bool:
     return max(high, prior, *others) >= FLOOR * 10 or name in ("dead", "off_lane")
 
 
-def summarise(entry: dict, rng: np.random.Generator) -> dict:
+def _pct(value: float) -> str:
+    return f"{round(float(value) * 100)}%"
+
+
+def short_name(riot_id: str | None) -> str:
+    return str(riot_id).split("#")[0] if riot_id else "This player"
+
+
+def _size(gap: float, mean: float, prior: float) -> str:
+    if abs(gap) >= 0.15 or (prior >= 0.02 and (mean >= 2 * prior or mean <= prior / 2)):
+        return "far "
+    return "slightly " if abs(gap) < 0.05 else ""
+
+
+def clear_gap(mean: np.ndarray, prior: np.ndarray, draws: np.ndarray) -> tuple[int | None, float]:
+    best, best_gap = None, 0.0
+    for k in range(len(mean)):
+        gap = float(mean[k] - prior[k])
+        sure = float((draws[:, k] > prior[k]).mean() if gap > 0 else (draws[:, k] < prior[k]).mean())
+        if sure >= SURE and abs(gap) >= GAP and abs(gap) > abs(best_gap):
+            best, best_gap = k, gap
+    return best, best_gap
+
+
+def _clearness(entry: dict, rng: np.random.Generator) -> tuple[float, float]:
+    if entry["kind"] == "ratio":
+        shape, rate = entry["observed"] + entry["prior"], entry["expected"] + entry["prior"]
+        low, high = _band(rng.gamma(shape, 1.0 / rate, DRAWS))
+        return 0.0, float(abs(np.log(shape / rate))) if low > 1.0 or high < 1.0 else 0.0
+    alpha = np.maximum(entry["alpha"], FLOOR)
+    return abs(clear_gap(alpha / alpha.sum(), np.asarray(entry["prior"], dtype=float), rng.dirichlet(alpha, DRAWS))[1]), 0.0
+
+
+def share_takeaway(situation: str, outcomes: list[str], mean: np.ndarray, prior: np.ndarray, draws: np.ndarray, name: str, role: str) -> str:
+    lead = situation_lead(situation)
+    modal = int(np.argmax(mean))
+    usual = act(situation, outcomes[modal])[0]
+    best, best_gap = clear_gap(mean, prior, draws)
+    if best is None:
+        return f"{lead}, {name} usually {usual}, {_pct(mean[modal])}, like the typical {role}."
+    comparison = f"{_size(best_gap, mean[best], prior[best])}{'more' if best_gap > 0 else 'less'} often than the typical {role}: {_pct(mean[best])} against {_pct(prior[best])}"
+    if best == modal:
+        return f"{lead}, {name} {usual} {comparison}."
+    return f"{lead}, {name} usually {usual}, {_pct(mean[modal])}, and {act(situation, outcomes[best])[0]} {comparison}."
+
+
+def ratio_takeaway(situation: str, mean: float, low: float, high: float, name: str, role: str) -> str:
+    words = phrase(situation)
+    if low > 1.0 and mean >= 2.0:
+        return f"{name} {words}, {mean:.1f} times as often as the typical {role} in the same spots."
+    if low > 1.0:
+        return f"{name} {words}, {round((mean - 1.0) * 100)}% more often than the typical {role} in the same spots."
+    if high < 1.0:
+        return f"{name} {words}, {round((1.0 - mean) * 100)}% less often than the typical {role} in the same spots."
+    return f"{name} {words} about as often as the typical {role} in the same spots."
+
+
+def duo_takeaway(situation: str, outcomes: list[str], mean_a: np.ndarray, mean_b: np.ndarray, names: tuple[str, str]) -> str:
+    lead = situation_lead(situation)
+    left, right = names
+    modal_a, modal_b = int(np.argmax(mean_a)), int(np.argmax(mean_b))
+    if modal_a != modal_b:
+        return (
+            f"{lead}, expect {left} to {act(situation, outcomes[modal_a])[1]}, {_pct(mean_a[modal_a])}, "
+            f"and {right} to {act(situation, outcomes[modal_b])[1]}, {_pct(mean_b[modal_b])}."
+        )
+    gaps = np.abs(mean_a - mean_b)
+    gaps[modal_a] = -1.0
+    k = int(np.argmax(gaps))
+    more, high, low = (left, mean_a[k], mean_b[k]) if mean_a[k] > mean_b[k] else (right, mean_b[k], mean_a[k])
+    return f"{lead}, you both usually {act(situation, outcomes[modal_a])[1]}, but {more} {act(situation, outcomes[k])[0]} more often: {_pct(high)} against {_pct(low)}."
+
+
+def summarise(entry: dict, rng: np.random.Generator, name: str = "This player", role: str = "player") -> dict:
     if entry["kind"] == "ratio":
         shape, rate = entry["observed"] + entry["prior"], entry["expected"] + entry["prior"]
         low, high = _band(rng.gamma(shape, 1.0 / rate, DRAWS))
@@ -186,29 +269,36 @@ def summarise(entry: dict, rng: np.random.Generator) -> dict:
             "observed": round(entry["observed"], 1),
             "expected": round(entry["expected"], 1),
             "ratio": {"mean": round(shape / rate, 3), "low": round(float(low), 3), "high": round(float(high), 3)},
+            "own": round(entry["expected"] / rate, 3),
+            "takeaway": ratio_takeaway(entry["situation"], shape / rate, float(low), float(high), name, role),
         }
     alpha = np.maximum(entry["alpha"], FLOOR)
-    low, high = _band(rng.dirichlet(alpha, DRAWS))
+    draws = rng.dirichlet(alpha, DRAWS)
+    low, high = _band(draws)
     mean = alpha / alpha.sum()
     return {
         "situation": entry["situation"],
         "words": entry["words"],
         "kind": "shares",
         "n": entry["n"],
+        "own": round(float(entry["n"]) / float(alpha.sum()), 3),
         "outcomes": [
-            {"name": name, "words": outcome_words(name), "mean": round(float(mean[k]), 4), "low": round(float(low[k]), 4), "high": round(float(high[k]), 4), "prior": round(float(entry["prior"][k]), 4)}
-            for k, name in enumerate(entry["outcomes"])
-            if _shown(name, float(high[k]), float(entry["prior"][k]))
+            {"name": name_, "words": outcome_words(name_), "mean": round(float(mean[k]), 4), "low": round(float(low[k]), 4), "high": round(float(high[k]), 4), "prior": round(float(entry["prior"][k]), 4)}
+            for k, name_ in enumerate(entry["outcomes"])
+            if _shown(name_, float(high[k]), float(entry["prior"][k]))
         ],
+        "takeaway": share_takeaway(entry["situation"], list(entry["outcomes"]), mean, np.asarray(entry["prior"], dtype=float), draws, name, role),
     }
 
 
-def top_situations(entries: list[dict], rng: np.random.Generator, top: int = TOP) -> list[dict]:
-    ranked = sorted(entries, key=lambda entry: -evidence(entry, rng))[:top]
-    return [summarise(entry, rng) for entry in ranked]
+def top_situations(entries: list[dict], rng: np.random.Generator, top: int = TOP, name: str = "This player", role: str = "player") -> list[dict]:
+    scored = [(_clearness(entry, rng), entry) for entry in entries]
+    clear = [(share, ratio, entry) for (share, ratio), entry in scored if share > 0.0 or ratio > 0.0]
+    ranked = sorted(clear, key=lambda item: (-item[0], -item[1], -evidence(item[2], rng)))[:top]
+    return [summarise(entry, rng, name, role) for _, _, entry in ranked]
 
 
-def differences(left: list[dict], right: list[dict], rng: np.random.Generator, top: int = TOP) -> list[dict]:
+def differences(left: list[dict], right: list[dict], rng: np.random.Generator, top: int = TOP, names: tuple[str, str] = ("The first player", "the second")) -> list[dict]:
     right_by = {entry["situation"]: entry for entry in right if entry["kind"] == "shares"}
     scored = []
     for a in left:
@@ -229,6 +319,7 @@ def differences(left: list[dict], right: list[dict], rng: np.random.Generator, t
                 "situation": a["situation"],
                 "words": a["words"],
                 "overlap": round(overlap, 3),
+                "takeaway": duo_takeaway(a["situation"], list(a["outcomes"]), mean_a, mean_b, names),
                 "outcomes": [
                     {
                         "name": name,
@@ -256,8 +347,16 @@ def player_entries(puuid: str, position: str, settings: Settings) -> list[dict]:
     return situations_from(seat[0], pack["columns"], exposure, position, fits["cells"], fits["priors"], fits["standard"])
 
 
-def duo_posteriors(left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None) -> dict:
+def duo_posteriors(
+    left: str, left_position: str, right: str, right_position: str, settings: Settings | None = None, names: tuple[str, str] = ("This player", "this player")
+) -> dict:
     settings = settings or get_settings()
     rng = np.random.default_rng(7)
     a, b = player_entries(left, left_position, settings), player_entries(right, right_position, settings)
-    return {"left": top_situations(a, rng), "right": top_situations(b, rng), "differences": differences(a, b, rng)}
+    left_name, right_name = (short_name(name) for name in names)
+    return {
+        "left": top_situations(a, rng, name=left_name, role=ROLES.get(left_position, "player")),
+        "right": top_situations(b, rng, name=right_name, role=ROLES.get(right_position, "player")),
+        "differences": differences(a, b, rng, names=(left_name, right_name)),
+        "measured": {"left": bool(a), "right": bool(b)},
+    }

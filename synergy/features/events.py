@@ -1,5 +1,6 @@
 import math
 
+from .objectives import ATTEMPT_GAP, CAMPS
 from .timeline import ParsedTimeline
 
 from ..config import get_settings
@@ -57,9 +58,22 @@ def triggers(parsed: ParsedTimeline, limit: int) -> list[dict]:
             continue
         if row is not None:
             out.append(row)
+    out = one_per_attempt(out)
     for index, row in enumerate(sorted(out, key=lambda item: item["minute"])):
         row["trigger_id"] = index
     return out
+
+
+def one_per_attempt(rows: list[dict]) -> list[dict]:
+    kept, last = [], {}
+    for row in sorted(rows, key=lambda item: item["minute"]):
+        if row["kind"] == "objective" and row["detail"] in CAMPS:
+            previous = last.get(row["detail"])
+            last[row["detail"]] = row["minute"]
+            if previous is not None and row["minute"] - previous <= ATTEMPT_GAP:
+                continue
+        kept.append(row)
+    return kept
 
 
 def _reaction(parsed: ParsedTimeline, pid: int, trigger: dict, limit: int) -> dict:
@@ -132,28 +146,28 @@ def event_response_rows(
     return rows
 
 
-def dyadic_responses(responses, same_team: bool = True):
-    import pandas as pd
-
-    frame = responses if isinstance(responses, pd.DataFrame) else pd.DataFrame(responses)
-    if frame.empty:
-        return frame
-    keys = ["match_id", "trigger_id", "trigger", "detail", "minute"]
-    joined = frame.merge(frame, on=keys, suffixes=("_a", "_b"))
-    joined = joined[joined["puuid_a"] < joined["puuid_b"]]
-    if same_team:
-        joined = joined[joined["team_id_a"] == joined["team_id_b"]]
-    joined["pair_key"] = joined["puuid_a"] + "|" + joined["puuid_b"]
-    joined["role_pair"] = [
-        "-".join(sorted(pair)) for pair in zip(joined["role_a"], joined["role_b"])
-    ]
-    joined["both_present"] = ((joined["present_a"] > 0) & (joined["present_b"] > 0)).astype(float)
-    joined["either_present"] = ((joined["present_a"] > 0) | (joined["present_b"] > 0)).astype(float)
-    joined["both_converged"] = (
-        (joined["converged_a"] > 0) & (joined["converged_b"] > 0)
-    ).astype(float)
-    joined["latency_gap"] = (joined["latency_a"] - joined["latency_b"]).abs()
-    return joined.reset_index(drop=True)
+def dyadic_responses(responses, same_team: bool = True):
+    import pandas as pd
+
+    frame = responses if isinstance(responses, pd.DataFrame) else pd.DataFrame(responses)
+    if frame.empty:
+        return frame
+    keys = ["match_id", "trigger_id", "trigger", "detail", "minute"]
+    joined = frame.merge(frame, on=keys, suffixes=("_a", "_b"))
+    joined = joined[joined["puuid_a"] < joined["puuid_b"]]
+    if same_team:
+        joined = joined[joined["team_id_a"] == joined["team_id_b"]]
+    joined["pair_key"] = joined["puuid_a"] + "|" + joined["puuid_b"]
+    joined["role_pair"] = [
+        "-".join(sorted(pair)) for pair in zip(joined["role_a"], joined["role_b"])
+    ]
+    joined["both_present"] = ((joined["present_a"] > 0) & (joined["present_b"] > 0)).astype(float)
+    joined["either_present"] = ((joined["present_a"] > 0) | (joined["present_b"] > 0)).astype(float)
+    joined["both_converged"] = (
+        (joined["converged_a"] > 0) & (joined["converged_b"] > 0)
+    ).astype(float)
+    joined["latency_gap"] = (joined["latency_a"] - joined["latency_b"]).abs()
+    return joined.reset_index(drop=True)
 
 
 RESPONSE_COLUMNS = [

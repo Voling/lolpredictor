@@ -115,3 +115,87 @@ def test_a_refresh_passes_the_newest_game_we_hold_and_shapes_the_answer(monkeypa
     assert asked == [("user-1", "Alpha#NA1", 1_790_000_000), ("user-1", "Alpha#NA1", None)]
     assert "last two weeks" in refused["message"] and refused["pending"]["status"] == "refused"
     assert "newest games" in started["message"] and started["pending"]["status"] == "requested" and started["pending"]["riot_id"] == "Alpha#NA1"
+
+
+def _share_server(monkeypatch, version):
+    from synergy.api import server
+    from synergy.api.shares import Shares
+
+    class _Table:
+        def __init__(self):
+            self.items = {}
+
+        def get(self, pk, sk):
+            found = self.items.get((pk, sk))
+            return dict(found) if found else None
+
+        def put(self, pk, sk, values):
+            self.items[(pk, sk)] = dict(values)
+
+    class _Verifier:
+        def subject(self, token):
+            return {"t-owner": "owner", "t-other": "other"}[token]
+
+    class _Accounts:
+        def linked_puuid(self, user):
+            return "me"
+
+        def status(self, user):
+            return {"remaining": 9}
+
+    shares = Shares(_Table(), token=lambda: "tok")
+    monkeypatch.setattr(server, "get_shares", lambda: shares)
+    monkeypatch.setattr(server, "get_verifier", lambda: _Verifier())
+    monkeypatch.setattr(server, "get_accounts", lambda: _Accounts())
+    monkeypatch.setattr(server, "_version", lambda puuids: dict(version))
+    return server, shares
+
+
+def test_a_saved_pair_is_served_again_without_a_new_check_and_the_use_is_logged(monkeypatch, caplog):
+    # given
+    import logging
+
+    version = {"run": "r1", "players": {"me": "", "friend": "ready@1"}}
+    server, shares = _share_server(monkeypatch, version)
+    checks = []
+    found = {"score": 61.0, "interaction": {"score": 61.0}, "players": [{"puuid": "me", "riot_id": "Me#NA1"}, {"puuid": "friend", "riot_id": "Friend#NA1"}], "remaining": 10}
+
+    def check():
+        checks.append(1)
+        return dict(found)
+
+    # when
+    first = server._shared_pair("t-owner", ("pair", "Friend#NA1", None, None), check)
+    with caplog.at_level(logging.INFO, logger="synergy.api.server"):
+        again = server._shared_pair("t-owner", ("pair", "friend#na1", None, None), check)
+        opened = server._open_share("tok", "t-other")
+        anonymous = server._open_share("tok", None)
+
+    # then
+    assert checks == [1] and first["share"] == again["share"] == "tok" and again["remaining"] == 9 and again["score"] == 61.0
+    assert opened["score"] == 61.0 and "remaining" not in opened and anonymous["shared_at"] == opened["shared_at"]
+    assert "share served share=tok viewer=owner pair=Me#NA1 + Friend#NA1" in caplog.text
+    assert "viewer=account" in caplog.text and "viewer=anonymous" in caplog.text
+
+
+def test_a_shared_pair_expires_once_new_games_are_pulled_and_the_owner_gets_a_fresh_check(monkeypatch):
+    # given
+    version = {"run": "r1", "players": {"me": "", "friend": "ready@1"}}
+    server, shares = _share_server(monkeypatch, version)
+    scores = iter([61.0, 64.0])
+
+    def check():
+        score = next(scores)
+        return {"score": score, "interaction": {"score": score}, "players": [{"puuid": "me", "riot_id": "Me#NA1"}, {"puuid": "friend", "riot_id": "Friend#NA1"}]}
+
+    server._shared_pair("t-owner", ("pair", "Friend#NA1", None, None), check)
+
+    # when
+    version["players"]["friend"] = "requested@2"
+    expired = server._open_share("tok", None)
+    fresh = server._shared_pair("t-owner", ("pair", "Friend#NA1", None, None), check)
+    reopened = server._open_share("tok", None)
+
+    # then
+    assert expired["expired"] is True and [player["riot_id"] for player in expired["players"]] == ["Me#NA1", "Friend#NA1"]
+    assert fresh["score"] == 64.0 and fresh["share"] == "tok" and reopened["score"] == 64.0 and "expired" not in reopened

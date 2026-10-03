@@ -4,18 +4,19 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
-import { getPair, getSaved, type PairScore } from "@/lib/api";
+import { getPair, getSaved, getShared, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
 import { POLL_MS, Progress } from "@/lib/progress";
-import { Habits, peer, readingSentence, togetherSentence } from "@/lib/habits";
+import { Habits, basisSentence, peer, readingSentence, togetherSentence } from "@/lib/habits";
 import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { RefreshButton } from "@/lib/refresh";
 import { DifferenceChart, SituationChart } from "@/lib/posterior";
+import { ShareLink } from "@/lib/share";
 
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
-type Query = { a?: string; b?: string; a_position?: string; b_position?: string; saved?: string };
+type Query = { a?: string; b?: string; a_position?: string; b_position?: string; saved?: string; share?: string };
 
 function lead(gold: number): string {
   const rounded = Math.round(Math.abs(gold) / 50) * 50;
@@ -23,15 +24,20 @@ function lead(gold: number): string {
   return `about ${rounded.toLocaleString()} gold ${gold > 0 ? "ahead of" : "behind"}`;
 }
 
-function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => void }) {
+function Result({ pair, onRefreshed, shared = false }: { pair: PairScore; onRefreshed: () => void; shared?: boolean }) {
   const found = pair.interaction;
   if (pair.pending) {
     return (
       <>
         <p>{pair.pending.message ?? `We're pulling ${pair.pending.riot_id}'s games.`}</p>
         {pair.pending.status !== "refused" && <Progress pending={pair.pending} />}
+        {pair.pending.status !== "refused" && <p className="sub">Their last 50 ranked games are enough. We read them against every player in the same position, so we don&apos;t need their whole history.</p>}
       </>
     );
+  }
+  if (pair.expired) {
+    const names = pair.players.map((player) => player.riot_id).join(" and ");
+    return <div className="gate"><strong>This result has expired.</strong>New games were pulled for {names} after it was shared. Ask for a new link.</div>;
   }
   if (!found) {
     return <div className="gate"><strong>Can&apos;t score this duo.</strong>{pair.note}</div>;
@@ -45,12 +51,12 @@ function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => voi
   ].filter((player) => player.games < FEW_GAMES);
   return (
     <>
-      <h2>Your duo score: {found.score.toFixed(0)}</h2>
+      <h2>{shared ? "Duo score" : "Your duo score"}: {found.score.toFixed(0)}</h2>
       <p className="verdict-line"><Verdict score={found.score} /></p>
       <p>{left.riot_id} as {positionName(found.positions.left)} with {right.riot_id} as {positionName(found.positions.right)}.</p>
       <p>At {found.minute} minutes you two are projected to be {lead(found.edge.total)} the other team&apos;s {positions}.</p>
       {thin.map((player) => (
-        <p key={player.name} className="hint">{player.name} has {gameCount(player.games)} as {positionName(player.position)}. Treat this score as rough.</p>
+        <p key={player.name} className="hint">{player.name} has only {gameCount(player.games)} as {positionName(player.position)}, so the score leans on the typical {peer(player.position)}.</p>
       ))}
       <p className="sub">50 is an average duo for these positions. Higher is better.</p>
 
@@ -58,41 +64,65 @@ function Result({ pair, onRefreshed }: { pair: PairScore; onRefreshed: () => voi
       <p>{readingSentence(left.riot_id, found.edge.left, found.minute)}</p>
       <p>{readingSentence(right.riot_id, found.edge.right, found.minute)}</p>
       {found.edge.record && <p>{togetherSentence(found.edge.record.gold, found.edge.record.games, found.edge.record.customs ?? 0)}</p>}
+      <p className="sub">{basisSentence(left.riot_id, found.left_games, found.left_evidence, found.positions.left, positionName(found.positions.left))}</p>
+      <p className="sub">{basisSentence(right.riot_id, found.right_games, found.right_evidence, found.positions.right, positionName(found.positions.right))}</p>
 
       <h3>What stands out</h3>
       <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
       <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
-      <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} in our data.</p>
+      <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} we have seen. A habit only shows here once enough games back it up.</p>
 
-      {posteriors && (posteriors.left.length > 0 || posteriors.right.length > 0) && (
+      {posteriors && (posteriors.measured ? posteriors.measured.left || posteriors.measured.right : posteriors.left.length > 0 || posteriors.right.length > 0) && (
         <>
           <h3>Behaviour in detail</h3>
-          <p className="sub">Each row is one outcome. The dot is the most likely share, the bar the 80% range, the hollow mark the typical {peer(found.positions.left)} or {peer(found.positions.right)}. More games make the bars narrower.</p>
-          {posteriors.left.length > 0 && <h4>{left.riot_id}</h4>}
+          <p className="sub">The three things each of you does most differently from others in your position. Dot: your most likely share. Bar: where we&apos;re 80% sure it lies. Diamond: the typical player in that position. With few games the bar is wide and the dot sits near the diamond, because we assume typical play until your games show otherwise.</p>
+          <h4>{left.riot_id}</h4>
+          {posteriors.left.length === 0 && <p className="sub">Nothing in {left.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.left)} yet. That&apos;s normal with few games.</p>}
           {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" />)}
-          {posteriors.right.length > 0 && <h4>{right.riot_id}</h4>}
+          <h4>{right.riot_id}</h4>
+          {posteriors.right.length === 0 && <p className="sub">Nothing in {right.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.right)} yet. That&apos;s normal with few games.</p>}
           {posteriors.right.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="right" />)}
         </>
       )}
       {posteriors && posteriors.differences.length > 0 && (
         <>
           <h3>Where you two differ</h3>
-          <p className="sub">{left.riot_id} in blue, {right.riot_id} in amber. Differences across positions are often complementary.</p>
+          <p className="sub">The three situations where you two act least alike. {left.riot_id} in blue, {right.riot_id} in amber.</p>
           {posteriors.differences.map((difference) => <DifferenceChart key={difference.situation} difference={difference} />)}
         </>
       )}
 
-      <h3>Newer games</h3>
-      <RefreshButton name={left.riot_id} after={left.refresh_after} onReady={onRefreshed} />
-      <RefreshButton name={right.riot_id} after={right.refresh_after} onReady={onRefreshed} />
+      {!shared && (
+        <>
+          <h3>Newer games</h3>
+          <RefreshButton name={left.riot_id} after={left.refresh_after} onReady={onRefreshed} />
+          <RefreshButton name={right.riot_id} after={right.refresh_after} onReady={onRefreshed} />
+        </>
+      )}
+      {!shared && pair.share && <ShareLink token={pair.share} />}
     </>
+  );
+}
+
+function SharedQuery({ token }: { token: string }) {
+  const { data: pair, error, loading } = useRemote(() => getShared(token), `share|${token}`);
+  const ignore = useCallback(() => undefined, []);
+  return (
+    <main>
+      <h1><Link href="/">lolpredictor</Link></h1>
+      {pair?.shared_at && !pair.expired && <p className="hint">Shared result, checked on {new Date(pair.shared_at * 1000).toLocaleDateString()}.</p>}
+      {loading && !pair && <p className="sub">Loading the shared result…</p>}
+      {error && <div className="gate"><strong>Can&apos;t open this link.</strong>{error}</div>}
+      {pair && <Result pair={pair} onRefreshed={ignore} shared />}
+      <p><Link href="/pair/">Check your own duo</Link></p>
+    </main>
   );
 }
 
 function PairQuery() {
   const params = useSearchParams();
   const router = useRouter();
-  const query: Query = { a: params.get("a") ?? undefined, b: params.get("b") ?? undefined, a_position: params.get("a_position") ?? undefined, b_position: params.get("b_position") ?? undefined, saved: params.get("saved") ?? undefined };
+  const query: Query = { a: params.get("a") ?? undefined, b: params.get("b") ?? undefined, a_position: params.get("a_position") ?? undefined, b_position: params.get("b_position") ?? undefined, saved: params.get("saved") ?? undefined, share: params.get("share") ?? undefined };
   const account = useAccount();
   const me = account.enabled ? account.me?.riot_id ?? undefined : query.a;
   const ready = accountReady(account) && Boolean(query.saved || (me && query.b));
@@ -144,10 +174,15 @@ function PairQuery() {
   );
 }
 
+function PairOrShare() {
+  const share = useSearchParams().get("share");
+  return share ? <SharedQuery token={share} /> : <PairQuery />;
+}
+
 export default function PairPage() {
   return (
     <Suspense>
-      <PairQuery />
+      <PairOrShare />
     </Suspense>
   );
 }

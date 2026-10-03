@@ -3,6 +3,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
+from .objectives import SIDES as OBJECTIVE_SIDES
 from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, write_cells
 from .fits import REACTION_FITS, save_cells
 
@@ -20,7 +21,7 @@ OPENING_BANDS = ((3.0, "by3"), (5.0, "by5"), (8.0, "by8"), (15.0, "late"), (np.i
 SIDES = ("crossed", "stayed")
 
 RESPONSE_SITUATIONS = [f"{t}_{side}_{band}" for t in TRIGGERS for side in ("ours", "theirs") for _, band in DISTANCE_BANDS]
-OBJECTIVE_SITUATIONS = [f"{o}_{side}_{band}" for o in OBJECTIVES for side in ("ours", "theirs") for _, band in DISTANCE_BANDS]
+OBJECTIVE_SITUATIONS = [f"{o}_{side}_{band}" for o in OBJECTIVES for side in OBJECTIVE_SIDES for _, band in DISTANCE_BANDS]
 WARD_SITUATIONS = [band for _, band in MINUTE_BANDS]
 OPENING_SITUATIONS = ["gank", "invade"]
 OPENING_OUTCOMES = [band for _, band in OPENING_BANDS]
@@ -36,7 +37,7 @@ REACTION_COLUMNS = (
 
 RESPONSE_READ = ["match_id", "puuid", "trigger", "ours", "is_actor", "is_victim", "approach", "present", "converged", "left_after", "held_ground"]
 OBJECTIVE_READ = [
-    "match_id", "puuid", "objective", "ours", "o_approach_distance", "o_died", "o_fought", "o_committed", "o_rotated_in", "o_approaching",
+    "match_id", "puuid", "objective", "ours", "side", "o_approach_distance", "o_died", "o_fought", "o_committed", "o_rotated_in", "o_approaching",
 ]
 
 
@@ -82,7 +83,7 @@ def response_counts(responses: pd.DataFrame) -> pd.DataFrame:
 
 def objective_counts(objectives: pd.DataFrame) -> pd.DataFrame:
     rows = objectives[objectives["objective"].isin(OBJECTIVES)]
-    side = np.where(rows["ours"] == 1, "ours", "theirs")
+    side = rows["side"].astype(str).to_numpy() if "side" in rows.columns else np.where(rows["ours"] == 1, "ours", "theirs")
     situation = rows["objective"].astype(str) + "_" + side + "_" + _band(rows["o_approach_distance"], DISTANCE_BANDS).to_numpy()
     outcome = np.select(
         [rows["o_died"] > 0, rows["o_fought"] > 0, rows["o_committed"] > 0, rows["o_rotated_in"] > 0, rows["o_approaching"] > 0],
