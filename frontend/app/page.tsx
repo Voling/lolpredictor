@@ -54,19 +54,18 @@ export default function Home() {
 
       <h3>How it works</h3>
       <p>
-        Your playstyle is what you do in moments that repeat every game. When a teammate takes dragon across the map, do you rotate, fight or stay?
-        Where do you ward in the first minutes? Where do you stand in lane against your opponent? We count what you did each time.
+        Your playstyle is how you tend to react to events and what events you initiate. When you play with a teammate who likes to take dragon, what are you doing?
+        Where do you ward in the first 5 minutes? Where do you stand in lane against your opponent? We count what you did each time.
       </p>
       <p>
         We don&apos;t need all your games. Every reading starts from what a typical player in your position does, learned from over 100,000
-        Master and higher games, and each of your games moves it toward your own habits. Moments that come up often, like plates falling, are learned
-        in a few games. Rare ones, like dragons across the map, take more.
+        Master and higher games and each of your games further define your playstyle. League is a repetitive game so there's lots to learn about you.
       </p>
       <p>
-        From both playstyles, your recent form, your champions and any games you two played together, the score predicts how far ahead your two
+        From both playstyles, your champions and any games you two played together, your score predicts how far ahead your two
         positions will be in gold at 20 minutes. Teams that are ahead at 20 minutes win more often.
       </p>
-      <p className="sub">A score is a prediction, not a promise. Any one game can go either way.</p>
+      <p className="sub">A score is simply a prediction. Any one game can go either way but higher scores often result in a higher winrate.</p>
 
       {error && <div className="gate"><strong>The server isn&apos;t reachable right now.</strong>{error}</div>}
       {status?.run && <p className="footer">Model {status.run.id}</p>}
