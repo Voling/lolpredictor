@@ -20,16 +20,20 @@ def test_saved_cells_reproduce_the_corpus_values_and_evidence_for_the_same_seats
     # given
     rng = np.random.default_rng(1)
     index = SeatIndex(_seats())
-    situations, outcomes = ["all", "pre"], ["a", "b", "c"]
-    counts = rng.poisson(3.0, size=(len(index), len(situations), len(outcomes))).astype(float)
-    fit = fit_cells(counts, index, situations, outcomes, "prio", scale=1.5, unit=2.0, kappa=[4.0, 6.0])
+    situations, states, outcomes = ["near", "far"], ["early_behind", "late_ahead"], ["a", "b", "c"]
+    split = {"prefix": "objg", "situations": ["far"], "groups": {"behind": ["early_behind"], "ahead": ["late_ahead"]}}
+    counts = rng.poisson(3.0, size=(len(index), len(situations), len(states), len(outcomes))).astype(float)
+    fit = fit_cells(counts, index, situations, outcomes, "obj", scale=1.5, unit=2.0, kappa=[4.0, 6.0], states=states, split=split)
     expected = cells_frame([(fit, counts)], index, fit.columns)
     save_cells(tmp_path / "cells.npz", fit, index.positions)
 
     # when
-    frame, evidence = apply_cells(load_cells(tmp_path / "cells.npz"), counts, index)
+    saved = load_cells(tmp_path / "cells.npz")
+    frame, evidence = apply_cells(saved, counts, index)
 
     # then
+    assert saved["states"] == states and saved["worlds"].shape == (2, 5, 2, 3) and saved["split"] == split
+    assert list(frame.columns[-6:]) == [f"objg_{gold}_far_{outcome}" for gold in ("behind", "ahead") for outcome in outcomes]
     pd.testing.assert_frame_equal(frame, expected)
     pd.testing.assert_frame_equal(evidence, evidence_shares(fit, index))
 
@@ -48,11 +52,46 @@ def test_a_new_player_is_scored_against_the_saved_world_with_their_own_leave_one
     frame, evidence = apply_cells(load_cells(tmp_path / "cells.npz"), own, stranger)
 
     # then
-    world = fit.worlds[0, corpus.positions.index("TOP")]
+    world = fit.worlds[0, corpus.positions.index("TOP"), 0]
     others = np.array([0.0, 4.0, 0.0])
-    assert np.allclose(frame.iloc[0, 2:].to_numpy(dtype=float), (world * 5.0 + others) / (4.0 + 5.0))
+    assert np.allclose(frame.iloc[0, 2:].to_numpy(dtype=float), (others - 4.0 * world) / (4.0 + 5.0))
     assert frame.iloc[2, 2:].isna().all()
     assert set(evidence["position"]) == {"TOP", "SQUID"} and evidence.loc[evidence.position == "TOP", "share"].iloc[0] > 0
+
+
+def test_a_fit_saved_before_states_loads_as_one_state_of_shares_and_scores_seats_as_before(tmp_path):
+    # given
+    rng = np.random.default_rng(4)
+    index = SeatIndex(_seats())
+    counts = rng.poisson(3.0, size=(len(index), 2, 3)).astype(float)
+    fit = fit_cells(counts, index, ["near", "far"], ["a", "b", "c"], "rsp", kappa=[4.0, 6.0])
+    np.savez(
+        tmp_path / "old.npz",
+        prefix=np.array("rsp"),
+        situations=np.array(fit.situations),
+        outcomes=np.array(fit.outcomes),
+        worlds=fit.worlds[:, :, 0],
+        kappa=fit.kappa,
+        unit=np.array(1.0),
+        positions=np.array(index.positions),
+        typical=fit.totals.sum(axis=(2, 3)).mean(axis=0),
+    )
+    save_cells(tmp_path / "new.npz", fit, index.positions)
+
+    # when
+    old, new = load_cells(tmp_path / "old.npz"), load_cells(tmp_path / "new.npz")
+    shares, _ = apply_cells(old, counts, index)
+    gaps, _ = apply_cells(new, counts, index)
+
+    # then
+    assert old["states"] == ["all"] and old["worlds"].shape == (2, 5, 1, 3) and old["gap"] is False and new["gap"] is True
+    assert old["split"] is None and new["split"] is None
+    others = fit.totals[index.who_code][:, :, 0, :] - counts
+    world = fit.worlds[:, index.seat_position, 0].transpose(1, 0, 2)
+    kappa = fit.kappa[None, :, None]
+    expected = (world * kappa + others) / (others.sum(axis=2, keepdims=True) + kappa)
+    assert np.allclose(shares.iloc[:, 2:].to_numpy(dtype=float), expected.reshape(len(index), -1))
+    assert np.allclose(gaps.iloc[:, 2:].to_numpy(dtype=float), (expected - world).reshape(len(index), -1))
 
 
 def _opportunities(rng, seats, kind):

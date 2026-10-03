@@ -10,7 +10,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from ..config import Settings, get_settings
-from .cells import CellFit, SeatIndex, buffer, combine_shares, dense_counts, fit_cells, moment_kappa
+from .cells import SINGLE, CellFit, SeatIndex, buffer, combine_shares, dense_counts, fit_cells, moment_kappa, readings, split_columns
 from .positions import KEY
 from .propensity import COVARIATES, KINDS, _gamma_prior
 
@@ -28,51 +28,77 @@ def save_cells(path: Path, fit: CellFit, positions: list[str]) -> None:
         path,
         prefix=np.array(fit.prefix),
         situations=np.array(fit.situations),
+        states=np.array(fit.states),
         outcomes=np.array(fit.outcomes),
         worlds=fit.worlds,
         kappa=fit.kappa,
         unit=np.array(fit.unit),
         positions=np.array(positions),
-        typical=fit.totals.sum(axis=2).mean(axis=0),
+        typical=fit.totals.sum(axis=(2, 3)).mean(axis=0),
+        **_split_arrays(fit.split),
     )
+
+
+def _split_arrays(split: dict | None) -> dict:
+    if not split:
+        return {}
+    return {
+        "split_prefix": np.array(split["prefix"]),
+        "split_situations": np.array(split["situations"]),
+        "split_groups": np.array(list(split["groups"])),
+        "split_states": np.array(list(split["groups"].values())),
+    }
+
+
+def _split_of(data) -> dict | None:
+    if "split_prefix" not in data.files:
+        return None
+    return {
+        "prefix": str(data["split_prefix"]),
+        "situations": [str(name) for name in data["split_situations"]],
+        "groups": {str(group): [str(state) for state in states] for group, states in zip(data["split_groups"], data["split_states"])},
+    }
 
 
 def load_cells(path: Path) -> dict:
     with np.load(path) as data:
+        situations, outcomes = [str(name) for name in data["situations"]], [str(name) for name in data["outcomes"]]
+        states = [str(name) for name in data["states"]] if "states" in data.files else list(SINGLE)
         return {
             "prefix": str(data["prefix"]),
-            "situations": [str(name) for name in data["situations"]],
-            "outcomes": [str(name) for name in data["outcomes"]],
-            "worlds": data["worlds"],
+            "situations": situations,
+            "states": states,
+            "outcomes": outcomes,
+            "worlds": data["worlds"].reshape(len(situations), -1, len(states), len(outcomes)),
             "kappa": data["kappa"],
             "unit": float(data["unit"]),
             "positions": [str(name) for name in data["positions"]],
             "typical": data["typical"],
+            "gap": "states" in data.files,
+            "split": _split_of(data),
         }
 
 
 def cell_columns(saved: dict) -> list[str]:
-    return [f"{saved['prefix']}_{situation}_{outcome}" for situation in saved["situations"] for outcome in saved["outcomes"]]
+    return [f"{saved['prefix']}_{situation}_{outcome}" for situation in saved["situations"] for outcome in saved["outcomes"]] + split_columns(saved["split"], saved["outcomes"])
 
 
 def apply_cells(saved: dict, counts: np.ndarray, index: SeatIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
-    situations, outcomes = saved["situations"], saved["outcomes"]
-    shape = (len(index), len(situations), len(outcomes))
-    values = np.asarray(counts, dtype=float).reshape(shape) / saved["unit"]
+    shape = (len(saved["situations"]), len(saved["states"]), len(saved["outcomes"]))
+    values = np.asarray(counts, dtype=float).reshape(len(index), *shape) / saved["unit"]
     onehot = sparse.csr_matrix((np.ones(len(index)), (index.who_code, np.arange(len(index)))), shape=(len(index.who), len(index)))
-    totals = np.asarray(onehot @ values.reshape(len(index), -1)).reshape(len(index.who), len(situations), len(outcomes))
+    totals = np.asarray(onehot @ values.reshape(len(index), -1)).reshape(len(index.who), *shape)
     code = pd.Index(saved["positions"]).get_indexer(index.positions)[index.seat_position]
     known = code >= 0
-    others = totals[index.who_code] - values
-    exposure = others.sum(axis=2, keepdims=True)
-    world = saved["worlds"][:, np.where(known, code, 0)].transpose(1, 0, 2)
-    kappa = saved["kappa"][None, :, None]
-    cells = ((world * kappa + others) / (exposure + kappa)).reshape(len(index), -1)
+    position = np.where(known, code, 0)
+    cells = readings(totals[index.who_code] - values, saved["worlds"], saved["kappa"], position, saved["situations"], saved["states"], saved["split"])
+    if not saved["gap"]:
+        cells += saved["worlds"][:, position, 0].transpose(1, 0, 2).reshape(len(index), -1)
     cells[~known] = np.nan
     frame = pd.DataFrame(cells, columns=cell_columns(saved))
     frame.insert(0, "puuid", index.puuid)
     frame.insert(0, "match_id", index.match_id)
-    who_exposure = totals.sum(axis=2)
+    who_exposure = totals.sum(axis=(2, 3))
     rounded = np.round(saved["kappa"], 2)
     weight = who_exposure / (who_exposure + rounded[None, :])
     typical = saved["typical"]
@@ -233,8 +259,9 @@ def fit_priority_from_buffer(settings: Settings) -> dict | None:
     return {"seats": len(index), "kappa": [round(float(k), 2) for k in fit.kappa]}
 
 
-def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], list[str]]]:
+def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], list[str], list[str], dict | None]]:
     from .reaction import (
+        GOLD_SPLIT,
         OBJECTIVE_READ,
         OBJECTIVE_RESPONSES,
         OBJECTIVE_SITUATIONS,
@@ -243,6 +270,7 @@ def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], l
         RESPONSE_SITUATIONS,
         RESPONSES,
         SIDES,
+        STATES,
         WARD_SITUATIONS,
         WARD_ZONES,
         _pieces,
@@ -256,11 +284,11 @@ def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], l
     processed = settings.processed_dir
     openings = jungle_counts(pd.read_parquet(processed / "jungle_openings.parquet"))
     return [
-        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES)),
-        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)), OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES)),
-        ("ward", lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES)),
-        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES),
-        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES)),
+        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES), STATES, GOLD_SPLIT),
+        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)), OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES), STATES, None),
+        ("ward", lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES), SINGLE, None),
+        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES, SINGLE, None),
+        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES), SINGLE, None),
     ]
 
 
@@ -268,13 +296,13 @@ def fit_reaction_from_tables(settings: Settings) -> dict:
     processed = settings.processed_dir
     index = SeatIndex(pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"]))
     report = {}
-    for number, (prefix, load, situations, outcomes) in enumerate(reaction_sources(settings)):
+    for number, (prefix, load, situations, outcomes, states, split) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"reaction_fit.{number}.npy"
-        counts = buffer(path, index, situations, outcomes)
+        counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
-            dense_counts(frame, index, situations, outcomes, out=counts)
+            dense_counts(frame, index, situations, outcomes, out=counts, states=states)
         counts.flush()
-        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale)
+        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, states=states, split=split)
         save_cells(settings.model_dir / REACTION_FITS[number], fit, index.positions)
         report[REACTION_FITS[number]] = {"kappa": [round(float(k), 2) for k in fit.kappa]}
         del counts

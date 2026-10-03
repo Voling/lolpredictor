@@ -16,14 +16,45 @@ MIN_PLAYERS = 50
 MIN_GAMES = 5
 KAPPA_FLOOR = 3.0
 CHUNK_SEATS = 65_536
+SINGLE = ["all"]
 
 
-def _kappa(counts: np.ndarray, world: np.ndarray) -> float:
-    totals = counts.sum(axis=1)
+def _kappa(observed: np.ndarray, expected: np.ndarray) -> float:
+    totals = observed.sum(axis=1)
     seen = totals > 0
     if seen.sum() < MIN_PLAYERS:
         return FALLBACK_KAPPA
-    return float(best_kappa(counts[seen], totals[seen], world[seen]))
+    return float(best_kappa(observed[seen], totals[seen], expected[seen] / totals[seen, None]))
+
+
+def expected_counts(chances: np.ndarray, worlds: np.ndarray, position: np.ndarray) -> np.ndarray:
+    expected = np.zeros((*chances.shape[:2], worlds.shape[-1]))
+    for code in np.unique(position):
+        at = position == code
+        expected[at] = np.einsum("nst,stk->nsk", chances[at], worlds[:, code])
+    return expected
+
+
+def deviations(others: np.ndarray, worlds: np.ndarray, kappa: np.ndarray, position: np.ndarray) -> np.ndarray:
+    chances = others.sum(axis=3)
+    expected = expected_counts(chances, worlds, position)
+    return (others.sum(axis=2) - expected) / (chances.sum(axis=2) + kappa[None, :])[..., None]
+
+
+def split_columns(split: dict | None, outcomes: list[str]) -> list[str]:
+    if not split:
+        return []
+    return [f"{split['prefix']}_{group}_{situation}_{outcome}" for group in split["groups"] for situation in split["situations"] for outcome in outcomes]
+
+
+def readings(others: np.ndarray, worlds: np.ndarray, kappa: np.ndarray, position: np.ndarray, situations: list[str], states: list[str], split: dict | None) -> np.ndarray:
+    cells = deviations(others, worlds, kappa, position).reshape(len(others), -1)
+    if not split:
+        return cells
+    picks = [situations.index(situation) for situation in split["situations"]]
+    slots = [[states.index(state) for state in group] for group in split["groups"].values()]
+    parts = [deviations(others[:, picks][:, :, slot], worlds[picks][:, :, slot], kappa[picks], position) for slot in slots]
+    return np.concatenate([cells, np.stack(parts, axis=1).reshape(len(others), -1)], axis=1)
 
 
 class SeatIndex:
@@ -47,10 +78,11 @@ class SeatIndex:
 
 
 def moment_kappa(counts: np.ndarray, index: SeatIndex, step: int) -> float:
-    width = counts.shape[2]
+    width = counts.shape[-1]
     sums, squares, games = np.zeros((len(index.who), width)), np.zeros((len(index.who), width)), np.zeros(len(index.who))
     for start in range(0, len(index), CHUNK_SEATS):
         block = np.asarray(counts[start : start + CHUNK_SEATS, step], dtype=float)
+        block = block.reshape(len(block), -1, width).sum(axis=1)
         total = block.sum(axis=1, keepdims=True)
         share = np.where(total > 0, block / np.where(total > 0, total, 1.0), 0.0)
         codes = index.who_code[start : start + CHUNK_SEATS]
@@ -74,32 +106,37 @@ def moment_kappa(counts: np.ndarray, index: SeatIndex, step: int) -> float:
 class CellFit:
     prefix: str
     situations: list[str]
+    states: list[str]
     outcomes: list[str]
     totals: np.ndarray
     worlds: np.ndarray
     kappa: np.ndarray
     report: dict
     unit: float = 1.0
+    split: dict | None = None
 
     @property
     def columns(self) -> list[str]:
-        return [f"{self.prefix}_{situation}_{outcome}" for situation in self.situations for outcome in self.outcomes]
+        return [f"{self.prefix}_{situation}_{outcome}" for situation in self.situations for outcome in self.outcomes] + split_columns(self.split, self.outcomes)
 
 
-def dense_counts(counts: pd.DataFrame, index: SeatIndex, situations: list[str], outcomes: list[str], out: np.ndarray | None = None) -> np.ndarray:
-    target = out if out is not None else np.zeros((len(index), len(situations), len(outcomes)))
+def dense_counts(
+    counts: pd.DataFrame, index: SeatIndex, situations: list[str], outcomes: list[str], out: np.ndarray | None = None, states: list[str] = SINGLE
+) -> np.ndarray:
+    target = out if out is not None else np.zeros((len(index), len(situations), len(states), len(outcomes)))
     rows = index.rows(counts["match_id"], counts["puuid"])
     situation = pd.Index(situations).get_indexer(counts["situation"])
+    state = pd.Index(states).get_indexer(counts["state"]) if len(states) > 1 else np.zeros(len(counts), dtype=np.int64)
     outcome = pd.Index(outcomes).get_indexer(counts["outcome"])
-    keep = (rows >= 0) & (situation >= 0) & (outcome >= 0)
-    code = (rows[keep].astype(np.int64) * len(situations) + situation[keep]) * len(outcomes) + outcome[keep]
+    keep = (rows >= 0) & (situation >= 0) & (state >= 0) & (outcome >= 0)
+    code = ((rows[keep].astype(np.int64) * len(situations) + situation[keep]) * len(states) + state[keep]) * len(outcomes) + outcome[keep]
     np.add.at(target.reshape(-1), code, counts["count"].to_numpy(dtype=float)[keep])
     return target
 
 
-def buffer(path: Path, index: SeatIndex, situations: list[str], outcomes: list[str]) -> np.ndarray:
+def buffer(path: Path, index: SeatIndex, situations: list[str], outcomes: list[str], states: list[str] = SINGLE) -> np.ndarray:
     path.parent.mkdir(parents=True, exist_ok=True)
-    return np.lib.format.open_memmap(path, mode="w+", dtype=np.float64, shape=(len(index), len(situations), len(outcomes)))
+    return np.lib.format.open_memmap(path, mode="w+", dtype=np.float32, shape=(len(index), len(situations), len(states), len(outcomes)))
 
 
 def fit_cells(
@@ -111,41 +148,45 @@ def fit_cells(
     scale: float = 1.0,
     unit: float = 1.0,
     kappa: float | Sequence[float] | None = None,
+    states: list[str] = SINGLE,
+    split: dict | None = None,
 ) -> CellFit:
-    width = len(situations) * len(outcomes)
-    totals = np.zeros((len(index.who), width))
+    shape = (len(situations), len(states), len(outcomes))
+    totals = np.zeros((len(index.who), int(np.prod(shape))))
     for start in range(0, len(index), CHUNK_SEATS):
         stop = min(start + CHUNK_SEATS, len(index))
-        block = np.asarray(counts[start:stop], dtype=float).reshape(stop - start, width) / unit
+        block = np.asarray(counts[start:stop], dtype=float).reshape(stop - start, -1) / unit
         onehot = sparse.csr_matrix((np.ones(stop - start), (index.who_code[start:stop], np.arange(stop - start))), shape=(len(index.who), stop - start))
         totals += onehot @ block
-    totals = totals.reshape(len(index.who), len(situations), len(outcomes))
-    worlds = np.zeros((len(situations), len(index.positions), len(outcomes)))
+    totals = totals.reshape(len(index.who), *shape)
+    worlds = np.zeros((len(situations), len(index.positions), len(states), len(outcomes)))
     for code in range(len(index.positions)):
         pooled = totals[index.who_position == code].sum(axis=0)
-        worlds[:, code] = (pooled + 1.0) / (pooled.sum(axis=1, keepdims=True) + len(outcomes))
-    given = None if kappa is None else (list(kappa) if isinstance(kappa, Sequence) else [kappa] * len(situations))
-    kappa = np.array(
-        [scale * (given[step] if given is not None else _kappa(totals[:, step], worlds[step, index.who_position])) for step in range(len(situations))]
-    )
+        worlds[:, code] = (pooled + 1.0) / (pooled.sum(axis=2, keepdims=True) + len(outcomes))
+    if kappa is None:
+        expected = expected_counts(totals.sum(axis=3), worlds, index.who_position)
+        found = [_kappa(totals[:, step].sum(axis=1), expected[:, step]) for step in range(len(situations))]
+    else:
+        found = list(kappa) if isinstance(kappa, Sequence) else [kappa] * len(situations)
+    kappa = scale * np.array(found, dtype=float)
     report = {
         situation: {
             "rows": int(totals[:, step].sum()),
             "kappa": round(float(kappa[step]), 2),
-            "world": {position: [round(float(v), 4) for v in worlds[step, code]] for code, position in enumerate(index.positions)},
+            "world": {
+                position: {state: [round(float(v), 4) for v in worlds[step, code, at]] for at, state in enumerate(states)}
+                for code, position in enumerate(index.positions)
+            },
         }
         for step, situation in enumerate(situations)
     }
-    return CellFit(prefix, list(situations), list(outcomes), totals, worlds, kappa, report, unit)
+    return CellFit(prefix, list(situations), list(states), list(outcomes), totals, worlds, kappa, report, unit, split)
 
 
 def cell_values(fit: CellFit, counts: np.ndarray, index: SeatIndex, start: int, stop: int) -> np.ndarray:
-    values = np.asarray(counts[start:stop], dtype=float) / fit.unit
-    others = fit.totals[index.who_code[start:stop]] - values
-    exposure = others.sum(axis=2, keepdims=True)
-    world = fit.worlds[:, index.seat_position[start:stop]].transpose(1, 0, 2)
-    kappa = fit.kappa[None, :, None]
-    return ((world * kappa + others) / (exposure + kappa)).reshape(stop - start, -1)
+    others = fit.totals[index.who_code[start:stop]]
+    others -= np.asarray(counts[start:stop], dtype=float).reshape(others.shape) / fit.unit
+    return readings(others, fit.worlds, fit.kappa, index.seat_position[start:stop], fit.situations, fit.states, fit.split)
 
 
 def _cell_block(parts: list[tuple[CellFit, np.ndarray]], index: SeatIndex, columns: list[str], start: int, stop: int) -> np.ndarray:
@@ -182,7 +223,7 @@ def write_cells(path: Path, parts: list[tuple[CellFit, np.ndarray]], index: Seat
 
 
 def evidence_shares(fit: CellFit, index: SeatIndex) -> pd.DataFrame:
-    exposure = fit.totals.sum(axis=2)
+    exposure = fit.totals.sum(axis=(2, 3))
     kappa = np.array([fit.report[situation]["kappa"] for situation in fit.situations], dtype=float)
     weight = exposure / (exposure + kappa[None, :])
     typical = exposure.mean(axis=0)

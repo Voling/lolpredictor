@@ -2,27 +2,32 @@ import numpy as np
 import pandas as pd
 
 from ..config import Settings, get_settings
-from .cells import CHUNK_SEATS, SeatIndex, buffer, dense_counts
+from .cells import CHUNK_SEATS, SINGLE, SeatIndex, buffer, dense_counts
 from .positions import KEY
 
 EXPOSURE_TABLE = "exposure.parquet"
 
 
-def seat_exposure(counts, index: SeatIndex, situations: list[str], unit: float = 1.0) -> np.ndarray:
-    totals = np.zeros((len(index.who), len(situations)))
+def exposure_column(key: str, state: str, states: list[str]) -> str:
+    return key if len(states) == 1 else f"{key}@{state}"
+
+
+def seat_exposure(counts, index: SeatIndex, situations: list[str], unit: float = 1.0, states: list[str] = SINGLE) -> np.ndarray:
+    totals = np.zeros((len(index.who), len(situations), len(states)))
     for start in range(0, len(index), CHUNK_SEATS):
         stop = min(start + CHUNK_SEATS, len(index))
-        block = np.asarray(counts[start:stop], dtype=float).reshape(stop - start, len(situations), -1).sum(axis=2) / unit
+        block = np.asarray(counts[start:stop], dtype=float).reshape(stop - start, len(situations), len(states), -1).sum(axis=3) / unit
         np.add.at(totals, index.who_code[start:stop], block)
     return totals
 
 
-def exposure_frame(index: SeatIndex, parts: list[tuple[str, list[str], np.ndarray]]) -> pd.DataFrame:
-    frame = pd.DataFrame({"puuid": index.who.get_level_values("puuid"), "position": index.who.get_level_values("position")})
-    for prefix, situations, totals in parts:
-        for situation, values in zip(situations, totals.T):
-            frame[f"{prefix}_{situation}"] = values.astype(np.float32)
-    return frame
+def exposure_frame(index: SeatIndex, parts: list[tuple[str, list[str], list[str], np.ndarray]]) -> pd.DataFrame:
+    columns = {"puuid": index.who.get_level_values("puuid"), "position": index.who.get_level_values("position")}
+    for prefix, situations, states, totals in parts:
+        for step, situation in enumerate(situations):
+            for at, state in enumerate(states):
+                columns[exposure_column(f"{prefix}_{situation}", state, states)] = totals[:, step, at].astype(np.float32)
+    return pd.DataFrame(columns)
 
 
 def write_exposure(settings: Settings | None = None) -> dict:
@@ -35,12 +40,12 @@ def write_exposure(settings: Settings | None = None) -> dict:
     seats = pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"])
     index = SeatIndex(seats)
     parts = []
-    for number, (prefix, load, situations, outcomes) in enumerate(reaction_sources(settings)):
+    for number, (prefix, load, situations, outcomes, states, _) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"exposure.{number}.npy"
-        counts = buffer(path, index, situations, outcomes)
+        counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
-            dense_counts(frame, index, situations, outcomes, out=counts)
-        parts.append((prefix, situations, seat_exposure(counts, index, situations)))
+            dense_counts(frame, index, situations, outcomes, out=counts, states=states)
+        parts.append((prefix, situations, states, seat_exposure(counts, index, situations, states=states)))
         del counts
         path.unlink(missing_ok=True)
     table = exposure_frame(index, parts)
@@ -54,7 +59,7 @@ def write_exposure(settings: Settings | None = None) -> dict:
         narrow = SeatIndex(seats[seats.match_id.isin(corpus)])
         counts = np.load(counts_path, mmap_mode="r")
         if counts.shape[0] == len(narrow):
-            lane = exposure_frame(narrow, [("prio", SITUATIONS, seat_exposure(counts, narrow, SITUATIONS, TICK_UNIT))])
+            lane = exposure_frame(narrow, [("prio", SITUATIONS, SINGLE, seat_exposure(counts, narrow, SITUATIONS, TICK_UNIT))])
             table = table.merge(lane, on=KEY, how="left")
     fits = load_tendencies(settings.model_dir / TENDENCY_FIT)
     context = priority_context(settings)

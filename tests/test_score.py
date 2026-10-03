@@ -222,3 +222,15 @@ def test_a_friend_whose_profile_breaks_the_summary_gets_a_plain_note_and_the_err
     notes = {row["riot_id"]: row["note"] for row in found["friends"]}
     assert notes["Beta#NA1"] == CANNOT_SCORE and "both play top" in notes["Gamma#NA1"]
     assert "could not score Alpha#NA1 with Beta#NA1" in caplog.text and "cannot convert float NaN to integer" in caplog.text
+
+
+def test_a_summary_never_carries_a_missing_name_as_a_number(service):
+    # given
+    service.profiles["main_champion"] = [float("nan"), "Ahri", None]
+    service.profiles["division"] = [float("nan"), "I", None]
+
+    # when
+    summary = service.player_summary(service.profiles.loc["a"])
+
+    # then
+    assert summary["main_champion"] is None and summary["division"] is None and summary["tier"] is None

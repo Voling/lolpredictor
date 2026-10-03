@@ -12,7 +12,10 @@ from ..config import Settings
 logger = logging.getLogger(__name__)
 FRESH_DAYS = 14
 FRESH_SECONDS = FRESH_DAYS * 86400
-MATCHED = 0.9
+
+
+class StaleEvaluation(ValueError):
+    pass
 
 
 class EvaluatedPlayers:
@@ -65,6 +68,8 @@ class EvaluatedPlayers:
                 if "exposure" in data.files:
                     vectors["exposure"] = data["exposure"].astype(np.float32)
                     vectors["exposure_columns"] = [str(name) for name in data["exposure_columns"]]
+                if "run" in data.files:
+                    vectors["run"] = str(data["run"])
         except Exception:
             logger.exception("could not load the evaluated player %s", puuid[:8])
             return None
@@ -83,16 +88,13 @@ def profile_row(profile: dict) -> pd.Series:
 
 def seats_of(vectors: dict, columns: list[str]) -> dict[tuple[str, str], tuple[np.ndarray, int, float]]:
     order = pd.Index(vectors["columns"]).get_indexer(columns)
-    known = order >= 0
-    if known.mean() < MATCHED:
-        raise ValueError("the evaluated vectors do not match the served columns")
+    if (order < 0).any() or len(vectors["columns"]) != len(columns):
+        raise StaleEvaluation("the evaluated vectors were made for another model")
     puuid = vectors.get("puuid")
-    found = {}
-    for index, position in enumerate(vectors["position"]):
-        row = np.zeros(len(columns), dtype=np.float32)
-        row[known] = np.asarray(vectors["matrix"][index], dtype=np.float32)[order[known]]
-        found[(puuid, position)] = (row, int(vectors["seats"][index]), float(vectors["evidence"][index]))
-    return found
+    return {
+        (puuid, position): (np.asarray(vectors["matrix"][index], dtype=np.float32)[order], int(vectors["seats"][index]), float(vectors["evidence"][index]))
+        for index, position in enumerate(vectors["position"])
+    }
 
 
 def pool_effect(settings: Settings, position: str, champions: dict[str, int]) -> float:

@@ -4,9 +4,13 @@ import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
 from .objectives import SIDES as OBJECTIVE_SIDES
-from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, write_cells
-from .fits import REACTION_FITS, save_cells
+from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, split_columns, write_cells
+from .fits import REACTION_FITS, reaction_sources, save_cells
 
+STATES = [f"{band}_{gold}" for band in ("early", "late") for gold in ("behind", "even", "ahead")]
+UNSTATED = "early_even"
+LATE_MINUTE = 10.0
+LANE_GOLD = 500.0
 TABLE = "reaction.parquet"
 PIECE_ROWS = 2_000_000
 EVIDENCE = "evidence_reaction.parquet"
@@ -25,9 +29,17 @@ OBJECTIVE_SITUATIONS = [f"{o}_{side}_{band}" for o in OBJECTIVES for side in OBJ
 WARD_SITUATIONS = [band for _, band in MINUTE_BANDS]
 OPENING_SITUATIONS = ["gank", "invade"]
 OPENING_OUTCOMES = [band for _, band in OPENING_BANDS]
+GOLD_TRIGGERS = ("kill", "plate")
+GOLD_SPLIT = {
+    "prefix": "rspg",
+    "situations": [situation for situation in RESPONSE_SITUATIONS if situation.split("_")[0] in GOLD_TRIGGERS],
+    "groups": {gold: [state for state in STATES if state.endswith(f"_{gold}")] for gold in ("behind", "ahead")},
+}
+GOLD_COLUMNS = split_columns(GOLD_SPLIT, list(RESPONSES))
 
 REACTION_COLUMNS = (
     [f"rsp_{s}_{o}" for s in RESPONSE_SITUATIONS for o in RESPONSES]
+    + GOLD_COLUMNS
     + [f"obj_{s}_{o}" for s in OBJECTIVE_SITUATIONS for o in OBJECTIVE_RESPONSES]
     + [f"ward_{s}_{o}" for s in WARD_SITUATIONS for o in WARD_ZONES]
     + [f"jgl_{s}_{o}" for s in OPENING_SITUATIONS for o in OPENING_OUTCOMES]
@@ -35,14 +47,21 @@ REACTION_COLUMNS = (
 )
 
 
-RESPONSE_READ = ["match_id", "puuid", "trigger", "ours", "is_actor", "is_victim", "approach", "present", "converged", "left_after", "held_ground"]
+RESPONSE_READ = ["match_id", "puuid", "trigger", "ours", "is_actor", "is_victim", "approach", "present", "converged", "left_after", "held_ground", "state"]
 OBJECTIVE_READ = [
-    "match_id", "puuid", "objective", "ours", "side", "o_approach_distance", "o_died", "o_fought", "o_committed", "o_rotated_in", "o_approaching",
+    "match_id", "puuid", "objective", "ours", "side", "o_approach_distance", "o_died", "o_fought", "o_committed", "o_rotated_in", "o_approaching", "state",
 ]
 
 
+def chance_state(minute: float, lead: float) -> str:
+    gold = "behind" if lead < -LANE_GOLD else "ahead" if lead > LANE_GOLD else "even"
+    return f"{'early' if minute < LATE_MINUTE else 'late'}_{gold}"
+
+
 def _pieces(path, columns: list[str]):
-    for batch in pq.ParquetFile(path).iter_batches(batch_size=PIECE_ROWS, columns=columns):
+    source = pq.ParquetFile(path)
+    present = [column for column in columns if column in source.schema_arrow.names]
+    for batch in source.iter_batches(batch_size=PIECE_ROWS, columns=present):
         yield batch.to_pandas()
 
 
@@ -78,19 +97,23 @@ def response_counts(responses: pd.DataFrame) -> pd.DataFrame:
             default=4,
         )
     ]
-    return pd.DataFrame({"match_id": column("match_id"), "puuid": column("puuid"), "situation": situation, "outcome": outcome, "count": 1.0})
+    state = column("state") if "state" in responses.columns else np.full(int(kept.sum()), UNSTATED, dtype=object)
+    return pd.DataFrame({"match_id": column("match_id"), "puuid": column("puuid"), "situation": situation, "state": state, "outcome": outcome, "count": 1.0})
 
 
 def objective_counts(objectives: pd.DataFrame) -> pd.DataFrame:
     rows = objectives[objectives["objective"].isin(OBJECTIVES)]
     side = rows["side"].astype(str).to_numpy() if "side" in rows.columns else np.where(rows["ours"] == 1, "ours", "theirs")
     situation = rows["objective"].astype(str) + "_" + side + "_" + _band(rows["o_approach_distance"], DISTANCE_BANDS).to_numpy()
+    state = rows["state"].astype(str).to_numpy() if "state" in rows.columns else np.full(len(rows), UNSTATED, dtype=object)
     outcome = np.select(
         [rows["o_died"] > 0, rows["o_fought"] > 0, rows["o_committed"] > 0, rows["o_rotated_in"] > 0, rows["o_approaching"] > 0],
         ["died", "fought", "committed", "rotated", "approached"],
         default="absent",
     )
-    return pd.DataFrame({"match_id": rows["match_id"].to_numpy(), "puuid": rows["puuid"].to_numpy(), "situation": situation.to_numpy(), "outcome": outcome, "count": 1.0})
+    return pd.DataFrame(
+        {"match_id": rows["match_id"].to_numpy(), "puuid": rows["puuid"].to_numpy(), "situation": situation.to_numpy(), "state": state, "outcome": outcome, "count": 1.0}
+    )
 
 
 def _ward_zone(zone: pd.Series) -> np.ndarray:
@@ -128,24 +151,14 @@ def build_reaction(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     processed = settings.processed_dir
     index = SeatIndex(pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"]))
-    openings = jungle_counts(pd.read_parquet(processed / "jungle_openings.parquet"))
-    sources = (
-        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES)),
-        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)),
-         OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES)),
-        ("ward", lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", "zone"])),
-         WARD_SITUATIONS, list(WARD_ZONES)),
-        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES),
-        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES)),
-    )
     parts, paths, report, shares = [], [], {}, []
-    for number, (prefix, load, situations, outcomes) in enumerate(sources):
+    for number, (prefix, load, situations, outcomes, states, split) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"reaction_counts.{number}.npy"
-        counts = buffer(path, index, situations, outcomes)
+        counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
-            dense_counts(frame, index, situations, outcomes, out=counts)
+            dense_counts(frame, index, situations, outcomes, out=counts, states=states)
         counts.flush()
-        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale)
+        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, states=states, split=split)
         save_cells(settings.model_dir / REACTION_FITS[number], fit, index.positions)
         parts.append((fit, counts))
         paths.append(path)
@@ -154,6 +167,7 @@ def build_reaction(settings: Settings | None = None) -> dict:
         report[f"{prefix}:{situations[0]}" if prefix in report else prefix] = {
             "rows": int(sum(entry["rows"] for entry in fit.report.values())),
             "situations": len(situations),
+            "states": len(states),
             "outcomes": len(outcomes),
             "kappa_range": [min(kappas), max(kappas)],
         }

@@ -234,18 +234,20 @@ class Evaluator:
             rows = index.rows(shard["match_id"], shard["puuid"])
             counts[rows[rows >= 0]] = shard["counts"][rows >= 0]
         priority, priority_evidence = apply_cells(bundle.priority, counts, index)
-        exposure_parts = [("prio", bundle.priority["situations"], seat_exposure(counts, index, bundle.priority["situations"], bundle.priority["unit"]))]
+        prio = bundle.priority
+        exposure_parts = [("prio", prio["situations"], prio["states"], seat_exposure(counts, index, prio["situations"], prio["unit"], prio["states"]))]
         context = priority_context_from(pd.read_parquet(track_path), seats)
         self._step("reactions")
         reaction_parts, shares = [], []
-        for number, (prefix, load, situations, outcomes) in enumerate(reaction_sources(settings)):
-            counts = np.zeros((len(index), len(situations), len(outcomes)))
+        for number, (prefix, load, situations, outcomes, *_) in enumerate(reaction_sources(settings)):
+            states = bundle.reaction[number]["states"]
+            counts = np.zeros((len(index), len(situations), len(states), len(outcomes)))
             for frame in load():
-                dense_counts(frame, index, situations, outcomes, out=counts)
+                dense_counts(frame, index, situations, outcomes, out=counts, states=states)
             frame, evidence = apply_cells(bundle.reaction[number], counts, index)
             reaction_parts.append(frame)
             shares.append((len(situations) * len(outcomes), evidence))
-            exposure_parts.append((prefix, situations, seat_exposure(counts, index, situations)))
+            exposure_parts.append((prefix, situations, states, seat_exposure(counts, index, situations, states=states)))
         reaction = reaction_parts[0]
         for frame in reaction_parts[1:]:
             reaction = reaction.merge(frame, on=["match_id", "puuid"], how="outer")
@@ -341,7 +343,8 @@ def save_result(folder: Path, result: dict, profile: dict) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
     vectors = folder / f"{result['puuid']}.npz"
     extra = {"exposure": result["exposure"], "exposure_columns": np.array(result["exposure_columns"], dtype=str)} if "exposure" in result else {}
-    np.savez(vectors, columns=np.array(result["columns"]), position=result["position"], seats=result["seats"], evidence=result["evidence"], matrix=result["matrix"], **extra)
+    stamp = {"run": np.array(result["run"])} if result.get("run") else {}
+    np.savez(vectors, columns=np.array(result["columns"]), position=result["position"], seats=result["seats"], evidence=result["evidence"], matrix=result["matrix"], **extra, **stamp)
     summary = folder / f"{result['puuid']}.json"
     summary.write_text(json.dumps(profile), encoding="utf-8")
     return vectors, summary

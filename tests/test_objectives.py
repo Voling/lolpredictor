@@ -94,3 +94,25 @@ def test_objective_rows_carry_one_attempt_per_grub_fight_and_mark_fights_with_no
     assert next(row for row in fights if row["puuid"] == "p1")["o_died"] == 1.0
     assert all(f"obj_{situation}_{outcome}" in REACTION_COLUMNS for situation, outcome in zip(counts.situation, counts.outcome))
     assert set(counts.situation.str.split("_").str[1]) == {"ours", "theirs", "none"}
+
+
+def test_an_objective_chance_takes_its_state_from_when_the_attempt_started():
+    # given
+    dragon = PITS["DRAGON"]
+    events = [
+        _kill(9.6, dragon),
+        {"type": "ELITE_MONSTER_KILL", "timestamp": int(10.2 * 60000), "killerId": 1, "killerTeamId": 100, "monsterType": "DRAGON", "position": {"x": dragon[0], "y": dragon[1]}},
+    ]
+    timeline = build_timeline(events=events)
+    frames = timeline["info"]["frames"]
+    frames[8]["participantFrames"]["1"]["totalGold"] += 700
+    frames[9]["participantFrames"]["1"]["totalGold"] -= 3000
+
+    # when
+    rows = objective_rows(build_match(), timeline)
+
+    # then
+    state = {row["puuid"]: row["state"] for row in rows if row["objective"] == "DRAGON"}
+    assert {row["minute"] for row in rows} == {10.2}
+    assert state["p0"] == "early_ahead" and state["p5"] == "early_behind" and state["p1"] == "early_even"
+    assert set(objective_counts(pd.DataFrame(rows)).state) == {"early_ahead", "early_behind", "early_even"}

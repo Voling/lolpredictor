@@ -6,23 +6,25 @@ from synergy.ml.posteriors import differences, situations_from, summarise, top_s
 from synergy.ml.serving import adopt_player, exposure_of, write_vectors
 
 
-def _fit(prefix, situations, outcomes, worlds, kappa, positions=("TOP", "JUNGLE")):
+def _fit(prefix, situations, outcomes, worlds, kappa, positions=("TOP", "JUNGLE"), states=("all",), gap=True):
     return {
         "prefix": prefix,
         "situations": situations,
+        "states": list(states),
         "outcomes": outcomes,
-        "worlds": np.array(worlds, dtype=float),
+        "worlds": np.array(worlds, dtype=float).reshape(len(situations), len(positions), len(states), len(outcomes)),
         "kappa": np.array(kappa, dtype=float),
         "unit": 1.0,
         "positions": list(positions),
         "typical": np.ones(len(situations)),
+        "gap": gap,
     }
 
 
-def test_a_situation_becomes_a_dirichlet_from_the_served_mean_and_the_chances():
+def test_a_situation_becomes_a_dirichlet_from_the_served_gap_and_the_chances():
     # given
     columns = ["rsp_kill_ours_far_converged", "rsp_kill_ours_far_held", "tend_follow_-m-_own", "habit_1"]
-    standard = {"columns": np.array(columns), "centre": np.array([0.5, 0.5, 0.0, 0.0]), "spread": np.array([0.1, 0.1, 1.0, 1.0])}
+    standard = {"columns": np.array(columns), "centre": np.array([0.0, 0.0, 0.0, 0.0]), "spread": np.array([0.1, 0.1, 1.0, 1.0])}
     fits = [_fit("rsp", ["kill_ours_far"], ["converged", "held"], [[[0.4, 0.6], [0.5, 0.5]]], [8.0])]
     exposure = {"rsp_kill_ours_far": 12.0, "tend_follow_-m-_own_obs": 9.0, "tend_follow_-m-_own_exp": 4.0}
 
@@ -34,12 +36,67 @@ def test_a_situation_becomes_a_dirichlet_from_the_served_mean_and_the_chances():
     rate = summarise(ratio, np.random.default_rng(1))
 
     # then
-    assert np.allclose(shares["alpha"], [14.0, 6.0]) and list(shares["prior"]) == [0.4, 0.6] and shares["n"] == 12.0
+    assert np.allclose(shares["alpha"], [12.0, 8.0]) and np.allclose(shares["prior"], [0.4, 0.6]) and shares["n"] == 12.0
     assert shares["words"] == "after an ally kill from far away" and ratio["words"] == "following into fights with mid holding priority, on own half"
     assert [outcome["words"] for outcome in summary["outcomes"]] == ["converged", "held ground"]
     first = summary["outcomes"][0]
-    assert first["low"] < first["mean"] == 0.7 < first["high"] and first["prior"] == 0.4
+    assert first["low"] < first["mean"] == 0.6 < first["high"] and first["prior"] == 0.4
     assert rate["ratio"]["mean"] == round(11.0 / 6.0, 3) and rate["ratio"]["low"] < rate["ratio"]["mean"] < rate["ratio"]["high"] and rate["observed"] == 9.0
+
+
+def test_the_prior_is_a_typical_player_facing_the_same_states_and_the_served_gap_moves_off_it():
+    # given
+    from scipy import stats
+
+    from synergy.features.reaction import STATES
+    from synergy.ml.posteriors import population_percentiles
+
+    columns = ["obj_DRAGON_ours_far_fought", "obj_DRAGON_ours_far_absent"]
+    worlds = np.full((1, 1, len(STATES), 2), 0.5)
+    worlds[0, 0, STATES.index("early_behind")] = [0.2, 0.8]
+    worlds[0, 0, STATES.index("late_ahead")] = [0.6, 0.4]
+    fits = {
+        "cells": [_fit("obj", ["DRAGON_ours_far"], ["fought", "absent"], worlds, [10.0], ["TOP"], STATES)],
+        "standard": {"columns": np.array(columns), "centre": np.zeros(2), "spread": np.full(2, 0.05)},
+        "priors": {},
+    }
+    mixed = {"obj_DRAGON_ours_far@early_behind": 20.0, "obj_DRAGON_ours_far@late_ahead": 20.0}
+    ahead = {"obj_DRAGON_ours_far@late_ahead": 40.0}
+    z = np.array([2.0, -2.0])
+
+    # when
+    first = situations_from(z, columns, mixed, "TOP", fits["cells"], {}, fits["standard"])[0]
+    second = situations_from(z, columns, ahead, "TOP", fits["cells"], {}, fits["standard"])[0]
+    percentiles = population_percentiles(z, columns, "TOP", fits, None, mixed)
+    unseen = population_percentiles(z, columns, "TOP", fits, None, {"obj_DRAGON_ours_far": 40.0})
+
+    # then
+    assert np.allclose(first["prior"], [0.4, 0.6]) and np.allclose(first["alpha"], [25.0, 25.0]) and first["n"] == 40.0
+    assert np.allclose(second["prior"], [0.6, 0.4]) and np.allclose(second["alpha"], [35.0, 15.0])
+    assert np.isclose(percentiles[0], 100.0 * stats.beta.cdf(0.5, 4.0, 6.0)) and np.isnan(unseen).all()
+
+
+def test_an_old_run_reads_share_cells_against_the_position_world_from_plain_exposure():
+    # given
+    from scipy import stats
+
+    from synergy.ml.posteriors import population_percentiles
+
+    columns = ["obj_DRAGON_ours_far_fought", "obj_DRAGON_ours_far_absent"]
+    fits = {
+        "cells": [_fit("obj", ["DRAGON_ours_far"], ["fought", "absent"], [[[0.4, 0.6]]], [10.0], ["TOP"], gap=False)],
+        "standard": {"columns": np.array(columns), "centre": np.full(2, 0.5), "spread": np.full(2, 0.1)},
+        "priors": {},
+    }
+    z = np.array([1.0, -1.0])
+
+    # when
+    entry = situations_from(z, columns, {"obj_DRAGON_ours_far": 30.0}, "TOP", fits["cells"], {}, fits["standard"])[0]
+    percentiles = population_percentiles(z, columns, "TOP", fits)
+
+    # then
+    assert np.allclose(entry["prior"], [0.4, 0.6]) and np.allclose(entry["alpha"], [24.0, 16.0]) and entry["n"] == 30.0
+    assert np.isclose(percentiles[0], 100.0 * stats.beta.cdf(0.6, 4.0, 6.0))
 
 
 def test_the_clearest_differences_come_first_and_the_lane_state_collapses_to_where_the_player_stands():
@@ -48,13 +105,13 @@ def test_the_clearest_differences_come_first_and_the_lane_state_collapses_to_whe
 
     columns = [*(f"prio_all_{outcome}" for outcome in OUTCOMES), "rsp_kill_ours_far_converged", "rsp_kill_ours_far_held"]
     width = len(columns)
-    standard = {"columns": np.array(columns), "centre": np.full(width, 0.1), "spread": np.full(width, 0.05)}
+    standard = {"columns": np.array(columns), "centre": np.zeros(width), "spread": np.full(width, 0.05)}
     fits = [
         _fit("prio", ["all"], OUTCOMES, np.full((1, 1, len(OUTCOMES)), 1.0 / len(OUTCOMES)), [5.0], ["TOP"]),
         _fit("rsp", ["kill_ours_far"], ["converged", "held"], [[[0.5, 0.5]]], [8.0], ["TOP"]),
     ]
     z = np.zeros(width)
-    z[0], z[-1] = 20.0, 3.0
+    z[0], z[-2], z[-1] = 2.0, -3.0, 3.0
 
     # when
     entries = situations_from(z, columns, {"prio_all": 300.0, "rsp_kill_ours_far": 20.0}, "TOP", fits, {}, standard)
@@ -150,10 +207,10 @@ def test_a_reading_is_ranked_against_the_fitted_spread_of_true_rates_not_against
     from synergy.ml.posteriors import population_percentiles
 
     columns, fits = _population_fits()
-    z = np.array([0.54, 0.3, 0.004, 0.5, np.log(1.2)])
+    z = np.array([0.035, -0.19, -0.001, 0.5, np.log(1.2)])
 
     # when
-    found = population_percentiles(z, columns, "TOP", fits)
+    found = population_percentiles(z, columns, "TOP", fits, None, {"obj_DRAGON_ours_far": 25.0})
 
     # then
     assert 70.0 < found[0] < 76.0 and np.isnan(found[2]) and np.isnan(found[3])
@@ -197,11 +254,11 @@ def test_each_chart_says_what_the_player_usually_does_and_what_is_unusual():
     shared = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.1, 0.1, 0.2, 0.6]), np.array([0.3, 0.05, 0.05, 0.6]), ("A", "B"))
 
     # then
-    assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than the typical jungler: 4% against 19%."
-    assert typical == "At ally void grubs nearby, Weaver usually fights, 47%, like the typical jungler."
-    assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as the typical top laner in the same spots."
-    assert duo == "At an ally dragon from far away, expect Gryffinn to fight, 43%, and Gakgos to stay away, 52%."
-    assert shared == "At an ally dragon from far away, you both usually stay away, but B dies more often: 30% against 10%."
+    assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than a typical jungler in the same spots: 4% against 19%."
+    assert typical == "At ally void grubs nearby, Weaver usually fights, 47%, like a typical jungler in the same spots."
+    assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as a typical top laner in the same spots."
+    assert duo == "At an ally dragon from far away, expect Gryffinn to fight, 43%, and Gakgos to not join, 52%."
+    assert shared == "At an ally dragon from far away, you both usually don't join, but B dies more often: 30% against 10%."
 
 
 def test_situations_whose_events_arrive_in_clusters_are_left_out_of_charts_and_standouts():
@@ -214,12 +271,44 @@ def test_situations_whose_events_arrive_in_clusters_are_left_out_of_charts_and_s
         "standard": {"columns": np.array(columns), "centre": np.zeros(4), "spread": np.ones(4)},
         "priors": {},
     }
-    z = np.array([0.7, 0.3, 0.7, 0.3])
+    z = np.array([0.3, -0.3, 0.3, -0.3])
+    exposure = {"obj_HORDE_ours_near": 30.0, "obj_DRAGON_ours_near": 30.0}
 
     # when
-    entries = situations_from(z, columns, {"obj_HORDE_ours_near": 30.0, "obj_DRAGON_ours_near": 30.0}, "JUNGLE", fits["cells"], {}, fits["standard"])
-    percentiles = population_percentiles(z, columns, "JUNGLE", fits)
+    entries = situations_from(z, columns, exposure, "JUNGLE", fits["cells"], {}, fits["standard"])
+    percentiles = population_percentiles(z, columns, "JUNGLE", fits, None, exposure)
 
     # then
     assert [entry["situation"] for entry in entries] == ["obj_DRAGON_ours_near"]
     assert np.isnan(percentiles[:2]).all() and not np.isnan(percentiles[2:]).any()
+
+
+def test_a_gold_reading_draws_against_a_typical_player_in_the_same_gold_state_and_needs_its_columns():
+    # given
+    from scipy import stats
+
+    from synergy.features.reaction import GOLD_SPLIT, STATES
+    from synergy.ml.posteriors import population_percentiles
+
+    worlds = np.full((1, 1, len(STATES), 2), 0.5)
+    worlds[0, 0, STATES.index("early_behind")] = [0.2, 0.8]
+    worlds[0, 0, STATES.index("late_behind")] = [0.3, 0.7]
+    fit = {**_fit("rsp", ["plate_ours_far"], ["converged", "absent"], worlds, [10.0], ["TOP"], STATES), "split": {**GOLD_SPLIT, "situations": ["plate_ours_far"]}}
+    columns = ["rsp_plate_ours_far_converged", "rsp_plate_ours_far_absent", "rspg_behind_plate_ours_far_converged", "rspg_behind_plate_ours_far_absent"]
+    fits = {"cells": [fit], "standard": {"columns": np.array(columns), "centre": np.zeros(4), "spread": np.full(4, 0.05)}, "priors": {}}
+    exposure = {"rsp_plate_ours_far@early_behind": 40.0, "rsp_plate_ours_far@late_behind": 40.0, "rsp_plate_ours_far@late_ahead": 40.0}
+    z = np.array([0.0, 0.0, 2.0, -2.0])
+
+    # when
+    entries = {entry["situation"]: entry for entry in situations_from(z, columns, exposure, "TOP", [fit], {}, fits["standard"])}
+    behind = summarise(entries["rspg_behind_plate_ours_far"], np.random.default_rng(0), "bblskibs", "top laner")
+    percentiles = population_percentiles(z, columns, "TOP", fits, None, exposure)
+    without = situations_from(z[:2], columns[:2], exposure, "TOP", [fit], {}, fits["standard"])
+
+    # then
+    assert sorted(entries) == ["rsp_plate_ours_far", "rspg_behind_plate_ours_far"] and [entry["situation"] for entry in without] == ["rsp_plate_ours_far"]
+    assert np.allclose(entries["rsp_plate_ours_far"]["prior"], [1.0 / 3.0, 2.0 / 3.0]) and entries["rsp_plate_ours_far"]["n"] == 120.0
+    assert np.allclose(entries["rspg_behind_plate_ours_far"]["prior"], [0.25, 0.75]) and np.allclose(entries["rspg_behind_plate_ours_far"]["alpha"], [31.5, 58.5])
+    assert entries["rspg_behind_plate_ours_far"]["n"] == 80.0 and entries["rspg_behind_plate_ours_far"]["words"] == "when behind, after an ally plate from far away"
+    assert np.isclose(percentiles[2], 100.0 * stats.beta.cdf(0.35, 2.5, 7.5))
+    assert behind["takeaway"] == "When behind, after an ally plate from far away, bblskibs usually does not follow, 65%, and moves in more often than a typical top laner who is behind: 35% against 25%."

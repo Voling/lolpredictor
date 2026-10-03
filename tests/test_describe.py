@@ -111,3 +111,45 @@ def test_lane_states_read_as_what_the_player_does():
         "farms deep in own half with the opponent at the middle",
         "waits on the enemy side with the opponent away in the minute before an objective",
     ]
+
+
+def test_not_going_reads_as_not_following_allies_not_responding_to_enemies_and_not_joining_objectives():
+    # given
+    from synergy.features.describe import act, outcome_label
+
+    cells = ["rsp_kill_ours_far_absent", "rsp_plate_theirs_mid_absent", "obj_DRAGON_ours_far_absent", "obj_HORDE_none_near_absent"]
+
+    # when
+    phrases = [phrase(cell) for cell in cells]
+    acts = [act("rsp_kill_ours_far", "absent"), act("obj_DRAGON_theirs_far", "absent"), act("obj_DRAGON_ours_far", "fought")]
+
+    # then
+    assert phrases == [
+        "does not follow an ally kill from far away",
+        "does not respond to an enemy plate at mid range",
+        "does not join an ally dragon from far away",
+        "does not join a void grubs fight nobody wins nearby",
+    ]
+    assert acts == [("does not follow", "not follow", "don't follow"), ("does not join", "not join", "don't join"), ("fights", "fight", "fight")]
+    assert outcome_label("rsp_plate_theirs_far", "absent") == "didn't respond" and outcome_label("ward_early", "river") == "river"
+
+
+def test_gold_readings_read_as_the_reaction_when_behind_or_ahead():
+    # given
+    from synergy.features.describe import act, outcome_label, situation_lead
+    from synergy.features.reaction import GOLD_COLUMNS
+
+    cells = ["rspg_behind_plate_ours_far_converged", "rspg_ahead_kill_theirs_mid_absent"]
+
+    # when
+    phrases = [phrase(cell) for cell in cells]
+    situations = [situation_of(cell) for cell in cells]
+
+    # then
+    assert phrases == ["converges on an ally plate from far away when behind", "does not respond to an enemy kill at mid range when ahead"]
+    assert situations == ["rspg_behind_plate_ours_far", "rspg_ahead_kill_theirs_mid"]
+    assert describe("rspg_ahead_plate_ours_near_held") == "held ground at an ally plate nearby when ahead"
+    assert describe_situation("rspg_behind_kill_ours_far") == "when behind, after an ally kill from far away"
+    assert situation_lead("rspg_behind_kill_ours_far") == "When behind, after an ally kill from far away"
+    assert act("rspg_behind_kill_ours_far", "absent")[0] == "does not follow" and outcome_label("rspg_ahead_plate_theirs_far", "absent") == "didn't respond"
+    assert all(named(cell) for cell in GOLD_COLUMNS)

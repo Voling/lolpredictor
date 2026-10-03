@@ -1,4 +1,6 @@
+import json
 import logging
+import math
 import os
 import threading
 import time
@@ -6,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..cache import get_cache
@@ -18,7 +21,7 @@ from ..pipeline import served_summary
 from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
 from .artifacts import bucket_of, current_run, fetch_run
 from .customs import SharedCustoms
-from .evaluate import GIB, Evaluations, shape, store_size
+from .evaluate import EVAL, GIB, READY, REQUESTED, Evaluations, shape, store_size
 from .history import History, duo_view, public
 from .shares import Shares, pair_puuids, stamp
 
@@ -36,6 +39,21 @@ _history: History | None = None
 _shares: Shares | None = None
 _run_seen: tuple[float, str | None] | None = None
 _verifier = None
+
+
+def finite(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite(item) for item in value]
+    return value
+
+
+class FiniteJSON(JSONResponse):
+    def render(self, content) -> bytes:
+        return json.dumps(finite(content), ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
 
 
 class TeamRequest(BaseModel):
@@ -234,6 +252,19 @@ def _duos(remember, found: dict, me: str, service) -> list[dict]:
         return []
 
 
+def _requeue_stale(puuid: str) -> None:
+    settings = get_settings()
+    if not settings.evaluate_queue:
+        return
+    table = DynamoTable(settings.accounts_table)
+    state = table.get(EVAL, puuid) or {}
+    if state.get("status") != READY:
+        return
+    table.put(EVAL, puuid, {**state, "status": REQUESTED, "step": "queued", "percent": 0, "started": int(time.time())})
+    _queue_evaluation(puuid)
+    logger.info("queued %s again for the served model", puuid[:8])
+
+
 def get_verifier():
     global _verifier
     if _verifier is None:
@@ -256,6 +287,7 @@ def _ready():
         from ..ml.evaluated import EvaluatedPlayers
 
         service.evaluated = EvaluatedPlayers(DynamoTable(settings.accounts_table), boto3.client("s3"), settings.evaluated_store.removeprefix("s3://").split("/", 1)[0])
+        service.on_stale = _requeue_stale
     return service
 
 
@@ -537,6 +569,7 @@ def create_app(public: bool | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url=None if public else "/openapi.json",
         lifespan=_lifespan,
+        default_response_class=FiniteJSON,
     )
     app.state.public = public
     origins = [origin for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if origin]

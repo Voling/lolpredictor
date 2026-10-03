@@ -218,18 +218,99 @@ def test_champions_follow_the_seat_position_and_an_evaluated_pool_wins_over_the_
     assert after == ["Garen", "Darius"] and champions_of("a", "JUNGLE", settings) == ["Amumu"]
 
 
-def test_vectors_from_before_new_columns_still_load_with_the_new_columns_typical():
+def test_an_evaluation_made_for_another_model_is_refused_and_the_corpus_row_is_kept(serving_settings, tmp_path):
     # given
     import pytest
 
-    vectors = {"puuid": "new", "columns": [f"c{index}" for index in range(10)], "position": ["TOP"], "seats": np.array([12]), "evidence": np.array([0.5]), "matrix": np.arange(10, dtype=np.float32)[None, :]}
+    from synergy.ml.evaluated import StaleEvaluation
+    from synergy.ml.score import SynergyService
+
+    stale = {"puuid": "a", "columns": ["tend_dive_tmb_own"], "position": ["TOP"], "seats": np.array([12]), "evidence": np.array([0.5]), "matrix": np.ones((1, 1), dtype=np.float32)}
+    table = _Table({(EVAL, "a"): {"status": READY, "expires": int(START) + 1000, "finished": 100}})
+    client = _S3({**_profile(), "puuid": "a", "game_name": "Alpha", "games": 40}, {key: value for key, value in stale.items() if key != "puuid"})
+    service = SynergyService(serving_settings)
+    service.model = object()
+    service.evaluated = EvaluatedPlayers(table, client, "bucket", tmp_path, clock=lambda: START)
+    service.profiles = pd.DataFrame({"puuid": ["a"], "game_name": ["Alpha"], "tag_line": ["NA1"], "games": [5], "winrate": [0.5], "main_position": ["TOP"]}).set_index("puuid", drop=False)
+    asked = []
+    service.on_stale = asked.append
+    duo_between("a", "TOP", "b", "JUNGLE", serving_settings)
 
     # when
-    grown = seats_of(vectors, [*vectors["columns"], "c_new"])
+    row = service.resolve("Alpha#NA1")
 
     # then
-    row, seats, evidence = grown[("new", "TOP")]
-    assert row.tolist() == [*range(10), 0.0] and seats == 12 and evidence == 0.5
-    with pytest.raises(ValueError):
-        seats_of(vectors, [*vectors["columns"][:5], *(f"other{index}" for index in range(6))])
+    assert row["games"] == 5 and "evaluated" not in service.profiles.columns and asked == ["a"]
+    with pytest.raises(StaleEvaluation):
+        seats_of(stale, ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"])
 
+
+def _serve(settings, run):
+    settings.pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.pointer_path.write_text(json.dumps({"run": run}), encoding="utf-8")
+
+
+def _stamped_service(settings, folder, vectors):
+    from synergy.ml.score import SynergyService
+
+    table = _Table({(EVAL, "a"): {"status": READY, "expires": int(START) + 1000, "finished": 100}})
+    client = _S3({**_profile(), "puuid": "a", "game_name": "Alpha", "games": 40}, vectors)
+    service = SynergyService(settings)
+    service.model = object()
+    service.evaluated = EvaluatedPlayers(table, client, "bucket", folder, clock=lambda: START)
+    service.profiles = pd.DataFrame({"puuid": ["a"], "game_name": ["Alpha"], "tag_line": ["NA1"], "games": [5], "winrate": [0.5], "main_position": ["TOP"]}).set_index("puuid", drop=False)
+    asked = []
+    service.on_stale = asked.append
+    return service, asked
+
+
+def _stamped(columns, run):
+    return {**_vectors(columns), **({"run": np.array(run)} if run else {})}
+
+
+def test_an_evaluation_stamped_with_the_served_run_is_adopted(serving_settings, tmp_path):
+    # given
+    from synergy.evaluate import save_result
+
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    _serve(serving_settings, "20261003-045825")
+    result = {"puuid": "a", **{key: value for key, value in _vectors(columns).items() if key != "columns"}, "columns": columns, "run": "20261003-045825"}
+    written, _ = save_result(tmp_path / "out", result, _profile())
+    with np.load(written) as data:
+        stored = {name: data[name] for name in data.files}
+    service, asked = _stamped_service(serving_settings, tmp_path, stored)
+
+    # when
+    row = service.resolve("Alpha#NA1")
+
+    # then
+    assert str(stored["run"]) == "20261003-045825" and service.evaluated.load("a")[1]["run"] == "20261003-045825"
+    assert row["games"] == 40 and row["evaluated"] is True and asked == []
+
+
+def test_an_evaluation_from_an_older_run_or_without_a_stamp_is_queued_again_once_and_the_corpus_row_is_kept(serving_settings, tmp_path):
+    # given
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    _serve(serving_settings, "20261003-045825")
+    older, older_asked = _stamped_service(serving_settings, tmp_path / "older", _stamped(columns, "20261003-022905"))
+    blank, blank_asked = _stamped_service(serving_settings, tmp_path / "blank", _stamped(columns, None))
+
+    # when
+    rows = [older.resolve("Alpha#NA1"), blank.resolve("Alpha#NA1")]
+
+    # then
+    assert [row["games"] for row in rows] == [5, 5] and older_asked == ["a"] and blank_asked == ["a"]
+    assert "evaluated" not in older.profiles.columns and "evaluated" not in blank.profiles.columns
+
+
+def test_an_evaluation_from_a_newer_run_waits_for_this_instance_to_load_that_run_without_queueing(serving_settings, tmp_path):
+    # given
+    columns = ["tend_dive_tmb_own", "rsp_kill_ours_near_converged"]
+    _serve(serving_settings, "20261003-022905")
+    service, asked = _stamped_service(serving_settings, tmp_path, _stamped(columns, "20261003-045825"))
+
+    # when
+    row = service.resolve("Alpha#NA1")
+
+    # then
+    assert row["games"] == 5 and "evaluated" not in service.profiles.columns and asked == []

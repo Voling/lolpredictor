@@ -13,7 +13,7 @@ from ..riot.routing import split_riot_id
 from ..features.propensity import PROPENSITY_COLUMNS
 from .dataset import PAIR_HISTORY_SOURCE, HISTORY_COLUMNS, STYLE_NAMES, phi_from_styles
 from .model import SynergyModel
-from .evaluated import FRESH_SECONDS, profile_row
+from .evaluated import FRESH_SECONDS, StaleEvaluation, profile_row
 from .posteriors import duo_posteriors
 from .serving import adopt_player, custom_residuals, duo_between, hinge_between, known_names, lineup_between, position_profile
 
@@ -59,6 +59,10 @@ def epoch_of(value) -> int | None:
     return int(value)
 
 
+def text_of(value) -> str | None:
+    return None if value is None or (not isinstance(value, str) and pd.isna(value)) else value
+
+
 def riot_id(profile) -> str:
     name = profile.get("game_name")
     tag = profile.get("tag_line")
@@ -77,6 +81,7 @@ class SynergyService:
         self.propensity_report: dict = {}
         self.style_columns: list[str] = list(STYLE_COLUMNS)
         self.evaluated = None
+        self.on_stale = None
         self.adopted: dict[str, int] = {}
 
     @property
@@ -152,32 +157,48 @@ class SynergyService:
         if self.evaluated is None:
             return row
         found = self.evaluated.load(row["puuid"])
-        return row if found is None else self._adopt(*found)
+        adopted = None if found is None else self._adopt_fresh(*found)
+        return row if adopted is None else adopted
 
     def adopt(self, query: str) -> pd.Series | None:
         if self.evaluated is None or self.profiles is None:
             return None
         found = self.evaluated.find(query)
-        return None if found is None else self._adopt(*found)
+        return None if found is None else self._adopt_fresh(*found)
 
     def adopt_puuid(self, puuid: str) -> pd.Series | None:
         if self.evaluated is None or self.profiles is None:
             return None
         found = self.evaluated.load(puuid)
-        return None if found is None else self._adopt(*found)
+        return None if found is None else self._adopt_fresh(*found)
+
+    def _adopt_fresh(self, profile: dict, vectors: dict) -> pd.Series | None:
+        made, served = vectors.get("run"), self.settings.served_run()
+        if served and made and made > served:
+            logger.info("the evaluation of %s was made for run %s, newer than the served %s", str(profile["puuid"])[:8], made, served)
+            return None
+        try:
+            if served and made != served:
+                raise StaleEvaluation(f"the evaluation was made for run {made}, the served run is {served}")
+            return self._adopt(profile, vectors)
+        except StaleEvaluation as stale:
+            logger.warning("the evaluation of %s is stale: %s", str(profile["puuid"])[:8], stale)
+            if self.on_stale is not None:
+                self.on_stale(profile["puuid"])
+            return None
 
     def _adopt(self, profile: dict, vectors: dict) -> pd.Series:
         row = profile_row(profile)
         stamp = int(profile.get("evaluated_at", 0) or 0)
+        if row.name in self.profiles.index and stamp <= self.adopted.get(row.name, -1):
+            return self.profiles.loc[row.name]
+        adopt_player(self.settings, profile, vectors)
         if row.name in self.profiles.index:
-            if stamp <= self.adopted.get(row.name, -1):
-                return self.profiles.loc[row.name]
             row = pd.Series({**self.profiles.loc[row.name].to_dict(), **row.to_dict()}, name=row.name)
             self.profiles = self.profiles.drop(index=row.name)
         self.profiles = pd.concat([self.profiles, self._as_profile(row)])
         self.profiles["puuid"] = self.profiles.index
         self.adopted[row.name] = stamp
-        adopt_player(self.settings, profile, vectors)
         return self.profiles.loc[row.name]
 
     def _as_profile(self, row: pd.Series) -> pd.DataFrame:
@@ -348,12 +369,12 @@ class SynergyService:
         return {
             "puuid": profile["puuid"],
             "riot_id": riot_id(profile),
-            "tier": profile.get("tier"),
-            "division": profile.get("division"),
+            "tier": text_of(profile.get("tier")),
+            "division": text_of(profile.get("division")),
             "games": int(profile["games"]),
             "winrate": round(float(profile["winrate"]), 4),
-            "main_position": profile.get("main_position"),
-            "main_champion": profile.get("main_champion"),
+            "main_position": text_of(profile.get("main_position")),
+            "main_champion": text_of(profile.get("main_champion")),
             "champion_pool": int(profile.get("champion_pool", 0)),
             "latest_game": latest,
             "refresh_after": None if latest is None else latest + FRESH_SECONDS,

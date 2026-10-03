@@ -99,7 +99,7 @@ def fetch_games(riot: RiotAccounts, accounts: Accounts, store: GameStore, puuid:
     return games
 
 
-def fetch_bundle(client, bucket: str, target: Path) -> Path:
+def fetch_bundle(client, bucket: str, target: Path) -> tuple[Path, str]:
     run = current_run(client, bucket)
     prefix = f"runs/{run}/{BUNDLE}/"
     target.mkdir(parents=True, exist_ok=True)
@@ -109,7 +109,7 @@ def fetch_bundle(client, bucket: str, target: Path) -> Path:
         raise FileNotFoundError(f"run {run} has no evaluator bundle under {prefix}")
     for key in keys:
         client.download_file(bucket, key, str(target / key.rsplit("/", 1)[-1]))
-    return target
+    return target, run
 
 
 def wait_for_database(settings: Settings, pause=time.sleep, tries: int = 60) -> None:
@@ -142,10 +142,11 @@ def evaluate_player(puuid: str, settings: Settings | None = None, scratch: Path 
         games = fetch_games(riot, accounts, store, puuid, progress.step, lambda: store_size(settings, table) >= store.cap_bytes)
         if not games:
             raise ValueError("Riot returned no ranked games for this player")
-        bundle = Bundle(fetch_bundle(s3, bucket_of(settings.model_store), scratch / "bundle"))
+        folder, run = fetch_bundle(s3, bucket_of(settings.model_store), scratch / "bundle")
+        bundle = Bundle(folder)
         wait_for_database(settings)
         local = Settings(data_dir=scratch / "data", database_url=settings.database_url, timescale=False)
-        result = Evaluator(bundle, local, progress.step).run(puuid, games)
+        result = {**Evaluator(bundle, local, progress.step).run(puuid, games), "run": run}
         account = riot_call(lambda: riot.account_by_puuid(puuid), accounts)
         league = riot_call(lambda: riot.league(puuid), accounts)
         now = int(time.time())
@@ -155,7 +156,7 @@ def evaluate_player(puuid: str, settings: Settings | None = None, scratch: Path 
         s3.upload_file(str(summary), store.bucket, f"profiles/{puuid}.json")
         riot_id = f"{profile.get('game_name')}#{profile.get('tag_line')}"
         table.put(NAMES, name_key(riot_id), {"puuid": puuid, "expires": now + 14 * DAY})
-        progress.write(status=READY, step="ready", percent=100, riot_id=riot_id, games=result["games"], expires=now + 14 * DAY, finished=now, latest_game=profile.get("latest_game"))
+        progress.write(status=READY, step="ready", percent=100, riot_id=riot_id, games=result["games"], expires=now + 14 * DAY, finished=now, latest_game=profile.get("latest_game"), run=run)
         logger.info("evaluated %s from %s games", riot_id, result["games"])
         return profile
     except Interrupted:

@@ -68,7 +68,7 @@ OUTCOME_WORDS = {
     "held": "held ground",
     "left": "left",
     "present": "stayed present",
-    "absent": "stayed away",
+    "absent": "didn't go",
     "died": "died",
     "fought": "fought",
     "committed": "committed",
@@ -111,7 +111,6 @@ ACTS = {
     "held": ("holds ground", "hold ground"),
     "left": ("leaves", "leave"),
     "present": ("stays nearby", "stay nearby"),
-    "absent": ("stays away", "stay away"),
     "died": ("dies", "die"),
     "fought": ("fights", "fight"),
     "committed": ("commits", "commit"),
@@ -124,7 +123,28 @@ ACTS = {
 }
 
 
-def act(situation: str, outcome: str) -> tuple[str, str]:
+def _absent(situation: str) -> tuple[str, str, str, str]:
+    if situation.startswith("obj_"):
+        return "does not join", "not join", "don't join", "didn't join"
+    if "_ours_" in situation:
+        return "does not follow", "not follow", "don't follow", "didn't follow"
+    return "does not respond", "not respond", "don't respond", "didn't respond"
+
+
+def outcome_label(situation: str, outcome: str) -> str:
+    if outcome == "absent" and situation.startswith(("rsp_", "rspg_", "obj_")):
+        return _absent(situation)[3]
+    return outcome_words(outcome)
+
+
+def act(situation: str, outcome: str) -> tuple[str, str, str]:
+    if outcome == "absent" and situation.startswith(("rsp_", "rspg_", "obj_")):
+        return _absent(situation)[:3]
+    third, base = _act(situation, outcome)
+    return third, base, base
+
+
+def _act(situation: str, outcome: str) -> tuple[str, str]:
     if situation.startswith("ward_"):
         zone = WARD_ZONES[outcome]
         return f"wards {zone}", f"ward {zone}"
@@ -153,7 +173,7 @@ def situation_lead(situation: str) -> str:
 
 def _objective(side: str, objective: str) -> str:
     if side == "none":
-        return f"a {OBJECTIVES[objective]} fight with no take"
+        return f"a {OBJECTIVES[objective]} fight nobody wins"
     words = f"{SIDES[side]} {OBJECTIVES[objective]}"
     return words if objective == "HORDE" else f"an {words}"
 
@@ -173,6 +193,8 @@ def describe(cell: str) -> str:
     if prefix == "rsp" and len(parts) == 5:
         _, trigger, side, band, outcome = parts
         return f"{RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+    if prefix == "rspg" and len(parts) == 6:
+        return f"{describe('_'.join(['rsp', *parts[2:]]))} when {parts[1]}"
     if prefix == "obj" and len(parts) == 5:
         _, objective, side, band, outcome = parts
         return f"{OBJECTIVE_RESPONSES[outcome]} {_objective(side, objective)} {DISTANCE[band]}"
@@ -209,7 +231,6 @@ PRESENT_RESPONSES = {
     "held": "holds ground at",
     "left": "leaves after",
     "present": "is present at",
-    "absent": "stays away from",
 }
 PRESENT_OBJECTIVE_RESPONSES = {
     "died": "dies at",
@@ -217,7 +238,6 @@ PRESENT_OBJECTIVE_RESPONSES = {
     "committed": "commits to",
     "rotated": "rotates toward",
     "approached": "approaches",
-    "absent": "stays away from",
 }
 PRESENT_OPENINGS = {"gank": "ganks first", "invade": "invades first"}
 PRESENT_JUNGLE_SIDES = {"crossed": "crosses to the other side of the jungle", "stayed": "stays on one side of the jungle"}
@@ -228,10 +248,14 @@ def phrase(cell: str) -> str:
     prefix = parts[0]
     if prefix == "rsp" and len(parts) == 5:
         _, trigger, side, band, outcome = parts
-        return f"{PRESENT_RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+        verb = ("does not follow" if side == "ours" else "does not respond to") if outcome == "absent" else PRESENT_RESPONSES[outcome]
+        return f"{verb} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+    if prefix == "rspg" and len(parts) == 6:
+        return f"{phrase('_'.join(['rsp', *parts[2:]]))} when {parts[1]}"
     if prefix == "obj" and len(parts) == 5:
         _, objective, side, band, outcome = parts
-        return f"{PRESENT_OBJECTIVE_RESPONSES[outcome]} {_objective(side, objective)} {DISTANCE[band]}"
+        verb = "does not join" if outcome == "absent" else PRESENT_OBJECTIVE_RESPONSES[outcome]
+        return f"{verb} {_objective(side, objective)} {DISTANCE[band]}"
     if prefix == "ward" and len(parts) >= 3:
         return f"places wards {WARD_TIMES[parts[1]]} {WARD_ZONES['_'.join(parts[2:])]}"
     if prefix == "jgl" and parts[1] == "sides":
@@ -273,6 +297,8 @@ def situation_of(cell: str) -> str:
     prefix = parts[0]
     if prefix in ("rsp", "obj") and len(parts) == 5:
         return "_".join(parts[:4])
+    if prefix == "rspg" and len(parts) == 6:
+        return "_".join(parts[:5])
     if prefix == "ward":
         return "_".join(parts[:2])
     if prefix == "jgl":
@@ -289,6 +315,8 @@ def describe_situation(situation: str) -> str:
     prefix = parts[0]
     if prefix == "rsp" and len(parts) == 4:
         return f"after an {SIDES[parts[2]]} {TRIGGERS[parts[1]]} {DISTANCE[parts[3]]}"
+    if prefix == "rspg" and len(parts) == 5:
+        return f"when {parts[1]}, {describe_situation('_'.join(['rsp', *parts[2:]]))}"
     if prefix == "obj" and len(parts) == 4:
         return f"at {_objective(parts[2], parts[1])} {DISTANCE[parts[3]]}"
     if prefix == "ward":

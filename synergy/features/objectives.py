@@ -114,6 +114,8 @@ def objective_events(parsed: ParsedTimeline, limit: float) -> list[dict]:
 def objective_rows(
     match: dict, timeline: dict, span: int = SPAN, parsed: ParsedTimeline | None = None
 ) -> list[dict]:
+    from .reaction import chance_state
+
     parsed = parsed or ParsedTimeline(match, timeline)
     if len(parsed.minutes) < 8:
         return []
@@ -156,6 +158,7 @@ def objective_rows(
                     "minute": event["minute"],
                     "ours": int(side == "ours"),
                     "side": side,
+                    "state": chance_state(start, parsed.lane_lead(pid, start)),
                     "o_approach_distance": approach / 1000.0,
                     "o_arrival_distance": arrival / 1000.0,
                     "o_present": float(arrival < NEARBY),

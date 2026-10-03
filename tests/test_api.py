@@ -199,3 +199,18 @@ def test_a_shared_pair_expires_once_new_games_are_pulled_and_the_owner_gets_a_fr
     # then
     assert expired["expired"] is True and [player["riot_id"] for player in expired["players"]] == ["Me#NA1", "Friend#NA1"]
     assert fresh["score"] == 64.0 and fresh["share"] == "tok" and reopened["score"] == 64.0 and "expired" not in reopened
+
+
+def test_a_response_with_missing_numbers_still_renders_as_json_with_nulls():
+    # given
+    import json
+
+    from synergy.api.server import FiniteJSON
+
+    content = {"score": 51.0, "players": [{"main_champion": float("nan")}, {"gold": float("inf")}], "pair": (1.5, float("-inf"))}
+
+    # when
+    rendered = json.loads(FiniteJSON(content).body)
+
+    # then
+    assert rendered == {"score": 51.0, "players": [{"main_champion": None}, {"gold": None}], "pair": [1.5, None]}

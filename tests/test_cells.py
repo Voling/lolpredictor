@@ -12,7 +12,7 @@ def _cells(counts, seats, situations, outcomes, prefix, scale=1.0):
     return cells_frame([(fit, dense)], index, fit.columns), fit.report
 
 
-def test_cells_are_distributions_that_leave_the_match_out_and_fall_back_to_the_position_world():
+def test_cells_are_gaps_from_the_position_world_that_leave_the_match_out_and_are_zero_without_other_games():
     # given
     counts = pd.DataFrame(
         {
@@ -30,29 +30,31 @@ def test_cells_are_distributions_that_leave_the_match_out_and_fall_back_to_the_p
     block = block.set_index(["match_id", "puuid"])
 
     # then
-    assert np.allclose(block[["t_s_x", "t_s_y"]].sum(axis=1), 1.0)
-    assert block.loc[("m1", "a"), "t_s_x"] > block.loc[("m3", "b"), "t_s_x"]
-    world = np.array(report["s"]["world"]["TOP"])
-    assert np.allclose(block.loc[("m4", "c"), ["t_s_x", "t_s_y"]].to_numpy(), world, atol=1e-3)
-    own = block.loc[("m1", "a"), "t_s_x"]
+    assert np.allclose(block[["t_s_x", "t_s_y"]].sum(axis=1), 0.0)
+    assert block.loc[("m1", "a"), "t_s_x"] > block.loc[("m3", "b"), "t_s_x"] == 0.0
+    assert np.allclose(block.loc[("m4", "c"), ["t_s_x", "t_s_y"]].to_numpy(), 0.0)
+    world = np.array(report["s"]["world"]["TOP"]["all"])
     kappa = report["s"]["kappa"]
-    assert np.isclose(own, (4.0 + kappa * world[0]) / (4.0 + kappa), atol=1e-3)
+    assert np.isclose(block.loc[("m1", "a"), "t_s_x"], (4.0 - 4.0 * world[0]) / (4.0 + kappa), atol=1e-3)
 
 
-def test_a_player_is_pooled_per_position_and_shrinks_toward_that_position_world():
+def test_a_player_is_pooled_per_position_and_measured_against_that_position_world():
     # given
     rows = []
     for match in range(6):
         rows.append({"match_id": f"t{match}", "puuid": "a", "situation": "s", "outcome": "x", "count": 9.0})
         rows.append({"match_id": f"t{match}", "puuid": "a", "situation": "s", "outcome": "y", "count": 1.0})
+        rows.append({"match_id": f"c{match}", "puuid": "c", "situation": "s", "outcome": "x", "count": 1.0})
+        rows.append({"match_id": f"c{match}", "puuid": "c", "situation": "s", "outcome": "y", "count": 9.0})
         rows.append({"match_id": f"j{match}", "puuid": "b", "situation": "s", "outcome": "y", "count": 10.0})
-    rows.append({"match_id": "j_a", "puuid": "a", "situation": "s", "outcome": "y", "count": 2.0})
+    rows.append({"match_id": "j_a1", "puuid": "a", "situation": "s", "outcome": "y", "count": 2.0})
+    rows.append({"match_id": "j_a2", "puuid": "a", "situation": "s", "outcome": "y", "count": 2.0})
     counts = pd.DataFrame(rows)
     seats = pd.DataFrame(
         {
-            "match_id": [f"t{i}" for i in range(6)] + [f"j{i}" for i in range(6)] + ["j_a"],
-            "puuid": ["a"] * 6 + ["b"] * 6 + ["a"],
-            "position": ["TOP"] * 6 + ["JUNGLE"] * 7,
+            "match_id": [f"t{i}" for i in range(6)] + [f"c{i}" for i in range(6)] + [f"j{i}" for i in range(6)] + ["j_a1", "j_a2"],
+            "puuid": ["a"] * 6 + ["c"] * 6 + ["b"] * 6 + ["a", "a"],
+            "position": ["TOP"] * 12 + ["JUNGLE"] * 8,
         }
     )
 
@@ -61,12 +63,12 @@ def test_a_player_is_pooled_per_position_and_shrinks_toward_that_position_world(
     block = block.set_index(["match_id", "puuid"])
 
     # then
-    assert report["s"]["world"]["TOP"][0] > 0.8 and report["s"]["world"]["JUNGLE"][0] < 0.2
-    assert block.loc[("t0", "a"), "t_s_x"] > 0.8
-    assert block.loc[("j_a", "a"), "t_s_x"] < 0.2
+    assert 0.4 < report["s"]["world"]["TOP"]["all"][0] < 0.6 and report["s"]["world"]["JUNGLE"]["all"][0] < 0.05
+    assert block.loc[("t0", "a"), "t_s_x"] > 0.2 and block.loc[("c0", "c"), "t_s_x"] < -0.2
+    assert abs(block.loc[("j_a1", "a"), "t_s_x"]) < 0.01
 
 
-def test_a_situation_nobody_met_still_yields_the_world_row_for_everyone():
+def test_a_situation_nobody_met_yields_no_gap_for_anyone():
     # given
     counts = pd.DataFrame({"match_id": ["m1"], "puuid": ["a"], "situation": ["seen"], "outcome": ["x"], "count": [1.0]})
     seats = pd.DataFrame({"match_id": ["m1", "m2"], "puuid": ["a", "b"], "position": ["MIDDLE", "MIDDLE"]})
@@ -76,8 +78,68 @@ def test_a_situation_nobody_met_still_yields_the_world_row_for_everyone():
 
     # then
     assert set(block.columns) == {"match_id", "puuid", "t_seen_x", "t_seen_y", "t_unseen_x", "t_unseen_y"}
-    assert np.allclose(block[["t_unseen_x", "t_unseen_y"]].to_numpy(), 0.5)
-    assert report["unseen"]["rows"] == 0
+    assert np.allclose(block[["t_unseen_x", "t_unseen_y"]].to_numpy(), 0.0)
+    assert report["unseen"]["rows"] == 0 and report["unseen"]["world"]["MIDDLE"]["all"] == [0.5, 0.5]
+
+
+def test_counts_land_in_the_state_of_their_chance_and_unknown_states_are_dropped():
+    # given
+    seats = pd.DataFrame({"match_id": ["m1", "m2"], "puuid": ["a", "a"], "position": ["TOP", "TOP"]})
+    counts = pd.DataFrame(
+        {
+            "match_id": ["m1", "m1", "m2", "m2"],
+            "puuid": ["a"] * 4,
+            "situation": ["s"] * 4,
+            "state": ["early", "late", "late", "never"],
+            "outcome": ["x", "y", "y", "x"],
+            "count": [1.0] * 4,
+        }
+    )
+    index = SeatIndex(seats)
+
+    # when
+    dense = dense_counts(counts, index, ["s"], ["x", "y"], states=["early", "late"])
+    single = dense_counts(counts, index, ["s"], ["x", "y"])
+
+    # then
+    first, second = index.rows(["m1", "m2"], ["a", "a"])
+    assert dense.shape == (2, 1, 2, 2) and single.shape == (2, 1, 1, 2)
+    assert dense[first, 0].tolist() == [[1.0, 0.0], [0.0, 1.0]] and dense[second, 0].tolist() == [[0.0, 0.0], [0.0, 1.0]]
+    assert single[second, 0, 0].tolist() == [1.0, 1.0]
+
+
+def test_a_cell_is_the_shrunk_gap_between_the_player_and_a_typical_player_facing_the_same_states():
+    # given
+    rows = [
+        ("g1", "a", "early", 3.0, 0.0),
+        ("g2", "a", "late", 0.0, 4.0),
+        ("g3", "a", "early", 1.0, 1.0),
+        ("h1", "b", "early", 0.0, 2.0),
+        ("h2", "b", "late", 3.0, 1.0),
+    ]
+    counts = pd.DataFrame(
+        [
+            {"match_id": match, "puuid": puuid, "situation": "s", "state": state, "outcome": outcome, "count": count}
+            for match, puuid, state, x, y in rows
+            for outcome, count in (("x", x), ("y", y))
+        ]
+    )
+    seats = pd.DataFrame({"match_id": ["g1", "g2", "g3", "h1", "h2", "k1"], "puuid": ["a", "a", "a", "b", "b", "c"], "position": ["TOP"] * 6})
+    index = SeatIndex(seats)
+    dense = dense_counts(counts, index, ["s"], ["x", "y"], states=["early", "late"])
+
+    # when
+    fit = fit_cells(dense, index, ["s"], ["x", "y"], "t", kappa=[4.0], states=["early", "late"])
+    block = cells_frame([(fit, dense)], index, fit.columns).set_index(["match_id", "puuid"])
+
+    # then
+    early, late = np.array([5.0, 4.0]) / 9.0, np.array([4.0, 6.0]) / 10.0
+    assert np.allclose(fit.worlds[0, 0], [early, late])
+    mix = (2.0 * early + 4.0 * late) / 6.0
+    shrunk = (4.0 * mix + np.array([1.0, 5.0])) / (6.0 + 4.0)
+    assert np.allclose(block.loc[("g1", "a"), ["t_s_x", "t_s_y"]].to_numpy(dtype=float), shrunk - mix)
+    assert np.allclose(block.loc[("h1", "b"), ["t_s_x", "t_s_y"]].to_numpy(dtype=float), (np.array([3.0, 1.0]) - 4.0 * late) / (4.0 + 4.0))
+    assert np.allclose(block.loc[("k1", "c"), ["t_s_x", "t_s_y"]].to_numpy(dtype=float), 0.0)
 
 
 def test_counts_streamed_into_a_disk_buffer_in_pieces_match_one_pass_and_write_the_same_cells(tmp_path):
@@ -92,7 +154,7 @@ def test_counts_streamed_into_a_disk_buffer_in_pieces_match_one_pass_and_write_t
             "puuid": seats["puuid"].sample(400, replace=True, random_state=2).to_numpy(),
             "situation": rng.choice(["s", "t", "elsewhere"], 400),
             "outcome": rng.choice(["x", "y", "z"], 400),
-            "count": rng.random(400),
+            "count": rng.integers(1, 5, 400).astype(float),
         }
     )
     index = SeatIndex(seats)
@@ -154,3 +216,39 @@ def test_a_fixed_concentration_per_situation_is_used_as_given():
 
     # then
     assert fit.report["s"]["kappa"] == 2.5 and fit.unit == 90.0
+
+
+def test_a_split_reading_measures_the_gap_over_only_the_chances_in_its_group_of_states():
+    # given
+    rows = [
+        ("g1", "a", "s", "early_behind", 2.0, 0.0),
+        ("g1", "a", "s", "early_ahead", 0.0, 1.0),
+        ("g2", "a", "s", "late_behind", 1.0, 3.0),
+        ("g2", "a", "t", "early_behind", 1.0, 0.0),
+        ("g3", "a", "s", "early_ahead", 2.0, 2.0),
+        ("h1", "b", "s", "early_behind", 0.0, 2.0),
+        ("h1", "b", "s", "late_behind", 1.0, 1.0),
+    ]
+    counts = pd.DataFrame(
+        [
+            {"match_id": match, "puuid": puuid, "situation": situation, "state": state, "outcome": outcome, "count": count}
+            for match, puuid, situation, state, go, stay in rows
+            for outcome, count in (("go", go), ("stay", stay))
+        ]
+    )
+    seats = pd.DataFrame({"match_id": ["g1", "g2", "g3", "h1"], "puuid": ["a", "a", "a", "b"], "position": ["TOP"] * 4})
+    states = ["early_behind", "late_behind", "early_ahead"]
+    split = {"prefix": "rg", "situations": ["s"], "groups": {"behind": ["early_behind", "late_behind"], "ahead": ["early_ahead"]}}
+    index = SeatIndex(seats)
+    dense = dense_counts(counts, index, ["s", "t"], ["go", "stay"], states=states)
+
+    # when
+    fit = fit_cells(dense, index, ["s", "t"], ["go", "stay"], "r", kappa=[4.0, 4.0], states=states, split=split)
+    block = cells_frame([(fit, dense)], index, fit.columns).set_index(["match_id", "puuid"])
+
+    # then
+    late_behind, early_ahead = np.array([3.0, 5.0]) / 8.0, np.array([3.0, 4.0]) / 7.0
+    assert fit.columns[-4:] == ["rg_behind_s_go", "rg_behind_s_stay", "rg_ahead_s_go", "rg_ahead_s_stay"]
+    assert np.allclose(block.loc[("g1", "a"), ["rg_behind_s_go", "rg_behind_s_stay"]].to_numpy(dtype=float), (np.array([1.0, 3.0]) - 4.0 * late_behind) / (4.0 + 4.0))
+    assert np.allclose(block.loc[("g1", "a"), ["rg_ahead_s_go", "rg_ahead_s_stay"]].to_numpy(dtype=float), (np.array([2.0, 2.0]) - 4.0 * early_ahead) / (4.0 + 4.0))
+    assert np.allclose(block.loc[("h1", "b"), fit.columns[-4:]].to_numpy(dtype=float), 0.0)

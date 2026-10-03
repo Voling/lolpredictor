@@ -70,12 +70,12 @@ function Result({ pair, onRefreshed, shared = false }: { pair: PairScore; onRefr
       <h3>What stands out</h3>
       <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
       <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
-      <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} we have seen. A habit only shows here once enough games back it up.</p>
+      <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} we have seen. Habits are only shown when there is enough proof.</p>
 
       {posteriors && (posteriors.measured ? posteriors.measured.left || posteriors.measured.right : posteriors.left.length > 0 || posteriors.right.length > 0) && (
         <>
-          <h3>Behaviour in detail</h3>
-          <p className="sub">The three things each of you does most differently from others in your position. Dot: your most likely share. Bar: where we&apos;re 80% sure it lies. Diamond: the typical player in that position. With few games the bar is wide and the dot sits near the diamond, because we assume typical play until your games show otherwise.</p>
+          <h3>Behavior in detail</h3>
+          <p className="sub">The three things each of you does most differently from others in your position. Dot: your most likely share. Bar: where we&apos;re 80% sure it lies. Diamond: a typical player in your position in the same spots, like being ahead or behind in lane. With few games the bar is wide and the dot sits near the diamond, because we assume typical play until your games show otherwise.</p>
           <h4>{left.riot_id}</h4>
           {posteriors.left.length === 0 && <p className="sub">Nothing in {left.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.left)} yet. That&apos;s normal with few games.</p>}
           {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" />)}

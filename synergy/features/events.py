@@ -1,6 +1,7 @@
 import math
 
 from .objectives import ATTEMPT_GAP, CAMPS
+from .reaction import chance_state
 from .timeline import ParsedTimeline
 
 from ..config import get_settings
@@ -140,6 +141,7 @@ def event_response_rows(
                     "ours": int(team == trigger["actor_team"]) if trigger["actor_team"] else 0,
                     "is_actor": int(pid == trigger["actor"]),
                     "is_victim": int(pid == trigger["victim"]),
+                    "state": chance_state(trigger["minute"], parsed.lane_lead(pid, trigger["minute"])),
                     **reaction,
                 }
             )

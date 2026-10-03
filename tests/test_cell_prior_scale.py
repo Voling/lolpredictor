@@ -34,8 +34,7 @@ def test_a_larger_prior_scale_pulls_every_cell_toward_the_position_world():
     pulled, pulled_report = _cells(counts, seats, ["s"], ["hold", "leave"], "x", scale=4.0)
 
     # then
-    world = np.array(report["s"]["world"]["TOP"])
     own = plain.loc[plain.puuid == "a", ["x_s_hold", "x_s_leave"]].to_numpy()[0]
     shrunk = pulled.loc[pulled.puuid == "a", ["x_s_hold", "x_s_leave"]].to_numpy()[0]
-    assert np.abs(shrunk - world).sum() < np.abs(own - world).sum()
+    assert np.abs(shrunk).sum() < np.abs(own).sum()
     assert np.isclose(pulled_report["s"]["kappa"], 4.0 * report["s"]["kappa"], rtol=1e-6)

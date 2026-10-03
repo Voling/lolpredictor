@@ -111,6 +111,14 @@ class ParsedTimeline:
                 return pid
         return None
 
+    def lane_lead(self, pid: int, minute: float) -> float:
+        role, team = self.roles.get(pid, ""), self.teams.get(pid)
+        rival = next((other for other, value in self.roles.items() if role and value == role and self.teams.get(other) != team), None)
+        if rival is None:
+            return 0.0
+        frame = max(0, int(minute) - 1)
+        return self.at_minute(self.gold, pid, frame) - self.at_minute(self.gold, rival, frame)
+
     def kill_events(self) -> list[dict]:
         return [event for event in self.events if event.get("type") == "CHAMPION_KILL"]
 
