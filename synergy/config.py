@@ -54,7 +54,7 @@ TIER_ORDER = [
 
 @dataclass
 class Settings:
-    riot_api_key: str = field(default_factory=lambda: _str("RIOT_API_KEY", ""))
+    riot_api_key: str = field(default_factory=lambda: _str("RIOT_API_KEY", ""), repr=False)
     platform: str = field(default_factory=lambda: _str("RIOT_PLATFORM", "na1"))
     region: str = field(default_factory=lambda: _str("RIOT_REGION", "americas"))
     seed_riot_id: str = field(default_factory=lambda: _str("SEED_RIOT_ID", "bblskibs#gotg"))
@@ -111,7 +111,8 @@ class Settings:
     database_url: str = field(
         default_factory=lambda: _str(
             "DATABASE_URL", "postgresql://synergy:synergy@127.0.0.1:5432/synergy"
-        )
+        ),
+        repr=False,
     )
 
     cell_prior_scale: float = field(default_factory=lambda: _float("CELL_PRIOR_SCALE", 1.0))

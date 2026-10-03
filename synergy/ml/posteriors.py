@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 
 from ..config import Settings, get_settings
 from ..features.describe import describe_situation, outcome_words, tendency_words
@@ -14,6 +15,9 @@ DRAWS = 400
 TOP = 3
 RANGE = (10.0, 90.0)
 FLOOR = 1e-3
+RARE = 0.01
+MEASURED_GAMES = 20
+MEASURED_PLAYERS = 100
 STANDARDISE = "standardise.npz"
 LANE_GROUPS = {**{f"{own}_{opponent}_{farm}": own for own in BANDS for opponent in OPPONENT for farm in FARMING}, "off_lane": "off_lane", "dead": "dead"}
 LANE_ORDER = [*BANDS, "off_lane", "dead"]
@@ -30,6 +34,76 @@ def fits_for(settings: Settings) -> dict | None:
     if any(fit is None for fit in cells) or standard is None:
         return None
     return {"cells": cells, "standard": standard, "priors": cached(folder / PRIORS_FILE, "json", _json) or {}}
+
+
+def _cell_index(fits: list[dict]) -> dict[str, tuple[dict, int, int]]:
+    return {
+        f"{fit['prefix']}_{situation}_{outcome}": (fit, step, k)
+        for fit in fits
+        for step, situation in enumerate(fit["situations"])
+        for k, outcome in enumerate(fit["outcomes"])
+    }
+
+
+def _lane_situation(cell: str) -> str:
+    return "prio_pre_objective" if cell.startswith("prio_pre_objective_") else "prio_all"
+
+
+def measured_lanes(pack: dict, position: str, columns: list[str]) -> dict[int, np.ndarray]:
+    held = pack.setdefault("measured", {})
+    if position in held:
+        return held[position]
+    found = {}
+    names = pack.get("exposure_columns") or []
+    if pack.get("exposure") is not None:
+        rows = np.flatnonzero(np.asarray(pack["position"]) == position)
+        for column, cell in enumerate(columns):
+            situation = _lane_situation(cell)
+            if not cell.startswith("prio_") or situation not in names:
+                continue
+            many = rows[np.asarray(pack["exposure"][rows, names.index(situation)], dtype=float) >= MEASURED_GAMES]
+            if len(many) >= MEASURED_PLAYERS:
+                found[column] = np.sort(np.asarray(pack["matrix"][many, column], dtype=float))
+    held[position] = found
+    return found
+
+
+def population_percentiles(z, columns: list[str], position: str, fits: dict, pack: dict | None = None, exposure: dict | None = None) -> np.ndarray:
+    z = np.asarray(z, dtype=float)
+    standard = fits["standard"]
+    at = {str(name): index for index, name in enumerate(standard["columns"])}
+    index = _cell_index(fits["cells"])
+    lanes = {} if pack is None else measured_lanes(pack, position, columns)
+    out = np.full(len(columns), np.nan)
+    shares, ratios = [], []
+    for column, cell in enumerate(columns):
+        if cell not in at:
+            continue
+        value = z[column] * float(standard["spread"][at[cell]]) + float(standard["centre"][at[cell]])
+        if cell in index:
+            fit, step, k = index[cell]
+            if position not in fit["positions"]:
+                continue
+            share = float(fit["worlds"][step, fit["positions"].index(position), k])
+            if share < RARE:
+                continue
+            if cell.startswith("prio_"):
+                measured = float((exposure or {}).get(_lane_situation(cell), 0.0) or 0.0) >= MEASURED_GAMES
+                if column in lanes and measured:
+                    out[column] = 100.0 * np.searchsorted(lanes[column], z[column], side="left") / len(lanes[column])
+            else:
+                shares.append((column, min(max(value, 0.0), 1.0), float(fit["kappa"][step]), share))
+        elif cell.startswith("tend_"):
+            prior = fits["priors"].get("_".join(cell.split("_")[1:-2]))
+            if prior:
+                ratios.append((column, float(np.exp(value)), float(prior)))
+    if shares:
+        columns_, values, kappas, priors = map(np.array, zip(*shares))
+        out[columns_.astype(int)] = 100.0 * stats.beta.cdf(values, kappas * priors, kappas * (1.0 - priors))
+    if ratios:
+        columns_, values, priors = map(np.array, zip(*ratios))
+        out[columns_.astype(int)] = 100.0 * stats.gamma.cdf(values, priors, scale=1.0 / priors)
+    return out
 
 
 def _collapse(alpha: np.ndarray, prior: np.ndarray, names: list[str]) -> tuple[np.ndarray, np.ndarray, list[str]]:

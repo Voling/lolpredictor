@@ -75,7 +75,7 @@ def test_every_named_cell_reads_as_a_present_tense_habit():
         "places wards before 5 minutes in the middle of the lane",
         "ganks first by 5 minutes",
         "crosses to the other side of the jungle",
-        "is standing on own side, opponent away, farming",
+        "farms on own side with the opponent away",
         "gets punished for greed with top and mid holding priority, on the enemy half",
         "dives with top, mid and bot holding priority, on own half",
     ]
@@ -95,3 +95,19 @@ def test_every_outcome_and_tendency_reads_as_words():
     assert all(word and "_" not in word for word in words) and outcome_words("deep_own") == "deep in own half"
     assert tendency_words("follow", "-m-", "own") == "following into fights with mid holding priority, on own half"
     assert tendency_words("initiate", "tmb", "away") == "starting fights with top, mid and bot holding priority, on the enemy half"
+
+
+def test_lane_states_read_as_what_the_player_does():
+    # given
+    cells = ["prio_all_dead", "prio_pre_objective_off_lane", "prio_all_deep_own_mid_farm", "prio_pre_objective_theirs_absent_idle"]
+
+    # when
+    phrases = [phrase(cell) for cell in cells]
+
+    # then
+    assert phrases == [
+        "spends time dead",
+        "spends time away from lane in the minute before an objective",
+        "farms deep in own half with the opponent at the middle",
+        "waits on the enemy side with the opponent away in the minute before an objective",
+    ]

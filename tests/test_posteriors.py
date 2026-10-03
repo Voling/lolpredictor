@@ -123,3 +123,56 @@ def test_the_ranking_prefers_posteriors_that_clearly_leave_the_prior_over_single
 
     # then
     assert scores["tend_follow_-m-_own"] < 0.2 < scores["tend_greed_punished_t-b_away"] < scores["rsp_kill_ours_far"]
+
+
+def _population_fits():
+    from synergy.features.priority import OUTCOMES
+
+    columns = ["obj_DRAGON_ours_far_absent", "obj_DRAGON_ours_far_rotated", "obj_DRAGON_ours_far_committed", "prio_all_own_own_farm", "tend_dive_tmb_own"]
+    worlds = np.full((1, 1, len(OUTCOMES)), 0.5 / (len(OUTCOMES) - 1))
+    worlds[0, 0, OUTCOMES.index("own_own_farm")] = 0.5
+    return columns, {
+        "cells": [
+            _fit("obj", ["DRAGON_ours_far"], ["absent", "rotated", "committed"], [[[0.505, 0.49, 0.005]]], [78.4], ["TOP"]),
+            _fit("prio", ["all"], OUTCOMES, worlds, [3.0], ["TOP"]),
+        ],
+        "standard": {"columns": np.array(columns), "centre": np.zeros(len(columns)), "spread": np.ones(len(columns))},
+        "priors": {"dive": 59.5},
+    }
+
+
+def test_a_reading_is_ranked_against_the_fitted_spread_of_true_rates_not_against_shrunk_estimates():
+    # given
+    from scipy import stats
+
+    from synergy.ml.posteriors import population_percentiles
+
+    columns, fits = _population_fits()
+    z = np.array([0.54, 0.3, 0.004, 0.5, np.log(1.2)])
+
+    # when
+    found = population_percentiles(z, columns, "TOP", fits)
+
+    # then
+    assert 70.0 < found[0] < 76.0 and np.isnan(found[2]) and np.isnan(found[3])
+    assert np.isclose(found[4], 100.0 * stats.gamma.cdf(1.2, 59.5, scale=1.0 / 59.5))
+
+
+def test_lane_state_is_ranked_only_among_well_measured_players_and_only_for_a_well_measured_player():
+    # given
+    from synergy.ml.posteriors import population_percentiles
+
+    columns, fits = _population_fits()
+    games = np.array([30.0] * 100 + [2.0] * 100)
+    values = np.concatenate([np.linspace(0.40, 0.60, 100), np.full(100, 0.9)])
+    matrix = np.zeros((200, len(columns)), dtype=np.float32)
+    matrix[:, 3] = values
+    pack = {"position": np.array(["TOP"] * 200), "matrix": matrix, "exposure": games[:, None].astype(np.float16), "exposure_columns": ["prio_all"]}
+    z = np.array([0.5, 0.49, 0.005, 0.55, 0.0])
+
+    # when
+    measured = population_percentiles(z, columns, "TOP", fits, pack, {"prio_all": 48.0})
+    thin = population_percentiles(z, columns, "TOP", fits, pack, {"prio_all": 6.0})
+
+    # then
+    assert measured[3] == 75.0 and np.isnan(thin[3])

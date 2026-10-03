@@ -489,8 +489,8 @@ def pair_between(
             for k in strongest
         ],
         "reading": {
-            "left": _reading(vectors, left_position, columns, a, terms.sum(axis=1)),
-            "right": _reading(vectors, right_position, columns, b, terms.sum(axis=0)),
+            "left": _reading(vectors, left_position, columns, a, terms.sum(axis=1), settings, exposure_of(vectors, left, left_position)),
+            "right": _reading(vectors, right_position, columns, b, terms.sum(axis=0), settings, exposure_of(vectors, right, right_position)),
         },
     }
 
@@ -568,17 +568,33 @@ def _varies(grid_row: np.ndarray) -> bool:
     return bool(grid_row[len(grid_row) * 3 // 4] - grid_row[len(grid_row) // 4] > 1e-9)
 
 
-def _reading(vectors: dict, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray) -> dict:
+def _percentiles(vectors: dict, position: str, columns: list[str], z: np.ndarray, keep: list[int], settings: Settings | None, exposure: dict | None) -> tuple[dict[int, float], bool]:
+    from .posteriors import fits_for, population_percentiles
+
+    fits = None if settings is None else fits_for(settings)
+    if fits is not None:
+        with _lock:
+            found = population_percentiles(z, columns, position, fits, vectors, exposure)
+        return {index: round(float(found[index]), 1) for index in keep if not np.isnan(found[index])}, True
+    grid = vectors["grid"][position]
+    return {index: percentile_among(grid[index], z[index]) for index in keep}, False
+
+
+def _reading(
+    vectors: dict, position: str, columns: list[str], z: np.ndarray, contributions: np.ndarray, settings: Settings | None = None, exposure: dict | None = None
+) -> dict:
     grid = vectors["grid"][position]
     keep = [index for index, cell in enumerate(columns) if named(cell) and _varies(grid[index])]
-    order = sorted(keep, key=lambda index: -abs(z[index]))[:DISTINCTIVE]
+    percentiles, population = _percentiles(vectors, position, columns, z, keep, settings, exposure)
+    strength = (lambda index: abs(percentiles[index] - 50.0)) if population else (lambda index: abs(z[index]))
+    order = sorted(percentiles, key=lambda index: -strength(index))[:DISTINCTIVE]
     distinctive = [
         {
             "cell": columns[index],
             "words": describe(columns[index]),
             "phrase": phrase(columns[index]),
             "z": round(float(z[index]), 3),
-            "percentile": percentile_among(grid[index], z[index]),
+            "percentile": percentiles[index],
         }
         for index in order
     ]

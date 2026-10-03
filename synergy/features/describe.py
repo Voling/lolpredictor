@@ -187,10 +187,16 @@ def phrase(cell: str) -> str:
     if prefix == "jgl":
         return f"{PRESENT_OPENINGS[parts[1]]} {OPENING_BANDS[parts[2]]}"
     if prefix == "prio":
-        words = describe(cell)
-        if words.startswith("standing"):
-            return f"is {words}"
-        return f"is {words}"
+        situation = "pre_objective" if parts[1] == "pre" else "all"
+        outcome = "_".join(parts[3:] if situation == "pre_objective" else parts[2:])
+        when = PRIORITY_TIMES[situation]
+        if outcome == "off_lane":
+            return f"spends time away from lane{when}"
+        if outcome == "dead":
+            return f"spends time dead{when}"
+        own, opponent, farming = _lane_outcome(outcome)
+        against = "the opponent away" if opponent == "absent" else f"the opponent {LANE_BANDS[opponent]}"
+        return f"{'farms' if farming == 'farm' else 'waits'} {LANE_BANDS[own]} with {against}{when}"
     if prefix == "tend" and len(parts) >= 4:
         kind = "_".join(parts[1:-2])
         words = KINDS[kind]
