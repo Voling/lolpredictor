@@ -37,7 +37,7 @@ def test_a_situation_becomes_a_dirichlet_from_the_served_gap_and_the_chances():
 
     # then
     assert np.allclose(shares["alpha"], [12.0, 8.0]) and np.allclose(shares["prior"], [0.4, 0.6]) and shares["n"] == 12.0
-    assert shares["words"] == "after an ally kill from far away" and ratio["words"] == "following into fights with mid holding priority, on own half"
+    assert shares["words"] == "after an ally gets a kill from far away" and ratio["words"] == "following into fights with mid holding priority, on own half"
     assert [outcome["words"] for outcome in summary["outcomes"]] == ["converged", "held ground"]
     first = summary["outcomes"][0]
     assert first["low"] < first["mean"] == 0.6 < first["high"] and first["prior"] == 0.4
@@ -252,13 +252,15 @@ def test_each_chart_says_what_the_player_usually_does_and_what_is_unusual():
     ratio = ratio_takeaway("tend_dive_---_away", 2.1, 1.4, 3.0, "Gakgos", "top laner")
     duo = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.2, 0.43, 0.33, 0.04]), np.array([0.39, 0.08, 0.01, 0.52]), ("Gryffinn", "Gakgos"))
     shared = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.1, 0.1, 0.2, 0.6]), np.array([0.3, 0.05, 0.05, 0.6]), ("A", "B"))
+    spread = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.1, 0.25, 0.2, 0.45]), np.array([0.3, 0.05, 0.05, 0.6]), ("A", "B"))
 
     # then
     assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than a typical jungler in the same spots: 4% against 19%."
-    assert typical == "At ally void grubs nearby, Weaver usually fights, 47%, like a typical jungler in the same spots."
+    assert typical == "At ally void grubs nearby, Weaver most often fights, 47%, like a typical jungler in the same spots."
     assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as a typical top laner in the same spots."
     assert duo == "At an ally dragon from far away, expect Gryffinn to fight, 43%, and Gakgos to not join, 52%."
     assert shared == "At an ally dragon from far away, you both usually don't join, but B dies more often: 30% against 10%."
+    assert spread == "At an ally dragon from far away, you both most often don't join, but A fights more often: 25% against 5%."
 
 
 def test_situations_whose_events_arrive_in_clusters_are_left_out_of_charts_and_standouts():
@@ -309,6 +311,44 @@ def test_a_gold_reading_draws_against_a_typical_player_in_the_same_gold_state_an
     assert sorted(entries) == ["rsp_plate_ours_far", "rspg_behind_plate_ours_far"] and [entry["situation"] for entry in without] == ["rsp_plate_ours_far"]
     assert np.allclose(entries["rsp_plate_ours_far"]["prior"], [1.0 / 3.0, 2.0 / 3.0]) and entries["rsp_plate_ours_far"]["n"] == 120.0
     assert np.allclose(entries["rspg_behind_plate_ours_far"]["prior"], [0.25, 0.75]) and np.allclose(entries["rspg_behind_plate_ours_far"]["alpha"], [31.5, 58.5])
-    assert entries["rspg_behind_plate_ours_far"]["n"] == 80.0 and entries["rspg_behind_plate_ours_far"]["words"] == "when behind, after an ally plate from far away"
+    assert entries["rspg_behind_plate_ours_far"]["n"] == 80.0 and entries["rspg_behind_plate_ours_far"]["words"] == "when behind, after an ally takes a plate from far away"
     assert np.isclose(percentiles[2], 100.0 * stats.beta.cdf(0.35, 2.5, 7.5))
-    assert behind["takeaway"] == "When behind, after an ally plate from far away, bblskibs usually does not follow, 65%, and moves in more often than a typical top laner who is behind: 35% against 25%."
+    assert behind["takeaway"] == "When behind, after an ally takes a plate from far away, bblskibs usually does not follow, 65%, and moves in more often than a typical top laner who is behind: 35% against 25%."
+
+
+def test_one_situation_shows_once_whether_pooled_or_behind_or_ahead():
+    # given
+    def entry(situation, alpha, prior):
+        return {"situation": situation, "words": situation, "kind": "shares", "n": float(sum(alpha)), "alpha": np.array(alpha, dtype=float), "prior": np.array(prior), "outcomes": ["converged", "absent"]}
+
+    entries = [
+        entry("rsp_plate_ours_far", [60.0, 40.0], [0.3, 0.7]),
+        entry("rspg_behind_plate_ours_far", [90.0, 10.0], [0.3, 0.7]),
+        entry("rspg_ahead_plate_ours_far", [70.0, 30.0], [0.3, 0.7]),
+        entry("rsp_kill_ours_far", [55.0, 45.0], [0.3, 0.7]),
+    ]
+    other = [entry(item["situation"], [20.0, 80.0], [0.3, 0.7]) for item in entries]
+
+    # when
+    ranked = top_situations(entries, np.random.default_rng(0))
+    compared = differences(entries, other, np.random.default_rng(0))
+
+    # then
+    assert [item["situation"] for item in ranked] == ["rspg_behind_plate_ours_far", "rsp_kill_ours_far"]
+    assert [item["situation"] for item in compared] == ["rspg_behind_plate_ours_far", "rsp_kill_ours_far"]
+
+
+def test_a_top_reading_is_worded_from_the_same_draws_that_ranked_it():
+    # given
+    entry = {"situation": "rsp_plate_ours_far", "words": "after an ally takes a plate from far away", "kind": "shares", "n": 40.0, "alpha": np.array([16.0, 34.0]), "prior": np.array([0.25, 0.75]), "outcomes": ["converged", "absent"]}
+    above = np.tile([0.32, 0.68], (400, 1))
+    mixed = np.vstack([np.tile([0.32, 0.68], (200, 1)), np.tile([0.20, 0.80], (200, 1))])
+
+    # when
+    clear = summarise(entry, np.random.default_rng(0), "bblskibs", "top laner", above)
+    unclear = summarise(entry, np.random.default_rng(0), "bblskibs", "top laner", mixed)
+
+    # then
+    assert clear["takeaway"].startswith("After an ally takes a plate from far away, bblskibs usually does not follow, 68%, and moves in")
+    assert clear["takeaway"].endswith("more often than a typical top laner in the same spots: 32% against 25%.")
+    assert unclear["takeaway"] == "After an ally takes a plate from far away, bblskibs usually does not follow, 68%, like a typical top laner in the same spots."

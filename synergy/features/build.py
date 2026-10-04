@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from functools import partial
 from itertools import combinations
 
 import pandas as pd
@@ -18,6 +19,7 @@ from .families import family_rows
 from .player import _refresh_axes, feature_columns
 from .policy import POLICY_COLUMNS, policy_rows
 from .policyvec import fit_policy_vectors
+from .posterior import load_sigma
 from .propensity import opportunity_rows
 from .match import participant_rows
 from .tempo import tempo_rows
@@ -117,7 +119,12 @@ def qualifying_matches(store: Store, settings: Settings) -> set[str] | None:
     return set(summary.loc[~drop, "match_id"])
 
 
+def _extractors(settings: Settings) -> dict:
+    return {**STREAMED_TABLES, "wards": partial(ward_rows, sigma=load_sigma(settings))}
+
+
 def _extract(settings: Settings, match_ids: list[str], shard: int) -> dict:
+    extractors = _extractors(settings)
     store = Store(settings)
     shards = settings.processed_dir / "shards"
     shards.mkdir(parents=True, exist_ok=True)
@@ -164,7 +171,7 @@ def _extract(settings: Settings, match_ids: list[str], shard: int) -> dict:
                         row.update({k: v for k, v in extra.items() if k not in ("match_id", "puuid")})
                 writers["pairs"].add(pair_rows(match, window))
                 writers["waves"].add(list(wave_by_puuid.values()))
-                for name, extract in STREAMED_TABLES.items():
+                for name, extract in extractors.items():
                     writers[name].add(extract(match, window, parsed=parsed))
             else:
                 writers["pairs"].add(_bare_pair_rows(match))
@@ -175,6 +182,7 @@ def _extract(settings: Settings, match_ids: list[str], shard: int) -> dict:
 
 
 def _extract_tables(settings: Settings, match_ids: list[str], shard: int, names: tuple[str, ...]) -> dict:
+    extractors = _extractors(settings)
     store = Store(settings)
     shards = settings.processed_dir / "shards"
     shards.mkdir(parents=True, exist_ok=True)
@@ -193,7 +201,7 @@ def _extract_tables(settings: Settings, match_ids: list[str], shard: int, names:
                 continue
             parsed = ParsedTimeline(match, window)
             for name in names:
-                writers[name].add(STREAMED_TABLES[name](match, window, parsed=parsed))
+                writers[name].add(extractors[name](match, window, parsed=parsed))
         return {name: writer.close() for name, writer in writers.items()}
     finally:
         store.close()

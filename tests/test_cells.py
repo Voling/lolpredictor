@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from synergy.features.cells import SeatIndex, buffer, cells_frame, dense_counts, evidence_shares, fit_cells, moment_kappa, write_cells
+from synergy.features.cells import FALLBACK_KAPPA, KAPPA_FLOOR, SeatIndex, buffer, cells_frame, dense_counts, evidence_shares, fit_cells, moment_kappa, write_cells
 
 
 def _cells(counts, seats, situations, outcomes, prefix, scale=1.0):
@@ -203,6 +203,27 @@ def test_the_moment_concentration_floors_at_three_games_when_players_differ_and_
     # then
     assert small == 3.0
     assert large > 8.0
+
+
+def test_the_moment_concentration_inside_each_position_ignores_a_gap_between_positions():
+    # given
+    games = [(player, game) for player in range(60) for game in range(6)]
+    index = SeatIndex(pd.DataFrame({
+        "match_id": [f"m{player}_{game}" for player, game in games],
+        "puuid": [f"p{player}" for player, _ in games],
+        "position": ["TOP" if player < 30 else "JUNGLE" for player, _ in games],
+    }))
+    counts = np.zeros((len(index), 1, 1, 2))
+    for row, (player, game) in enumerate(games):
+        counts[row, 0, 0] = [2.0, 2.0] if game % 2 else ([4.0, 0.0] if player < 30 else [0.0, 4.0])
+
+    # when
+    pooled = moment_kappa(counts, index, 0)
+    inside = moment_kappa(counts, index, 0, by_position=True)
+
+    # then
+    assert pooled == KAPPA_FLOOR
+    assert inside == FALLBACK_KAPPA
 
 
 def test_a_fixed_concentration_per_situation_is_used_as_given():

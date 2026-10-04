@@ -1,16 +1,20 @@
 import numpy as np
 import pandas as pd
 
-from synergy.features.cells import SeatIndex, dense_counts
+from synergy.features.cells import SeatIndex, dense_counts, moment_kappa
 from synergy.features.events import event_response_rows
 from synergy.features.reaction import (
     REACTION_COLUMNS,
     STATES,
+    WARD_SITUATIONS,
+    WARD_ZONES,
+    ZONE_COLUMNS,
     chance_state,
     jungle_counts,
     objective_counts,
     response_counts,
     ward_counts,
+    ward_kappa,
 )
 from tests.test_features import build_match, build_timeline
 
@@ -116,7 +120,8 @@ def test_objective_ward_and_jungle_rows_land_in_declared_cells():
     # given
     objectives = pd.DataFrame({"match_id": ["m"], "puuid": ["p"], "objective": ["DRAGON"], "ours": [0], "o_approach_distance": [3.0],
                                "o_died": [0], "o_fought": [1], "o_committed": [1], "o_rotated_in": [0], "o_approaching": [1]})
-    wards = pd.DataFrame({"match_id": ["m", "m"], "puuid": ["p", "p"], "minute": [2.0, 12.0], "zone": ["JUNGLE_ENEMY_TOPSIDE", "LANE_BOT_NEUTRAL"]})
+    wards = pd.DataFrame({"match_id": ["m", "m"], "puuid": ["p", "p"], "minute": [2.0, 12.0], **{column: [0.0, 0.0] for column in ZONE_COLUMNS}})
+    wards.loc[0, "in_enemy_jungle"], wards.loc[1, "in_lane_middle"] = 1.0, 1.0
     openings = pd.DataFrame({"match_id": ["m"], "puuid": ["p"], "first_gank_minute": [4.0], "first_invade_minute": [np.nan], "crossed_sides": [True]})
 
     # when
@@ -124,12 +129,47 @@ def test_objective_ward_and_jungle_rows_land_in_declared_cells():
 
     # then
     assert obj.situation.tolist() == ["DRAGON_theirs_mid"] and obj.outcome.tolist() == ["fought"]
-    assert ward.situation.tolist() == ["early", "late"] and ward.outcome.tolist() == ["enemy_jungle", "lane_middle"]
+    placed = ward[ward["count"] > 0]
+    assert placed.situation.tolist() == ["early", "late"] and placed.outcome.tolist() == ["enemy_jungle", "lane_middle"]
     assert set(zip(jgl.situation, jgl.outcome)) == {("gank", "by5"), ("invade", "never"), ("sides", "crossed")}
     for frame in (obj, ward, jgl):
         prefix = {"DRAGON_theirs_mid": "obj", "early": "ward", "gank": "jgl"}.get(frame.situation.iloc[0], "jgl")
         for s, o in zip(frame.situation, frame.outcome):
             assert f"{prefix}_{s}_{o}" in REACTION_COLUMNS
+
+
+def test_ward_counts_split_each_ward_over_the_zones_by_its_mass():
+    # given
+    masses = [[0.6, 0.3, 0.0, 0.0, 0.0, 0.1, 0.0], [0.0, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0]]
+    wards = pd.DataFrame({"match_id": ["m", "m"], "puuid": ["p", "p"], "minute": [2.0, 12.0], **{column: [row[k] for row in masses] for k, column in enumerate(ZONE_COLUMNS)}})
+    index = SeatIndex(pd.DataFrame({"match_id": ["m"], "puuid": ["p"], "position": ["TOP"]}))
+
+    # when
+    counts = ward_counts(wards)
+    dense = dense_counts(counts, index, WARD_SITUATIONS, list(WARD_ZONES))
+
+    # then
+    assert len(counts) == 2 * len(WARD_ZONES) and counts["count"].sum() == 2.0
+    assert np.allclose(dense[0, WARD_SITUATIONS.index("early"), 0], masses[0])
+    assert np.allclose(dense[0, WARD_SITUATIONS.index("late"), 0], masses[1])
+    assert dense[0, WARD_SITUATIONS.index("mid")].sum() == 0.0
+
+
+def test_ward_shrinkage_turns_the_moment_kappa_in_games_into_wards_placed():
+    # given
+    index = SeatIndex(pd.DataFrame({"match_id": ["a", "b", "c"], "puuid": ["p", "p", "p"], "position": ["TOP"] * 3}))
+    counts = np.zeros((3, len(WARD_SITUATIONS), 1, len(WARD_ZONES)))
+    counts[0, 0, 0, :2] = [3.0, 1.0]
+    counts[1, 0, 0, 3] = 2.0
+    counts[:, 2, 0, 6] = 5.0
+
+    # when
+    kappas = ward_kappa(counts, index)
+
+    # then
+    assert kappas[0] == moment_kappa(counts, index, 0, by_position=True) * 3.0
+    assert kappas[1] == moment_kappa(counts, index, 1, by_position=True)
+    assert kappas[2] == moment_kappa(counts, index, 2, by_position=True) * 5.0
 
 
 def test_gold_readings_cover_kill_and_plate_reactions_when_behind_and_when_ahead():

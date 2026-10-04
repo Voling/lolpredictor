@@ -98,6 +98,13 @@ def _position(participant: dict) -> str:
     return raw if raw in POSITIONS else "UNKNOWN"
 
 
+def event_people(event: dict, puuids: dict[int, str]) -> tuple[str | None, str | None, list[str]]:
+    actor = next((int(event[key]) for key in ACTOR_KEYS if event.get(key)), None)
+    victim = puuids.get(int(event["victimId"])) if event.get("victimId") else None
+    assists = [puuids[int(pid)] for pid in event.get("assistingParticipantIds") or [] if int(pid) in puuids]
+    return puuids.get(actor), victim, assists
+
+
 class Store:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -313,9 +320,7 @@ class Store:
             for event in frame.get("events") or []:
                 index = len(events)
                 position = event.get("position") or {}
-                actor = next(
-                    (int(event[key]) for key in ACTOR_KEYS if event.get(key)), None
-                )
+                actor, victim, assists = event_people(event, puuids)
                 events.append(
                     (
                         match_id,
@@ -324,13 +329,9 @@ class Store:
                         int(event.get("timestamp", 0)) // 60000,
                         event.get("timestamp"),
                         event.get("type"),
-                        puuids.get(actor),
-                        puuids.get(int(event["victimId"])) if event.get("victimId") else None,
-                        [
-                            puuids[int(pid)]
-                            for pid in event.get("assistingParticipantIds") or []
-                            if int(pid) in puuids
-                        ],
+                        actor,
+                        victim,
+                        assists,
                         position.get("x"),
                         position.get("y"),
                         event.get("wardType"),

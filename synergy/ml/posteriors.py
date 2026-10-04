@@ -223,13 +223,19 @@ def clear_gap(mean: np.ndarray, prior: np.ndarray, draws: np.ndarray) -> tuple[i
     return best, best_gap
 
 
-def _clearness(entry: dict, rng: np.random.Generator) -> tuple[float, float]:
+def _draws(entry: dict, rng: np.random.Generator) -> np.ndarray:
+    if entry["kind"] == "ratio":
+        return rng.gamma(entry["observed"] + entry["prior"], 1.0 / (entry["expected"] + entry["prior"]), DRAWS)
+    return rng.dirichlet(np.maximum(entry["alpha"], FLOOR), DRAWS)
+
+
+def _clearness(entry: dict, draws: np.ndarray) -> tuple[float, float]:
     if entry["kind"] == "ratio":
         shape, rate = entry["observed"] + entry["prior"], entry["expected"] + entry["prior"]
-        low, high = _band(rng.gamma(shape, 1.0 / rate, DRAWS))
+        low, high = _band(draws)
         return 0.0, float(abs(np.log(shape / rate))) if low > 1.0 or high < 1.0 else 0.0
     alpha = np.maximum(entry["alpha"], FLOOR)
-    return abs(clear_gap(alpha / alpha.sum(), np.asarray(entry["prior"], dtype=float), rng.dirichlet(alpha, DRAWS))[1]), 0.0
+    return abs(clear_gap(alpha / alpha.sum(), np.asarray(entry["prior"], dtype=float), draws)[1]), 0.0
 
 
 def _peer(situation: str, role: str) -> str:
@@ -238,17 +244,21 @@ def _peer(situation: str, role: str) -> str:
     return f"a typical {role} in the same spots"
 
 
+def _often(share: float) -> str:
+    return "usually" if share >= 0.5 else "most often"
+
+
 def share_takeaway(situation: str, outcomes: list[str], mean: np.ndarray, prior: np.ndarray, draws: np.ndarray, name: str, role: str) -> str:
     lead = situation_lead(situation)
     modal = int(np.argmax(mean))
     usual = act(situation, outcomes[modal])[0]
     best, best_gap = clear_gap(mean, prior, draws)
     if best is None:
-        return f"{lead}, {name} usually {usual}, {_pct(mean[modal])}, like {_peer(situation, role)}."
+        return f"{lead}, {name} {_often(mean[modal])} {usual}, {_pct(mean[modal])}, like {_peer(situation, role)}."
     comparison = f"{_size(best_gap, mean[best], prior[best])}{'more' if best_gap > 0 else 'less'} often than {_peer(situation, role)}: {_pct(mean[best])} against {_pct(prior[best])}"
     if best == modal:
         return f"{lead}, {name} {usual} {comparison}."
-    return f"{lead}, {name} usually {usual}, {_pct(mean[modal])}, and {act(situation, outcomes[best])[0]} {comparison}."
+    return f"{lead}, {name} {_often(mean[modal])} {usual}, {_pct(mean[modal])}, and {act(situation, outcomes[best])[0]} {comparison}."
 
 
 def ratio_takeaway(situation: str, mean: float, low: float, high: float, name: str, role: str) -> str:
@@ -275,13 +285,14 @@ def duo_takeaway(situation: str, outcomes: list[str], mean_a: np.ndarray, mean_b
     gaps[modal_a] = -1.0
     k = int(np.argmax(gaps))
     more, high, low = (left, mean_a[k], mean_b[k]) if mean_a[k] > mean_b[k] else (right, mean_b[k], mean_a[k])
-    return f"{lead}, you both usually {act(situation, outcomes[modal_a])[2]}, but {more} {act(situation, outcomes[k])[0]} more often: {_pct(high)} against {_pct(low)}."
+    return f"{lead}, you both {_often(min(mean_a[modal_a], mean_b[modal_a]))} {act(situation, outcomes[modal_a])[2]}, but {more} {act(situation, outcomes[k])[0]} more often: {_pct(high)} against {_pct(low)}."
 
 
-def summarise(entry: dict, rng: np.random.Generator, name: str = "This player", role: str = "player") -> dict:
+def summarise(entry: dict, rng: np.random.Generator, name: str = "This player", role: str = "player", draws: np.ndarray | None = None) -> dict:
+    draws = _draws(entry, rng) if draws is None else draws
     if entry["kind"] == "ratio":
         shape, rate = entry["observed"] + entry["prior"], entry["expected"] + entry["prior"]
-        low, high = _band(rng.gamma(shape, 1.0 / rate, DRAWS))
+        low, high = _band(draws)
         return {
             "situation": entry["situation"],
             "words": entry["words"],
@@ -294,7 +305,6 @@ def summarise(entry: dict, rng: np.random.Generator, name: str = "This player", 
             "takeaway": ratio_takeaway(entry["situation"], shape / rate, float(low), float(high), name, role),
         }
     alpha = np.maximum(entry["alpha"], FLOOR)
-    draws = rng.dirichlet(alpha, DRAWS)
     low, high = _band(draws)
     mean = alpha / alpha.sum()
     return {
@@ -312,11 +322,27 @@ def summarise(entry: dict, rng: np.random.Generator, name: str = "This player", 
     }
 
 
+def _base(situation: str) -> str:
+    parts = situation.split("_")
+    return "_".join(["rsp", *parts[2:]]) if parts[0] == "rspg" else situation
+
+
+def _distinct(items: list, situation) -> list:
+    seen, kept = set(), []
+    for item in items:
+        base = _base(situation(item))
+        if base not in seen:
+            seen.add(base)
+            kept.append(item)
+    return kept
+
+
 def top_situations(entries: list[dict], rng: np.random.Generator, top: int = TOP, name: str = "This player", role: str = "player") -> list[dict]:
-    scored = [(_clearness(entry, rng), entry) for entry in entries]
-    clear = [(share, ratio, entry) for (share, ratio), entry in scored if share > 0.0 or ratio > 0.0]
-    ranked = sorted(clear, key=lambda item: (-item[0], -item[1], -evidence(item[2], rng)))[:top]
-    return [summarise(entry, rng, name, role) for _, _, entry in ranked]
+    scored = [(entry, _draws(entry, rng)) for entry in entries]
+    clear = [(*_clearness(entry, draws), entry, draws) for entry, draws in scored]
+    clear = [item for item in clear if item[0] > 0.0 or item[1] > 0.0]
+    ranked = _distinct(sorted(clear, key=lambda item: (-item[0], -item[1], -evidence(item[2], rng))), lambda item: item[2]["situation"])[:top]
+    return [summarise(entry, rng, name, role, draws) for _, _, entry, draws in ranked]
 
 
 def differences(left: list[dict], right: list[dict], rng: np.random.Generator, top: int = TOP, names: tuple[str, str] = ("The first player", "the second")) -> list[dict]:
@@ -331,7 +357,7 @@ def differences(left: list[dict], right: list[dict], rng: np.random.Generator, t
         scored.append((float(np.minimum(draws_a, draws_b).sum(axis=1).mean()), a, b, draws_a, draws_b))
     scored.sort(key=lambda item: item[0])
     out = []
-    for overlap, a, b, draws_a, draws_b in scored[:top]:
+    for overlap, a, b, draws_a, draws_b in _distinct(scored, lambda item: item[1]["situation"])[:top]:
         low_a, high_a = _band(draws_a)
         low_b, high_b = _band(draws_b)
         mean_a, mean_b = a["alpha"] / a["alpha"].sum(), b["alpha"] / b["alpha"].sum()

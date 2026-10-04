@@ -77,7 +77,7 @@ class SeatIndex:
         return self.lookup.get_indexer(pd.MultiIndex.from_arrays([np.asarray(match_id), np.asarray(puuid)]))
 
 
-def moment_kappa(counts: np.ndarray, index: SeatIndex, step: int) -> float:
+def moment_kappa(counts: np.ndarray, index: SeatIndex, step: int, by_position: bool = False) -> float:
     width = counts.shape[-1]
     sums, squares, games = np.zeros((len(index.who), width)), np.zeros((len(index.who), width)), np.zeros(len(index.who))
     for start in range(0, len(index), CHUNK_SEATS):
@@ -95,6 +95,11 @@ def moment_kappa(counts: np.ndarray, index: SeatIndex, step: int) -> float:
     played = games[many, None]
     mean = sums[many] / played
     within = (squares[many] / played - mean**2) * (played / (played - 1.0))
+    if by_position:
+        position = index.who_position[many]
+        centres = np.zeros((len(index.positions), width))
+        np.add.at(centres, position, mean)
+        mean = mean - centres[position] / np.bincount(position, minlength=len(index.positions))[position, None]
     between = mean.var(axis=0) - (within / played).mean(axis=0)
     pooled_between = float(between.sum())
     if pooled_between <= 0.0:

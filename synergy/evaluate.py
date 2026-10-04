@@ -29,6 +29,7 @@ from .features.fits import (
 from .features.habit import HABIT_COLUMNS, SMOOTHING
 from .features.policy import ACTIONS, STATES
 from .features.positions import KEY
+from .features.posterior import SIGMA_FILE
 from .features.priority import PRIORITY_COLUMNS, _shard as priority_shard, priority_context_from
 from .features.reaction import REACTION_COLUMNS
 from .features.tendency import TENDENCY_COLUMNS
@@ -215,6 +216,7 @@ class Evaluator:
     def run(self, puuid: str, games: list[tuple[str, dict, dict]]) -> dict:
         settings, bundle = self.settings, self.bundle
         settings.ensure_dirs()
+        shutil.copy2(bundle.folder / SIGMA_FILE, settings.model_dir / SIGMA_FILE)
         clock = time.time()
         self._step("loading", 0, len(games))
         match_ids = self.load(games)

@@ -4,7 +4,7 @@ import pyarrow.parquet as pq
 
 from ..config import Settings, get_settings
 from .objectives import SIDES as OBJECTIVE_SIDES
-from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, split_columns, write_cells
+from .cells import SeatIndex, buffer, combine_shares, dense_counts, evidence_shares, fit_cells, moment_kappa, split_columns, write_cells
 from .fits import REACTION_FITS, reaction_sources, save_cells
 
 STATES = [f"{band}_{gold}" for band in ("early", "late") for gold in ("behind", "even", "ahead")]
@@ -21,6 +21,7 @@ OBJECTIVES = ("DRAGON", "HORDE", "RIFTHERALD")
 OBJECTIVE_RESPONSES = ("died", "fought", "committed", "rotated", "approached", "absent")
 MINUTE_BANDS = ((5.0, "early"), (10.0, "mid"), (np.inf, "late"))
 WARD_ZONES = ("lane_own_side", "lane_middle", "lane_enemy_side", "own_jungle", "enemy_jungle", "river", "other")
+ZONE_COLUMNS = [f"in_{zone}" for zone in WARD_ZONES]
 OPENING_BANDS = ((3.0, "by3"), (5.0, "by5"), (8.0, "by8"), (15.0, "late"), (np.inf, "never"))
 SIDES = ("crossed", "stayed")
 
@@ -116,21 +117,23 @@ def objective_counts(objectives: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _ward_zone(zone: pd.Series) -> np.ndarray:
-    z = zone.fillna("").astype(str)
-    return np.select(
-        [z.str.endswith("_OWN") & z.str.startswith("LANE"), z.str.endswith("_NEUTRAL"), z.str.endswith("_ENEMY") & z.str.startswith("LANE"),
-         z.str.startswith("JUNGLE_OWN"), z.str.startswith("JUNGLE_ENEMY"), z.str.startswith("RIVER")],
-        ["lane_own_side", "lane_middle", "lane_enemy_side", "own_jungle", "enemy_jungle", "river"],
-        default="other",
-    )
-
-
 def ward_counts(wards: pd.DataFrame) -> pd.DataFrame:
+    zones = len(WARD_ZONES)
     return pd.DataFrame({
-        "match_id": wards["match_id"].to_numpy(), "puuid": wards["puuid"].to_numpy(),
-        "situation": _band(wards["minute"], MINUTE_BANDS).to_numpy(), "outcome": _ward_zone(wards["zone"]), "count": 1.0,
+        "match_id": np.repeat(wards["match_id"].to_numpy(), zones), "puuid": np.repeat(wards["puuid"].to_numpy(), zones),
+        "situation": np.repeat(_band(wards["minute"], MINUTE_BANDS).to_numpy(), zones), "outcome": np.tile(np.array(WARD_ZONES, dtype=object), len(wards)),
+        "count": wards[ZONE_COLUMNS].to_numpy(dtype=float).ravel(),
     })
+
+
+def ward_kappa(counts: np.ndarray, index: SeatIndex) -> list[float]:
+    kappas = []
+    for step in range(counts.shape[1]):
+        wards = np.asarray(counts[:, step], dtype=float).sum(axis=(1, 2))
+        played = wards > 0
+        per_game = float(wards[played].mean()) if played.any() else 1.0
+        kappas.append(moment_kappa(counts, index, step, by_position=True) * per_game)
+    return kappas
 
 
 def jungle_counts(openings: pd.DataFrame) -> pd.DataFrame:
@@ -152,13 +155,15 @@ def build_reaction(settings: Settings | None = None) -> dict:
     processed = settings.processed_dir
     index = SeatIndex(pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"]))
     parts, paths, report, shares = [], [], {}, []
-    for number, (prefix, load, situations, outcomes, states, split) in enumerate(reaction_sources(settings)):
+    for number, (prefix, load, situations, outcomes, states, split, kappa) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"reaction_counts.{number}.npy"
         counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
             dense_counts(frame, index, situations, outcomes, out=counts, states=states)
         counts.flush()
-        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, states=states, split=split)
+        fit = fit_cells(
+            counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, kappa=None if kappa is None else kappa(counts, index), states=states, split=split
+        )
         save_cells(settings.model_dir / REACTION_FITS[number], fit, index.positions)
         parts.append((fit, counts))
         paths.append(path)

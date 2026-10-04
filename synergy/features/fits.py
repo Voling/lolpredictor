@@ -259,7 +259,7 @@ def fit_priority_from_buffer(settings: Settings) -> dict | None:
     return {"seats": len(index), "kappa": [round(float(k), 2) for k in fit.kappa]}
 
 
-def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], list[str], list[str], dict | None]]:
+def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], list[str], list[str], dict | None, object]]:
     from .reaction import (
         GOLD_SPLIT,
         OBJECTIVE_READ,
@@ -273,22 +273,28 @@ def reaction_sources(settings: Settings) -> list[tuple[str, object, list[str], l
         STATES,
         WARD_SITUATIONS,
         WARD_ZONES,
+        ZONE_COLUMNS,
         _pieces,
         _responses,
         jungle_counts,
         objective_counts,
         response_counts,
         ward_counts,
+        ward_kappa,
     )
 
     processed = settings.processed_dir
     openings = jungle_counts(pd.read_parquet(processed / "jungle_openings.parquet"))
     return [
-        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES), STATES, GOLD_SPLIT),
-        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)), OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES), STATES, None),
-        ("ward", lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", "zone"])), WARD_SITUATIONS, list(WARD_ZONES), SINGLE, None),
-        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES, SINGLE, None),
-        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES), SINGLE, None),
+        ("rsp", lambda: (response_counts(piece) for piece in _responses(settings)), RESPONSE_SITUATIONS, list(RESPONSES), STATES, GOLD_SPLIT, None),
+        ("obj", lambda: (objective_counts(piece) for piece in _pieces(processed / "objectives.parquet", OBJECTIVE_READ)), OBJECTIVE_SITUATIONS, list(OBJECTIVE_RESPONSES), STATES, None, None),
+        (
+            "ward",
+            lambda: (ward_counts(piece) for piece in _pieces(processed / "wards.parquet", ["match_id", "puuid", "minute", *ZONE_COLUMNS])),
+            WARD_SITUATIONS, list(WARD_ZONES), SINGLE, None, ward_kappa,
+        ),
+        ("jgl", lambda: [openings[openings["situation"] != "sides"]], OPENING_SITUATIONS, OPENING_OUTCOMES, SINGLE, None, None),
+        ("jgl", lambda: [openings[openings["situation"] == "sides"]], ["sides"], list(SIDES), SINGLE, None, None),
     ]
 
 
@@ -296,13 +302,15 @@ def fit_reaction_from_tables(settings: Settings) -> dict:
     processed = settings.processed_dir
     index = SeatIndex(pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"]))
     report = {}
-    for number, (prefix, load, situations, outcomes, states, split) in enumerate(reaction_sources(settings)):
+    for number, (prefix, load, situations, outcomes, states, split, kappa) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"reaction_fit.{number}.npy"
         counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
             dense_counts(frame, index, situations, outcomes, out=counts, states=states)
         counts.flush()
-        fit = fit_cells(counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, states=states, split=split)
+        fit = fit_cells(
+            counts, index, situations, outcomes, prefix, scale=settings.cell_prior_scale, kappa=None if kappa is None else kappa(counts, index), states=states, split=split
+        )
         save_cells(settings.model_dir / REACTION_FITS[number], fit, index.positions)
         report[REACTION_FITS[number]] = {"kappa": [round(float(k), 2) for k in fit.kappa]}
         del counts

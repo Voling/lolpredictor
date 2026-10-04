@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.stats import ncx2
 
 from synergy.features.posterior import (
     ANCHOR,
@@ -12,6 +13,7 @@ from synergy.features.posterior import (
     fit_sigma,
     known_points,
     nearer_residuals,
+    radius_mass,
     region_mass,
     sigma_at,
     top_regions,
@@ -202,6 +204,26 @@ def test_between_two_fountain_visits_the_player_is_in_the_base():
     # then
     assert mix["w"][0] == 0.0 and mix["s0"][0] == BASE_SIGMA and np.isinf(mix["s1"][0])
     assert masses[0, REGION_INDEX["BASE_OWN"]] > 0.99
+
+
+def test_the_chance_of_standing_within_a_radius_adds_both_components_and_skips_unknown_ones():
+    # given
+    mix = {
+        "p0": np.array([[5000.0, 5000.0], [5000.0, 5000.0], [5000.0, 5000.0], [6500.0, 5000.0]]),
+        "p1": np.array([[6000.0, 5000.0], [9000.0, 5000.0], [0.0, 0.0], [0.0, 0.0]]),
+        "w": np.array([0.25, 0.25, 0.0, 0.0]),
+        "s0": np.array([1000.0, 1000.0, 1000.0, 1000.0]),
+        "s1": np.array([0.0, 0.0, np.inf, np.inf]),
+    }
+    spots = np.full((4, 2), 5000.0)
+
+    # when
+    chance = radius_mass(mix, spots, 2200.0)
+
+    # then
+    centred = 1.0 - np.exp(-(2200.0**2) / (2.0 * 1000.0**2))
+    offset = ncx2.cdf((2200.0 / 1000.0) ** 2, 2, (1500.0 / 1000.0) ** 2)
+    assert np.allclose(chance, [0.75 * centred + 0.25, 0.75 * centred, centred, offset])
 
 
 def test_the_filtered_posterior_holds_at_the_fountain_after_a_visit():

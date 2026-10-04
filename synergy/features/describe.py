@@ -1,13 +1,12 @@
-TRIGGERS = {"kill": "kill", "plate": "plate", "objective": "objective", "building": "building"}
+TRIGGERS = {
+    "kill": ("gets a kill", "got a kill"),
+    "plate": ("takes a plate", "took a plate"),
+    "objective": ("takes an objective", "took an objective"),
+    "building": ("takes a tower", "took a tower"),
+}
 SIDES = {"ours": "ally", "theirs": "enemy"}
 DISTANCE = {"near": "nearby", "mid": "at mid range", "far": "from far away"}
-RESPONSES = {
-    "converged": "converged on",
-    "held": "held ground at",
-    "left": "left after",
-    "present": "present at",
-    "absent": "absent from",
-}
+RESPONSES = {"converged": "moved in", "held": "held ground", "left": "left", "present": "stayed nearby"}
 OBJECTIVES = {"DRAGON": "dragon", "HORDE": "void grubs", "RIFTHERALD": "rift herald"}
 OBJECTIVE_RESPONSES = {
     "died": "died at",
@@ -19,13 +18,13 @@ OBJECTIVE_RESPONSES = {
 }
 WARD_TIMES = {"early": "before 5 minutes", "mid": "between 5 and 10 minutes", "late": "after 10 minutes"}
 WARD_ZONES = {
-    "lane_own_side": "on own side of the lane",
-    "lane_middle": "in the middle of the lane",
-    "lane_enemy_side": "on the enemy side of the lane",
-    "own_jungle": "in own jungle",
-    "enemy_jungle": "in the enemy jungle",
-    "river": "in the river",
-    "other": "away from lane, jungle and river",
+    "lane_own_side": "from own side of the lane",
+    "lane_middle": "from the lane's river crossing",
+    "lane_enemy_side": "from the enemy side of the lane",
+    "own_jungle": "from own jungle",
+    "enemy_jungle": "from the enemy jungle",
+    "river": "from the river",
+    "other": "from near base",
 }
 OPENINGS = {"gank": "first gank", "invade": "first invade"}
 OPENING_BANDS = {"by3": "by 3 minutes", "by5": "by 5 minutes", "by8": "by 8 minutes", "late": "after 8 minutes", "never": "not before 15 minutes"}
@@ -75,12 +74,12 @@ OUTCOME_WORDS = {
     "rotated": "rotated over",
     "approached": "approached",
     "lane_own_side": "own side of lane",
-    "lane_middle": "middle of lane",
+    "lane_middle": "river crossing",
     "lane_enemy_side": "enemy side of lane",
     "own_jungle": "own jungle",
     "enemy_jungle": "enemy jungle",
     "river": "river",
-    "other": "elsewhere",
+    "other": "near base",
     "by3": "by 3 minutes",
     "by5": "by 5 minutes",
     "by8": "by 8 minutes",
@@ -178,6 +177,10 @@ def _objective(side: str, objective: str) -> str:
     return words if objective == "HORDE" else f"an {words}"
 
 
+def _event(side: str, trigger: str, band: str, past: bool = False) -> str:
+    return f"an {SIDES[side]} {TRIGGERS[trigger][past]} {DISTANCE[band]}"
+
+
 def _priority(lanes: str) -> str:
     held = [LANES[letter] for letter in lanes if letter in LANES]
     if not held:
@@ -192,7 +195,9 @@ def describe(cell: str) -> str:
     prefix = parts[0]
     if prefix == "rsp" and len(parts) == 5:
         _, trigger, side, band, outcome = parts
-        return f"{RESPONSES[outcome]} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+        if outcome == "absent":
+            return f"{_absent(cell)[3]} when {_event(side, trigger, band, True)}"
+        return f"{RESPONSES[outcome]} after {_event(side, trigger, band, True)}"
     if prefix == "rspg" and len(parts) == 6:
         return f"{describe('_'.join(['rsp', *parts[2:]]))} when {parts[1]}"
     if prefix == "obj" and len(parts) == 5:
@@ -226,12 +231,6 @@ def describe(cell: str) -> str:
     return cell
 
 
-PRESENT_RESPONSES = {
-    "converged": "converges on",
-    "held": "holds ground at",
-    "left": "leaves after",
-    "present": "is present at",
-}
 PRESENT_OBJECTIVE_RESPONSES = {
     "died": "dies at",
     "fought": "fights at",
@@ -248,8 +247,9 @@ def phrase(cell: str) -> str:
     prefix = parts[0]
     if prefix == "rsp" and len(parts) == 5:
         _, trigger, side, band, outcome = parts
-        verb = ("does not follow" if side == "ours" else "does not respond to") if outcome == "absent" else PRESENT_RESPONSES[outcome]
-        return f"{verb} an {SIDES[side]} {TRIGGERS[trigger]} {DISTANCE[band]}"
+        if outcome == "absent":
+            return f"{_absent(cell)[0]} when {_event(side, trigger, band)}"
+        return f"{ACTS[outcome][0]} after {_event(side, trigger, band)}"
     if prefix == "rspg" and len(parts) == 6:
         return f"{phrase('_'.join(['rsp', *parts[2:]]))} when {parts[1]}"
     if prefix == "obj" and len(parts) == 5:
@@ -314,7 +314,7 @@ def describe_situation(situation: str) -> str:
     parts = situation.split("_")
     prefix = parts[0]
     if prefix == "rsp" and len(parts) == 4:
-        return f"after an {SIDES[parts[2]]} {TRIGGERS[parts[1]]} {DISTANCE[parts[3]]}"
+        return f"after {_event(parts[2], parts[1], parts[3])}"
     if prefix == "rspg" and len(parts) == 5:
         return f"when {parts[1]}, {describe_situation('_'.join(['rsp', *parts[2:]]))}"
     if prefix == "obj" and len(parts) == 4:

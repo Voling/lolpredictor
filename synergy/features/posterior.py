@@ -2,7 +2,7 @@ import json
 import math
 
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, rice
 
 from ..config import Settings, get_settings
 from .anchors import FOUNTAIN, FRAME_SECONDS, PLACE_EVENTS, SHOP_EVENTS, plausible, respawn_delay
@@ -165,6 +165,18 @@ def _single_mass(mean: np.ndarray, spread: np.ndarray, team: int) -> np.ndarray:
 def region_mass(mix: dict, team: int) -> np.ndarray:
     w = mix["w"][:, None].astype(np.float32)
     return (1.0 - w) * _single_mass(mix["p0"], mix["s0"], team) + w * _single_mass(mix["p1"], mix["s1"], team)
+
+
+def radius_mass(mix: dict, spots: np.ndarray, radius: float) -> np.ndarray:
+    total = np.zeros(len(mix["w"]))
+    for weight, mean, spread in ((1.0 - mix["w"], mix["p0"], mix["s0"]), (mix["w"], mix["p1"], mix["s1"])):
+        gap = np.hypot(mean[:, 0] - spots[:, 0], mean[:, 1] - spots[:, 1])
+        exact = spread == 0.0
+        soft = np.isfinite(spread) & ~exact
+        inside = np.where(exact, gap <= radius, 0.0).astype(float)
+        inside[soft] = rice.cdf(radius, gap[soft] / spread[soft], scale=spread[soft])
+        total += weight * inside
+    return total
 
 
 def progress_moments(mix: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

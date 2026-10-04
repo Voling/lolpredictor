@@ -13,9 +13,9 @@ def test_every_named_cell_is_described_in_words():
 
     # then
     assert all(word != cell and "_" not in word for word, cell in zip(words, cells))
-    assert describe("rsp_kill_ours_far_converged") == "converged on an ally kill from far away"
+    assert describe("rsp_kill_ours_far_converged") == "moved in after an ally got a kill from far away"
     assert describe("obj_DRAGON_theirs_far_rotated") == "rotated toward an enemy dragon from far away"
-    assert describe("ward_early_lane_middle") == "ward placed before 5 minutes in the middle of the lane"
+    assert describe("ward_early_lane_middle") == "ward placed before 5 minutes from the lane's river crossing"
     assert describe("jgl_gank_by5") == "first gank by 5 minutes"
     assert describe("prio_pre_objective_deep_own_absent_farm") == (
         "standing deep in own half, opponent away, farming in the minute before an objective"
@@ -45,7 +45,7 @@ def test_cells_group_into_situations_with_their_own_words():
 
     # then
     assert situations == ["rsp_kill_ours_far", "rsp_kill_ours_far", "ward_late", "prio_all", "tend_dive"]
-    assert describe_situation("rsp_kill_ours_far") == "after an ally kill from far away"
+    assert describe_situation("rsp_kill_ours_far") == "after an ally gets a kill from far away"
     assert describe_situation("tend_dive") == "diving"
     assert describe_situation("prio_pre_objective") == "lane state in the minute before an objective"
 
@@ -70,9 +70,9 @@ def test_every_named_cell_reads_as_a_present_tense_habit():
 
     # then
     assert phrases == [
-        "converges on an ally kill from far away",
+        "moves in after an ally gets a kill from far away",
         "rotates toward an enemy dragon from far away",
-        "places wards before 5 minutes in the middle of the lane",
+        "places wards before 5 minutes from the lane's river crossing",
         "ganks first by 5 minutes",
         "crosses to the other side of the jungle",
         "farms on own side with the opponent away",
@@ -125,8 +125,8 @@ def test_not_going_reads_as_not_following_allies_not_responding_to_enemies_and_n
 
     # then
     assert phrases == [
-        "does not follow an ally kill from far away",
-        "does not respond to an enemy plate at mid range",
+        "does not follow when an ally gets a kill from far away",
+        "does not respond when an enemy takes a plate at mid range",
         "does not join an ally dragon from far away",
         "does not join a void grubs fight nobody wins nearby",
     ]
@@ -146,10 +146,10 @@ def test_gold_readings_read_as_the_reaction_when_behind_or_ahead():
     situations = [situation_of(cell) for cell in cells]
 
     # then
-    assert phrases == ["converges on an ally plate from far away when behind", "does not respond to an enemy kill at mid range when ahead"]
+    assert phrases == ["moves in after an ally takes a plate from far away when behind", "does not respond when an enemy gets a kill at mid range when ahead"]
     assert situations == ["rspg_behind_plate_ours_far", "rspg_ahead_kill_theirs_mid"]
-    assert describe("rspg_ahead_plate_ours_near_held") == "held ground at an ally plate nearby when ahead"
-    assert describe_situation("rspg_behind_kill_ours_far") == "when behind, after an ally kill from far away"
-    assert situation_lead("rspg_behind_kill_ours_far") == "When behind, after an ally kill from far away"
+    assert describe("rspg_ahead_plate_ours_near_held") == "held ground after an ally took a plate nearby when ahead"
+    assert describe_situation("rspg_behind_kill_ours_far") == "when behind, after an ally gets a kill from far away"
+    assert situation_lead("rspg_behind_kill_ours_far") == "When behind, after an ally gets a kill from far away"
     assert act("rspg_behind_kill_ours_far", "absent")[0] == "does not follow" and outcome_label("rspg_ahead_plate_theirs_far", "absent") == "didn't respond"
     assert all(named(cell) for cell in GOLD_COLUMNS)

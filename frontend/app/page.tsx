@@ -55,7 +55,7 @@ export default function Home() {
       <h3>How it works</h3>
       <p>
         Your playstyle is how you tend to react to events and what events you initiate. When you play with a teammate who likes to take dragon, what are you doing?
-        Where do you ward in the first 5 minutes? Where do you stand in lane against your opponent? We count what you did each time.
+        Where are you when you ward in the first 5 minutes? Where do you stand in lane against your opponent? We count what you did each time.
       </p>
       <p>
         We don&apos;t need all your games. Every reading starts from what a typical player in your position does, learned from over 100,000

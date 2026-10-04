@@ -22,7 +22,7 @@ from ..features.posterior import (
     wave_mass,
 )
 from ..features.regions import REGIONS, regions_of
-from ..ingest.store import Store
+from ..ingest.store import Store, event_people
 
 SPAN = get_settings().feature_minutes + 1
 SEATS = 10
@@ -145,6 +145,36 @@ def _by_match(rows: list[tuple]) -> dict[str, list[tuple]]:
     return grouped
 
 
+def parsed_inputs(parsed) -> tuple[dict, dict, list[tuple]]:
+    pids = sorted(parsed.pid_to_puuid)
+    match = {
+        "puuid": [parsed.pid_to_puuid[pid] for pid in pids],
+        "team": [int(parsed.teams.get(pid) or 100) for pid in pids],
+        "position": [parsed.roles.get(pid, "") for pid in pids],
+    }
+    spot = {
+        "xy": np.zeros((len(pids), SPAN, 2)),
+        "level": np.ones((len(pids), SPAN), np.int16),
+        "known": np.zeros((len(pids), SPAN), bool),
+    }
+    for seat, pid in enumerate(pids):
+        track = (parsed.positions.get(pid) or [])[:SPAN]
+        levels = (parsed.levels.get(pid) or [])[:SPAN]
+        if track:
+            spot["xy"][seat, : len(track)] = track
+            spot["known"][seat, : len(track)] = True
+        spot["level"][seat, : len(levels)] = [int(level or 1) for level in levels]
+    events = []
+    for event in sorted(parsed.events, key=lambda event: int(event.get("timestamp", 0))):
+        if int(event.get("timestamp", 0)) // 60000 >= SPAN:
+            continue
+        position = event.get("position") or {}
+        events.append(
+            (event.get("timestamp"), event.get("type"), *event_people(event, parsed.pid_to_puuid), position.get("x"), position.get("y"))
+        )
+    return match, spot, events
+
+
 def _seat_points(match: dict, spot: dict, events: list[tuple]) -> tuple[list, list]:
     seat_of = {puuid: index + 1 for index, puuid in enumerate(match["puuid"])}
     blue_of = [1 if team == 100 else 0 for team in match["team"]]
@@ -156,7 +186,7 @@ def _seat_points(match: dict, spot: dict, events: list[tuple]) -> tuple[list, li
         levelled.append((stamp, kind, actor, victim, assists, x, y, level))
     certain, claimed, kills = anchor_points(levelled, seat_of, blue_of)
     points, spans = [], []
-    for seat in range(SEATS):
+    for seat in range(len(match["puuid"])):
         team = 100 if blue_of[seat] else 200
         span = death_spans(kills.get(seat + 1, []))
         spans.append(span)

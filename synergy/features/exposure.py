@@ -40,7 +40,7 @@ def write_exposure(settings: Settings | None = None) -> dict:
     seats = pd.read_parquet(processed / "participations.parquet", columns=["match_id", "puuid", "position"])
     index = SeatIndex(seats)
     parts = []
-    for number, (prefix, load, situations, outcomes, states, _) in enumerate(reaction_sources(settings)):
+    for number, (prefix, load, situations, outcomes, states, *_) in enumerate(reaction_sources(settings)):
         path = processed / "buffers" / f"exposure.{number}.npy"
         counts = buffer(path, index, situations, outcomes, states)
         for frame in load():
