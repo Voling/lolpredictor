@@ -78,10 +78,10 @@ function Result({ pair, onRefreshed, shared = false }: { pair: PairScore; onRefr
           <p className="sub">The three things each of you does most differently from others in your position. Dot: your most likely share. Bar: where we&apos;re 80% sure it lies. Diamond: a typical player in your position in the same spots, like being ahead or behind in lane. With few games the bar is wide and the dot sits near the diamond, because we assume typical play until your games show otherwise.</p>
           <h4>{left.riot_id}</h4>
           {posteriors.left.length === 0 && <p className="sub">Nothing in {left.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.left)} yet. That&apos;s normal with few games.</p>}
-          {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" />)}
+          {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" name={left.riot_id} position={found.positions.left} />)}
           <h4>{right.riot_id}</h4>
           {posteriors.right.length === 0 && <p className="sub">Nothing in {right.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.right)} yet. That&apos;s normal with few games.</p>}
-          {posteriors.right.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="right" />)}
+          {posteriors.right.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="right" name={right.riot_id} position={found.positions.right} />)}
         </>
       )}
       {posteriors && posteriors.differences.length > 0 && (

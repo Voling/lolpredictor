@@ -1,4 +1,5 @@
 import type { Band, Difference, Posterior } from "./api";
+import { peer } from "./habits";
 
 type Tone = "left" | "right";
 
@@ -36,7 +37,16 @@ function Row({ label, marks, prior, place, note }: { label: string; marks: (Band
   );
 }
 
-export function SituationChart({ posterior, tone }: { posterior: Posterior; tone: Tone }) {
+function basis(posterior: Posterior, name: string, position: string): string {
+  const count = Math.round(posterior.n);
+  const unit = posterior.situation.startsWith("prio") ? (count === 1 ? "game" : "games") : count === 1 ? "chance" : "chances";
+  const seen = `${name.split("#")[0]}'s ${count} ${unit}`;
+  const rest = posterior.own == null ? 0 : Math.round((1 - posterior.own) * 100);
+  if (rest === 0) return `Based on ${seen}.`;
+  return `Based ${100 - rest}% on ${seen} and ${rest}% on the typical ${peer(position)}.`;
+}
+
+export function SituationChart({ posterior, tone, name, position }: { posterior: Posterior; tone: Tone; name: string; position: string }) {
   if (posterior.kind === "ratio" && posterior.ratio) {
     return (
       <div className="posterior">
@@ -46,11 +56,10 @@ export function SituationChart({ posterior, tone }: { posterior: Posterior; tone
       </div>
     );
   }
-  const chances = posterior.situation.startsWith("prio") ? `${Math.round(posterior.n)} games` : `${Math.round(posterior.n)} chances`;
   return (
     <div className="posterior">
       <p className="post-title">{posterior.takeaway ?? capital(posterior.words)}</p>
-      <p className="post-count">{capital(posterior.words)}, {chances}{posterior.own != null ? `: ${share(posterior.own)} their own play, the rest the typical player` : ""}</p>
+      <p className="post-count">{basis(posterior, name, position)}</p>
       {(posterior.outcomes ?? []).map((outcome) => (
         <Row key={outcome.name} label={outcome.words} marks={[{ mean: outcome.mean, low: outcome.low, high: outcome.high, tone }]} prior={outcome.prior} place={linear} note={share(outcome.mean)} />
       ))}

@@ -1,4 +1,4 @@
-from synergy.api.shares import SHARE_DAYS, Shares, pair_puuids, query_key, stamp
+from synergy.api.shares import SHARE_DAYS, Shares, code_version, pair_puuids, query_key, stamp
 
 START = 1_790_000_000
 
@@ -65,3 +65,22 @@ def test_the_version_stamp_changes_when_new_games_are_pulled():
     # then
     assert stamps == ["", "ready@160", "requested@900", "ready@100"]
     assert query_key(("pair", "A#NA1", None)) == query_key(("PAIR", " a#na1 ", ""))
+
+
+def test_the_code_version_moves_with_python_sources_and_nothing_else(tmp_path):
+    # given
+    (tmp_path / "words").mkdir()
+    source = tmp_path / "words" / "describe.py"
+    source.write_text("LEAD = 'after an ally plate'\n")
+    notes = tmp_path / "notes.txt"
+    notes.write_text("first")
+    before = code_version(tmp_path)
+
+    # when
+    notes.write_text("second")
+    unchanged = code_version(tmp_path)
+    source.write_text("LEAD = 'after an ally takes a plate'\n")
+    changed = code_version(tmp_path)
+
+    # then
+    assert before == unchanged and changed != before and len(changed) == 12

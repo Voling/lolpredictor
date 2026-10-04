@@ -23,7 +23,7 @@ from .artifacts import bucket_of, current_run, fetch_run
 from .customs import SharedCustoms
 from .evaluate import EVAL, GIB, READY, REQUESTED, Evaluations, shape, store_size
 from .history import History, duo_view, public
-from .shares import Shares, pair_puuids, stamp
+from .shares import Shares, code_version, pair_puuids, stamp
 
 logger = logging.getLogger(__name__)
 LIMIT = 40
@@ -186,8 +186,11 @@ def _current_run() -> str | None:
     return _run_seen[1]
 
 
+CODE = code_version(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def _version(puuids: list[str]) -> dict:
-    return {"run": _current_run(), "players": {puuid: stamp(get_evaluations().status(puuid)) for puuid in puuids}}
+    return {"run": _current_run(), "code": CODE, "players": {puuid: stamp(get_evaluations().status(puuid)) for puuid in puuids}}
 
 
 def _pair_names(payload: dict) -> str:

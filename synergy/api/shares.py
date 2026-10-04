@@ -2,6 +2,7 @@ import hashlib
 import json
 import secrets
 import time
+from pathlib import Path
 
 from .accounts import DAY
 from .history import _plain
@@ -21,6 +22,15 @@ def stamp(state: dict | None) -> str:
     if not state:
         return ""
     return f"{state.get('status')}@{int(state.get('finished') or state.get('started') or 0)}"
+
+
+def code_version(root: str | Path) -> str:
+    root = Path(root)
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def pair_puuids(payload: dict) -> list[str]:
