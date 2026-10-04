@@ -73,7 +73,7 @@ export default function AccountPage() {
       {account.enabled && account.loading && <p className="sub">Checking your account…</p>}
       {account.enabled && !account.loading && !account.signedIn && (
         <>
-          <p>Sign in or create an account to check duos. Each account gets a few duo checks a day for its own Riot account.</p>
+          <p>Sign in or create an account to save your checks. You can check duos without one.</p>
           <p><button type="button" onClick={() => signIn("/account/")}>Sign in</button></p>
         </>
       )}

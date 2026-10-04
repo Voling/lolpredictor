@@ -36,6 +36,11 @@ def duo_view(duo: dict) -> dict:
     return {**{side: _seat_view(duo, side) for side in SIDES}, **{name: duo.get(name) for name in ("score", "gold", "minute", "at")}}
 
 
+def mine_by_name(kind: str, names: list, linked: str | None) -> bool:
+    players = names if kind == "pair" else names[:1]
+    return bool(linked) and any(str(name or "").lower() == linked.lower() for name in players)
+
+
 def summary_of(kind: str, found: dict) -> dict:
     if kind == "pair":
         positions = found.get("positions") or {}
@@ -61,29 +66,35 @@ class History:
     def _key(self, user: str) -> str:
         return f"{CHECKS}#{user}"
 
-    def save(self, user: str, kind: str, request: str, found: dict, duos: list[dict] | tuple = ()) -> str:
+    def save(self, user: str, kind: str, request: str, found: dict, duos: list[dict] | tuple = (), mine: bool | None = None) -> str:
         now = int(self.clock())
         check_id = f"{datetime.fromtimestamp(now, timezone.utc):%Y-%m-%d}#{request}"
         kept = {name: value for name, value in found.items() if name != "remaining"}
+        summary = {**summary_of(kind, found), "duos": list(duos)}
+        if mine is not None:
+            summary["mine"] = mine
         self.table.put(
             self._key(user),
             check_id,
             {
                 "at": now,
                 "kind": kind,
-                "summary": json.dumps({**summary_of(kind, found), "duos": list(duos)}, default=_plain),
+                "summary": json.dumps(summary, default=_plain),
                 "payload": json.dumps(kept, default=_plain),
                 "expires": now + HISTORY_DAYS * DAY,
             },
         )
         return check_id
 
-    def list(self, user: str, limit: int = HISTORY_LIMIT) -> list[dict]:
+    def list(self, user: str, limit: int = HISTORY_LIMIT, linked: str | None = None) -> list[dict]:
         rows = []
         for item in self.table.latest(self._key(user), limit, LISTED):
             summary, at = json.loads(item["summary"]), int(item["at"])
             duos = [duo_view({**duo, "at": at}) for duo in summary.pop("duos", [])]
-            rows.append({"id": item["sk"], "at": at, "kind": item["kind"], **summary, "duos": duos})
+            mine = summary.pop("mine", None)
+            if mine is None:
+                mine = mine_by_name(item["kind"], summary.get("names", []), linked)
+            rows.append({"id": item["sk"], "at": at, "kind": item["kind"], **summary, "mine": mine, "duos": duos})
         return sorted(rows, key=lambda row: -row["at"])
 
     def load(self, user: str, check_id: str) -> dict | None:

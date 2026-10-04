@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 STYLE_COLUMNS = [f"style_{name}" for name in STYLE_NAMES]
 STYLE_SUFFIXES = ("_pct", "_var")
 UNINFORMATIVE = (
-    "the pair model found no usable synergy signal in this corpus, so no score is reported"
+    "the duo model found no usable synergy signal in this corpus, so no score is reported"
 )
 NOT_FITTED = "The model is not ready yet. Try again later."
 NO_POSITIONS = "You both play the same position. Pick a different position for one of you."

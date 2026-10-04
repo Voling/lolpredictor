@@ -201,6 +201,32 @@ def test_a_shared_pair_expires_once_new_games_are_pulled_and_the_owner_gets_a_fr
     assert fresh["score"] == 64.0 and fresh["share"] == "tok" and reopened["score"] == 64.0 and "expired" not in reopened
 
 
+def test_a_stored_duo_is_served_again_only_for_the_same_player_one(monkeypatch):
+    # given
+    server, shares = _share_server(monkeypatch, {"run": "r1", "players": {}})
+    shares.token = iter(["tok-me", "tok-x"]).__next__
+    query = ("pair", "Friend#NA1", None, None)
+    checks = []
+
+    def check_for(name, score):
+        def check():
+            checks.append(name)
+            return {"score": score, "interaction": {"score": score}, "players": [{"puuid": f"puuid-{name}", "riot_id": name}, {"puuid": "friend", "riot_id": "Friend#NA1"}]}
+
+        return check
+
+    # when
+    mine = server._shared_pair("t-owner", query, check_for("Me#NA1", 61.0))
+    other = server._shared_pair("t-owner", query, check_for("X#NA1", 44.0), "X#NA1")
+    mine_again = server._shared_pair("t-owner", query, check_for("Me#NA1", 0.0))
+    other_again = server._shared_pair("t-owner", query, check_for("X#NA1", 0.0), " x#na1 ")
+
+    # then
+    assert checks == ["Me#NA1", "X#NA1"]
+    assert (mine["share"], other["share"], mine_again["share"], other_again["share"]) == ("tok-me", "tok-x", "tok-me", "tok-x")
+    assert (mine_again["score"], other_again["score"]) == (61.0, 44.0)
+
+
 def test_a_response_with_missing_numbers_still_renders_as_json_with_nulls():
     # given
     import json

@@ -28,7 +28,7 @@ export class ApiError extends Error {
   }
 }
 
-export type Reading = { gold: number; score: number; percentile: number; style?: number; form?: number; champion?: number };
+export type Reading = { gold: number; score: number; percentile: number };
 
 export type Standout = { cell: string; words: string; phrase: string; z: number; percentile: number };
 
@@ -48,9 +48,9 @@ export type Player = { riot_id: string; main_position: string; games: number; wi
 
 export type Evaluations = { players: Pending[] };
 
-export type SavedCheck = { id: string; at: number; kind: string; names: (string | null)[]; positions: (string | null)[]; score: number | null; duos?: RecentDuo[] };
+export type SavedCheck = { id: string; at: number; kind: string; names: (string | null)[]; positions: (string | null)[]; score: number | null; mine: boolean; duos?: RecentDuo[] };
 
-export type History = { checks: SavedCheck[] };
+export type History = { checks: SavedCheck[]; linked: boolean };
 
 export type Refresh = { message: string | null; pending: Pending | null };
 

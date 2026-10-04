@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import random
 import re
 import time
@@ -24,6 +25,12 @@ RECENT_DAYS = 30
 CHECK_SECONDS = 10
 RIOT_BUDGET = "riot#budget"
 RIOT_PER_SECOND = 10
+VISITOR = "visitor"
+VISITOR_LABEL = b"lolpredictor visitor v1"
+LOCAL_VISITOR_KEY = b"lolpredictor local visitor key"
+ANONYMOUS = "anonymous"
+EVERYONE_FULL = "Checks without an account are full for today. Sign in to keep checking."
+RIOT_BUSY = "Busy, try again in a minute."
 CONFLICT_TRIES = 3
 CHARGED, DUPLICATE, FULL = "charged", "duplicate", "full"
 
@@ -47,6 +54,10 @@ class RateLimited(LinkError):
 
 
 class Busy(Exception):
+    pass
+
+
+class RiotBusy(Busy):
     pass
 
 
@@ -86,7 +97,7 @@ class TokenVerifier:
 
     def subject(self, token: str | None) -> str:
         if not token:
-            raise AuthError("Sign in to check duos.")
+            raise AuthError("Sign in first.")
         try:
             key = self.keys(token)
         except (httpx.HTTPError, ValueError) as exc:
@@ -343,9 +354,23 @@ def _shuffled(items: list) -> list:
 
 
 class Accounts:
-    def __init__(self, table, riot, daily: int, attempts: int, riot_budget: int = 30, riot_per_second: int = RIOT_PER_SECOND, clock=time.time, shuffle=_shuffled):
+    def __init__(
+        self,
+        table,
+        riot,
+        daily: int,
+        attempts: int,
+        riot_budget: int = 30,
+        riot_per_second: int = RIOT_PER_SECOND,
+        clock=time.time,
+        shuffle=_shuffled,
+        visitor_duos: int = 20,
+        anonymous_duos: int = 3000,
+        visitor_riot_budget: int = 20,
+    ):
         self.table, self.riot, self.daily, self.attempts = table, riot, daily, attempts
         self.riot_budget, self.riot_per_second = riot_budget, riot_per_second
+        self.visitor_duos, self.anonymous_duos, self.visitor_riot_budget = visitor_duos, anonymous_duos, visitor_riot_budget
         self.clock, self.shuffle = clock, shuffle
 
     def _user(self, user: str) -> str:
@@ -365,6 +390,16 @@ class Accounts:
         if self.table.add(RIOT_BUDGET, f"second#{now}", calls, self.riot_per_second, now + DAY) is None:
             self.table.add(RIOT_BUDGET, minute, -calls, self.riot_budget + calls, now + DAY)
             return False
+        return True
+
+    def visitor_riot_calls(self, calls: int) -> bool:
+        now = int(self.clock())
+        minute = f"visitors#{now // 60}"
+        if calls > self.visitor_riot_budget or self.table.add(RIOT_BUDGET, minute, calls, self.visitor_riot_budget, now + DAY) is None:
+            raise RiotBusy(RIOT_BUSY)
+        if not self.riot_calls(calls):
+            self.table.add(RIOT_BUDGET, minute, -calls, self.visitor_riot_budget + calls, now + DAY)
+            raise RiotBusy(RIOT_BUSY)
         return True
 
     def _attempt(self, user: str, riot_calls: int) -> None:
@@ -459,11 +494,9 @@ class Accounts:
     def recent(self, limit: int = RECENT_LIMIT) -> list[dict]:
         return [{name: value for name, value in item.items() if name not in ("pk", "sk", "expires")} for item in self.table.latest(RECENT, limit)]
 
-    def linked_puuid(self, user: str) -> str:
+    def linked_puuid(self, user: str) -> str | None:
         link = self.link(user)
-        if not link.get("verified"):
-            raise LinkError("Link your Riot account on the account page first.")
-        return link["puuid"]
+        return link["puuid"] if link.get("verified") else None
 
     def _full(self, user: str) -> QuotaExceeded:
         return QuotaExceeded(f"You have {self.status(user)['remaining']} of {self.daily} duo checks left today.")
@@ -487,3 +520,48 @@ class Accounts:
         self.table.add(self._user(user), key, -count, self.daily + count, expires)
         if request and REQUEST.match(request):
             self.table.delete(self._user(user), f"request#{request}")
+
+    def _visitor_key(self) -> bytes:
+        riot_key = getattr(self.riot, "key", None)
+        secret = riot_key() if callable(riot_key) else ""
+        if not secret:
+            return LOCAL_VISITOR_KEY
+        return hmac.new(secret.encode("utf-8"), VISITOR_LABEL, hashlib.sha256).digest()
+
+    def visitor(self, address: str) -> str:
+        return f"{VISITOR}#" + hmac.new(self._visitor_key(), f"{self.day()}|{address}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _visitor_full(self, visitor: str) -> QuotaExceeded:
+        key, _ = self._day("duos")
+        used = int((self.table.get(visitor, key) or {}).get("used", 0))
+        return QuotaExceeded(f"You have {max(0, self.visitor_duos - used)} of {self.visitor_duos} duo checks left today. Sign in for more.")
+
+    def visitor_spend(self, visitor: str, count: int, request: str | None = None) -> bool:
+        if count > self.visitor_duos:
+            raise QuotaExceeded(f"You can check {self.visitor_duos} duos a day. Sign in for more.")
+        key, expires = self._day("duos")
+        if request and REQUEST.match(request):
+            outcome = self.table.charge(visitor, key, f"request#{request}", count, self.visitor_duos, expires)
+            if outcome == DUPLICATE:
+                return False
+            if outcome == FULL:
+                raise self._visitor_full(visitor)
+        elif self.table.add(visitor, key, count, self.visitor_duos, expires) is None:
+            raise self._visitor_full(visitor)
+        if self.table.add(ANONYMOUS, key, count, self.anonymous_duos, expires) is None:
+            self._give_back_visitor(visitor, count, request)
+            raise QuotaExceeded(EVERYONE_FULL)
+        return True
+
+    def _give_back_visitor(self, visitor: str, count: int, request: str | None) -> None:
+        key, expires = self._day("duos")
+        if count:
+            self.table.add(visitor, key, -count, self.visitor_duos + count, expires)
+        if request and REQUEST.match(request):
+            self.table.delete(visitor, f"request#{request}")
+
+    def visitor_refund(self, visitor: str, count: int, request: str | None = None) -> None:
+        self._give_back_visitor(visitor, count, request)
+        if count:
+            key, expires = self._day("duos")
+            self.table.add(ANONYMOUS, key, -count, self.anonymous_duos + count, expires)

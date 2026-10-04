@@ -7,7 +7,7 @@ import { useRemote } from "@/lib/remote";
 import { getFriends, getSaved, type Friends } from "@/lib/api";
 import { positionName } from "@/lib/positions";
 import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
-import { AccountNotice, accountReady, useAccount } from "@/lib/account";
+import { AccountNotice, SaveHint, accountReady, typesRiotId, useAccount, useRiotId, visiting } from "@/lib/account";
 import { POLL_MS, Progress } from "@/lib/progress";
 import { habitSentence, peer } from "@/lib/habits";
 
@@ -21,7 +21,7 @@ function Result({ found }: { found: Friends }) {
     <>
       <h2>Your duo scores{me.position ? ` as ${positionName(me.position)}` : ""}</h2>
       {me.games != null && me.games < FEW_GAMES && (
-        <p className="hint">You have only {gameCount(me.games)} as {positionName(me.position)}, so your scores lean on the typical {peer(me.position ?? "")} until we see more.</p>
+        <p className="hint">You have only {gameCount(me.games)} as {positionName(me.position)} so your scores lean on the typical {peer(me.position ?? "")} until we see more.</p>
       )}
       <table>
         <thead>
@@ -36,7 +36,7 @@ function Result({ found }: { found: Friends }) {
             ) : (
               <tr key={row.riot_id}>
                 <td>
-                  <Link href={`/pair/?a=${encodeURIComponent(me.riot_id)}&b=${encodeURIComponent(row.riot_id)}&b_position=${positionName(row.position)}${me.position ? `&a_position=${positionName(me.position)}` : ""}`}>{row.riot_id}</Link>
+                  <Link href={`/duo/?a=${encodeURIComponent(me.riot_id)}&b=${encodeURIComponent(row.riot_id)}&b_position=${positionName(row.position)}${me.position ? `&a_position=${positionName(me.position)}` : ""}`}>{row.riot_id}</Link>
                   {row.standout && row.position && (row.standout.percentile >= 80 || row.standout.percentile <= 20) && (
                     <span className="standout">{habitSentence("", row.standout, row.position).replace(/^ /, "").replace(/^\w/, (letter) => letter.toUpperCase())}</span>
                   )}
@@ -52,8 +52,8 @@ function Result({ found }: { found: Friends }) {
           )}
         </tbody>
       </table>
-      <p className="sub">50 is an average duo for those two positions. Higher is better.</p>
-      <p className="sub">Few games means under {FEW_GAMES} games in that position. We fill the gaps with what a typical player there does, so their score stays near 50 until we see more.</p>
+      <p className="sub">50 is an average duo. Higher is better but it doesn't equal winrate!</p>
+      <p className="sub">Few games means under {FEW_GAMES} games in that position. Lolpredictor fills the gaps with what a typical player might do: their score might hover near 50 until we see more.</p>
     </>
   );
 }
@@ -63,11 +63,16 @@ function FriendsQuery() {
   const query: Query = { me: params.get("me") ?? undefined, me_position: params.get("me_position") ?? undefined, friends: params.get("friends") ?? undefined, saved: params.get("saved") ?? undefined };
   const friends = (query.friends ?? "").split(/[\n,]/).map((line) => line.trim()).filter(Boolean);
   const account = useAccount();
-  const me = account.enabled ? account.me?.riot_id ?? undefined : query.me;
-  const ready = accountReady(account) && Boolean(query.saved || (me && friends.length > 0));
+  const visitor = visiting(account);
+  const asks = typesRiotId(account);
+  const yours = useRiotId(asks ? query.me : undefined);
+  const me = asks ? query.me : account.me?.riot_id ?? undefined;
+  const saved = visitor ? undefined : query.saved;
+  const allowed = visitor || accountReady(account);
+  const ready = allowed && Boolean(saved || (me && friends.length > 0));
   const [tick, setTick] = useState(0);
   const { data: found, error, loading } = useRemote(
-    !ready ? null : query.saved ? () => getSaved<Friends>(query.saved!) : () => getFriends(me!, friends, query.me_position || undefined),
+    !ready ? null : saved ? () => getSaved<Friends>(saved) : () => getFriends(me!, friends, query.me_position || undefined),
     `${params.toString()}|${ready}|${tick}`,
   );
   const liveUrl = found?.friends
@@ -85,10 +90,10 @@ function FriendsQuery() {
   return (
     <main>
       <h1><Link href="/">lolpredictor</Link></h1>
-      <p className="sub">Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a duo score with you.</p>
-      <AccountNotice account={account} remaining={found?.remaining} />
-      {accountReady(account) && <form method="get" action="/friends/" className="pair">
-        {!account.enabled && <label>Your Riot ID <input name="me" defaultValue={query.me ?? ""} placeholder="name#tag" required /></label>}
+      <p className="sub">Enter your Riot ID and your friends&apos; Riot IDs.</p>
+      {!visitor && <AccountNotice account={account} remaining={found?.remaining} />}
+      {allowed && <form method="get" action="/friends/" className="pair">
+        {asks && <label>Your Riot ID <input key={yours} name="me" defaultValue={yours} placeholder="name#tag" required /></label>}
         <label>
           Your position
           <select name="me_position" defaultValue={query.me_position ?? ""}>
@@ -101,18 +106,19 @@ function FriendsQuery() {
         </label>
         <button type="submit">Rank</button>
       </form>}
-      {accountReady(account) && <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>}
+      {allowed && <p className="hint">To set a friend&apos;s position, add it after their name. For example: friend#tag:jungle</p>}
       {loading && !found && <p className="sub">Ranking your friends…</p>}
       {error && <div className="gate"><strong>Can&apos;t rank these friends.</strong>{error}</div>}
       {found?.saved_at && <p className="hint">Saved on {new Date(found.saved_at * 1000).toLocaleDateString()}. <Link href={liveUrl}>Rank again now</Link>.</p>}
       {found?.pending && (
         <>
-          <p>{found.pending.message ?? `We're pulling ${found.pending.riot_id}'s games.`}</p>
+          <p>{found.pending.message ?? `Pulling ${found.pending.riot_id}'s games.`}</p>
           <Progress pending={found.pending} />
-          <p className="sub">Their last 50 ranked games are enough. We read them against every player in the same position, so we don&apos;t need their whole history.</p>
+          <p className="sub">Their last 50 ranked games are enough.</p>
         </>
       )}
       {found && !found.pending && <Result found={found} />}
+      {visitor && <SaveHint />}
     </main>
   );
 }

@@ -38,24 +38,20 @@ export function Habits({ name, position, habits }: { name: string; position: str
   );
 }
 
-function signed(value: number): string {
-  const rounded = Math.round(Math.abs(value) / 10) * 10;
-  return `${value < 0 ? "\u2212" : "+"}${rounded.toLocaleString("en-US")}`;
+function rounded(value: number): number {
+  return Math.round(Math.abs(value) / 10) * 10;
 }
 
-export function readingSentence(name: string, reading: Reading, minute: number): string {
-  const parts = [
-    reading.style != null ? `playstyle ${signed(reading.style)}` : null,
-    reading.form != null && Math.round(reading.form / 10) !== 0 ? `recent form ${signed(reading.form)}` : null,
-    reading.champion != null && Math.round(reading.champion / 10) !== 0 ? `champions ${signed(reading.champion)}` : null,
-  ].filter(Boolean);
-  return `${name} brings ${signed(reading.gold)} gold at ${minute} minutes${parts.length ? `: ${parts.join(", ")}` : ""}.`;
+export function readingSentence(name: string, reading: Reading, minute: number, position: string): string {
+  const total = rounded(reading.gold);
+  if (total === 0) return `${name} is projected about even with their opponent at ${minute} minutes, like the typical ${peer(position)}.`;
+  return `${name} is projected ${total.toLocaleString("en-US")} gold ${reading.gold > 0 ? "ahead of" : "behind"} their opponent at ${minute} minutes.`;
 }
 
 export function togetherSentence(gold: number, games: number, customs: number): string {
   if (games === 0) return "No games together in our data yet.";
-  const where = customs > 0 ? `${games} games together, ${customs} of them customs` : `${games} ranked games together`;
+  const where = customs > 0 ? `${games} games together, ${customs} customs` : `${games} ranked games together`;
   const rounded = Math.round(Math.abs(gold) / 10) * 10;
   if (rounded === 0) return `${where}: about what your own play predicts.`;
-  return `${where}: ${rounded.toLocaleString("en-US")} gold ${gold > 0 ? "better" : "worse"} than your own play predicts, after allowing for luck.`;
+  return `${where}: ${rounded.toLocaleString("en-US")} gold ${gold > 0 ? "better" : "worse"} than your solo play after allowing for luck.`;
 }

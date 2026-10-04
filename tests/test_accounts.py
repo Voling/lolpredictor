@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import time
 
@@ -5,6 +7,7 @@ import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import HTTPException
 
 from synergy.api import server
 from synergy.api.accounts import (
@@ -15,11 +18,15 @@ from synergy.api.accounts import (
     DynamoTable,
     LinkError,
     QuotaExceeded,
+    RiotBusy,
     SigningKeys,
     TokenVerifier,
     request_key,
     riot_id_of,
 )
+from synergy.api.evaluate import Evaluations
+from synergy.api.history import History
+from synergy.ml.score import UNKNOWN_NOTE, UnknownPlayer
 
 ISSUER = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_test"
 DAY = 86_400
@@ -310,9 +317,7 @@ def test_a_riot_account_links_to_only_one_lolpredictor_account():
         accounts.verify_link("user-2")
 
     # then
-    assert "already linked" in str(taken.value)
-    with pytest.raises(LinkError):
-        accounts.linked_puuid("user-2")
+    assert "already linked" in str(taken.value) and accounts.linked_puuid("user-2") is None
 
 
 def test_icon_checks_never_use_the_daily_allowance_and_reach_riot_at_most_every_10_seconds():
@@ -680,3 +685,306 @@ def test_the_dynamo_table_can_read_only_some_fields_of_the_latest_rows():
     assert found == [{"sk": "2026-10-01#abc", "at": 1790000000, "kind": "pair"}]
     assert client.request["ProjectionExpression"] == "sk, #f0, #f1, #f2"
     assert client.request["ExpressionAttributeNames"] == {"#f0": "at", "#f1": "kind", "#f2": "summary"}
+
+
+def _visitors(clock=lambda: START, duos=20, everyone=3000, riot=None, riot_budget=1000, visitor_riot=20):
+    return Accounts(
+        MemoryTable(),
+        riot or FakeRiot(),
+        daily=20,
+        attempts=3,
+        riot_budget=riot_budget,
+        riot_per_second=1000,
+        clock=clock,
+        visitor_duos=duos,
+        anonymous_duos=everyone,
+        visitor_riot_budget=visitor_riot,
+    )
+
+
+def test_a_visitor_stops_at_the_daily_allowance_while_other_visitors_still_check():
+    # given
+    accounts = _visitors(duos=2)
+    one, two = accounts.visitor("203.0.113.7"), accounts.visitor("198.51.100.4")
+
+    # when
+    first = accounts.visitor_spend(one, 1, request_key("pair", accounts.day(), "a#na1", "b#na1"))
+    repeated = accounts.visitor_spend(one, 1, request_key("pair", accounts.day(), "a#na1", "b#na1"))
+    second = accounts.visitor_spend(one, 1, request_key("pair", accounts.day(), "a#na1", "c#na1"))
+    with pytest.raises(QuotaExceeded) as over:
+        accounts.visitor_spend(one, 1, request_key("pair", accounts.day(), "a#na1", "d#na1"))
+    other = accounts.visitor_spend(two, 1, request_key("pair", accounts.day(), "a#na1", "d#na1"))
+
+    # then
+    assert (first, repeated, second, other) == (True, False, True, True)
+    assert "0 of 2 duo checks left today. Sign in for more." in str(over.value)
+
+
+def test_checks_without_an_account_stop_for_everyone_at_the_shared_cap_and_the_refused_visitor_keeps_their_allowance():
+    # given
+    accounts = _visitors(everyone=2)
+    first, second, third = (accounts.visitor(address) for address in ("203.0.113.7", "198.51.100.4", "192.0.2.1"))
+    key = request_key("pair", accounts.day(), "a#na1", "b#na1")
+    accounts.visitor_spend(first, 1, key)
+    accounts.visitor_spend(second, 1, key)
+
+    # when
+    with pytest.raises(QuotaExceeded) as full:
+        accounts.visitor_spend(third, 1, key)
+    accounts.visitor_refund(first, 1, key)
+    retried = accounts.visitor_spend(third, 1, key)
+
+    # then
+    assert "full for today" in str(full.value) and retried is True
+    assert accounts.table.get(third, f"duos#{accounts.day()}")["used"] == 1
+
+
+def test_a_visitor_allowance_starts_again_the_next_day():
+    # given
+    now = {"t": START}
+    accounts = _visitors(clock=lambda: now["t"], duos=1, everyone=1)
+    today = accounts.visitor("203.0.113.7")
+    accounts.visitor_spend(today, 1)
+    with pytest.raises(QuotaExceeded):
+        accounts.visitor_spend(today, 1)
+
+    # when
+    now["t"] += DAY
+    tomorrow = accounts.visitor("203.0.113.7")
+    charged = accounts.visitor_spend(tomorrow, 1)
+
+    # then
+    assert charged is True and tomorrow != today
+
+
+class _KeyedRiot(FakeRiot):
+    def __init__(self, secret):
+        super().__init__()
+        self.secret = secret
+
+    def key(self):
+        return self.secret
+
+
+def test_a_visitor_is_stored_under_a_key_that_changes_with_the_secret_and_the_day_and_never_shows_either():
+    # given
+    now = {"t": START}
+    one = _visitors(clock=lambda: now["t"], riot=_KeyedRiot("RGAPI-one"))
+    two = _visitors(clock=lambda: now["t"], riot=_KeyedRiot("RGAPI-two"))
+    local = _visitors(clock=lambda: now["t"])
+    derived = hmac.new(b"RGAPI-one", b"lolpredictor visitor v1", hashlib.sha256).digest()
+    expected = "visitor#" + hmac.new(derived, f"{one.day()}|203.0.113.7".encode("utf-8"), hashlib.sha256).hexdigest()
+
+    # when
+    visitor = one.visitor("203.0.113.7")
+    one.visitor_spend(visitor, 1, request_key("pair", one.day(), "a#na1", "b#na1"))
+    others = (two.visitor("203.0.113.7"), local.visitor("203.0.113.7"))
+    now["t"] += DAY
+    tomorrow = one.visitor("203.0.113.7")
+
+    # then
+    stored = " ".join(f"{key} {value}" for key, value in one.table.items.items())
+    assert visitor == expected and len({visitor, *others, tomorrow}) == 4 and visitor in stored
+    assert not any(secret in stored for secret in ("RGAPI-one", derived.hex(), "203.0.113.7"))
+
+
+def test_visitors_together_use_at_most_their_slice_of_the_riot_budget_each_minute():
+    # given
+    now = {"t": START}
+    accounts = _visitors(clock=lambda: now["t"], visitor_riot=2)
+
+    # when
+    allowed = [accounts.visitor_riot_calls(1), accounts.visitor_riot_calls(1)]
+    with pytest.raises(RiotBusy) as busy:
+        accounts.visitor_riot_calls(1)
+    members = accounts.riot_calls(1)
+    now["t"] += 60
+    next_minute = accounts.visitor_riot_calls(1)
+
+    # then
+    assert allowed == [True, True] and members is True and next_minute is True
+    assert str(busy.value) == "Busy, try again in a minute."
+
+
+def test_a_visitor_riot_call_is_refused_and_given_back_when_the_shared_budget_is_full():
+    # given
+    accounts = _visitors(riot_budget=1, visitor_riot=5)
+    accounts.riot_calls(1)
+
+    # when
+    with pytest.raises(RiotBusy):
+        accounts.visitor_riot_calls(1)
+
+    # then
+    assert accounts.table.get("riot#budget", f"visitors#{int(START) // 60}")["used"] == 0
+
+
+class _Players:
+    def __init__(self, known):
+        import pandas as pd
+
+        self.ready = True
+        self.known = known
+        self.profiles = pd.DataFrame(index=list(known.values()))
+
+    def resolve(self, name):
+        if name.lower() not in self.known:
+            raise UnknownPlayer(name)
+        return {"puuid": self.known[name.lower()]}
+
+
+class _Queue:
+    evaluate_queue = "queue"
+    evaluated_store = ""
+    accounts_table = ""
+
+
+def _visitor_setup(monkeypatch, known, made_up=(), **limits):
+    accounts = _visitors(**limits)
+    asked = []
+
+    def pending(owner, name):
+        asked.append((owner, name))
+        return {"riot_id": name, "status": "refused" if name in made_up else "requested"}
+
+    monkeypatch.setattr(server, "get_accounts", lambda: accounts)
+    monkeypatch.setattr(server, "get_service", lambda: _Players(known))
+    monkeypatch.setattr(server, "_pending", pending)
+    return accounts, accounts.visitor("203.0.113.7"), asked
+
+
+def _unknown(name):
+    def call(me, service):
+        raise UnknownPlayer(name)
+
+    return call
+
+
+def test_a_visitor_check_that_waits_on_a_new_player_gives_the_check_back(monkeypatch):
+    # given
+    accounts, visitor, asked = _visitor_setup(monkeypatch, {"me#na1": "puuid-me"})
+
+    # when
+    found = server._visited(visitor, "Me#NA1", ("pair", "Me#NA1", "new#na1", None, None), 1, _unknown("new#na1"))
+
+    # then
+    assert found == {"score": None, "pending": {"riot_id": "new#na1", "status": "requested"}} and asked == [(visitor, "new#na1")]
+    assert accounts.table.get(visitor, f"duos#{accounts.day()}")["used"] == 0 and accounts.table.get("anonymous", f"duos#{accounts.day()}")["used"] == 0
+
+
+def test_a_visitor_we_have_not_seen_waits_on_their_own_games_and_gets_the_check_back(monkeypatch):
+    # given
+    accounts, visitor, asked = _visitor_setup(monkeypatch, {})
+
+    # when
+    found = server._visited(visitor, " new#na1 ", ("friends", "new#na1", None, "a#na1"), 1, lambda me, service: {"friends": []})
+
+    # then
+    assert found["pending"]["riot_id"] == "new#na1" and asked == [(visitor, "new#na1")]
+    assert accounts.table.get(visitor, f"duos#{accounts.day()}")["used"] == 0
+
+
+def test_a_visitor_check_on_a_made_up_name_keeps_the_check_every_time_while_a_real_new_player_gives_it_back(monkeypatch):
+    # given
+    accounts, visitor, asked = _visitor_setup(monkeypatch, {"me#na1": "puuid-me"}, made_up={"fake#na1", "nobody#na1"})
+
+    # when
+    for name in ("fake#na1", "fake#na1", "new#na1"):
+        server._visited(visitor, "me#na1", ("pair", "me#na1", name, None, None), 1, _unknown(name))
+    server._visited(visitor, "nobody#na1", ("pair", "nobody#na1", "new#na1", None, None), 1, _unknown("new#na1"))
+
+    # then
+    assert [name for _, name in asked] == ["fake#na1", "fake#na1", "new#na1", "nobody#na1"]
+    assert accounts.table.get(visitor, f"duos#{accounts.day()}")["used"] == 3
+
+
+def test_a_visitor_ranking_friends_spends_one_check_per_friend_scored_or_made_up(monkeypatch):
+    # given
+    accounts, visitor, _ = _visitor_setup(monkeypatch, {"me#na1": "puuid-me"}, made_up={"Fake#NA1"})
+    monkeypatch.setattr(server, "get_settings", lambda: _Queue())
+    rows = [{"riot_id": "A#NA1", "score": 60.0}, {"riot_id": "Fake#NA1", "note": UNKNOWN_NOTE}, {"riot_id": "New#NA1", "note": UNKNOWN_NOTE}, {"riot_id": "C#NA1", "note": "typo"}]
+
+    # when
+    found = server._visited(visitor, "me#na1", ("friends", "me#na1", None, "a#na1", "c#na1", "fake#na1", "new#na1"), 4, lambda me, service: {"me": {"riot_id": "Me#NA1"}, "friends": rows}, server._unscored_friends)
+
+    # then
+    assert [row.get("pending", {}).get("status") for row in found["friends"]] == [None, "refused", "requested", None]
+    assert "remaining" not in found and accounts.table.get(visitor, f"duos#{accounts.day()}")["used"] == 2
+
+
+def test_a_visitor_check_answers_busy_and_gives_everything_back_once_visitors_used_their_riot_calls(monkeypatch):
+    # given
+    real = server._pending
+    accounts, visitor, _ = _visitor_setup(monkeypatch, {"me#na1": "puuid-me"}, visitor_riot=0)
+    evaluations = Evaluations(accounts.table, accounts.riot, accounts.riot_calls, launch=[].append, visitor_budget=accounts.visitor_riot_calls, clock=lambda: START)
+    monkeypatch.setattr(server, "_pending", real)
+    monkeypatch.setattr(server, "get_settings", lambda: _Queue())
+    monkeypatch.setattr(server, "get_evaluations", lambda: evaluations)
+
+    # when
+    with pytest.raises(HTTPException) as answered:
+        server._handle(lambda: server._visited(visitor, "me#na1", ("pair", "me#na1", "new#na1", None, None), 1, _unknown("new#na1")))
+
+    # then
+    assert (answered.value.status_code, answered.value.detail) == (503, "Busy, try again in a minute.") and accounts.riot.calls == 0
+    assert accounts.table.get(visitor, f"duos#{accounts.day()}")["used"] == 0 and accounts.table.get(visitor, f"evals#{accounts.day()}")["used"] == 0
+
+
+def test_an_account_without_a_linked_riot_id_checks_by_name_on_its_own_allowance_and_history(monkeypatch):
+    # given
+    accounts = _accounts()
+    monkeypatch.setattr(server, "get_verifier", lambda: type("V", (), {"subject": staticmethod(lambda token: "user-2")})())
+    monkeypatch.setattr(server, "get_accounts", lambda: accounts)
+    monkeypatch.setattr(server, "get_service", lambda: _Players({"me#na1": "puuid-me"}))
+    monkeypatch.setattr(server, "get_history", lambda: History(accounts.table))
+
+    # when
+    found = server._metered("token", ("pair", "friend#na1", None, None), 1, lambda me, service: {"players": [{"riot_id": "Me#NA1"}], "me": me}, name="Me#NA1")
+
+    # then
+    assert found["me"] == "puuid-me" and found["remaining"] == 19
+    assert [sk for pk, sk in accounts.table.items if pk == "checks#user-2"]
+
+
+def test_a_linked_account_checks_any_duo_on_its_own_allowance_and_marks_only_duos_it_plays_in(monkeypatch):
+    # given
+    accounts = _accounts(attempts=10)
+    _link(accounts, "user-1", "a#na1")
+    monkeypatch.setattr(server, "get_verifier", lambda: type("V", (), {"subject": staticmethod(lambda token: "user-1")})())
+    monkeypatch.setattr(server, "get_accounts", lambda: accounts)
+    monkeypatch.setattr(server, "get_service", lambda: _Players({"a#na1": "puuid-a", "b#na1": "puuid-b", "x#na1": "puuid-x"}))
+    monkeypatch.setattr(server, "get_history", lambda: History(accounts.table))
+
+    def with_player_two(two):
+        def call(me, service):
+            return {"players": [{"puuid": me, "riot_id": me}, {"puuid": two, "riot_id": two}]}
+
+        return call
+
+    # when
+    own = server._metered("token", ("pair", "b#na1", None, None), 1, with_player_two("puuid-b"))
+    other = server._metered("token", ("pair", "b#na1", None, None), 1, with_player_two("puuid-b"), name="X#NA1")
+    with_me = server._metered("token", ("pair", "a#na1", None, None), 1, with_player_two("puuid-a"), name="x#na1")
+
+    # then
+    stored = [json.loads(item["summary"]) for (pk, _), item in accounts.table.items.items() if pk == "checks#user-1"]
+    assert sorted((tuple(summary["names"]), summary["mine"]) for summary in stored) == [
+        (("puuid-a", "puuid-b"), True),
+        (("puuid-x", "puuid-a"), True),
+        (("puuid-x", "puuid-b"), False),
+    ]
+    assert (own["remaining"], other["remaining"], with_me["remaining"]) == (19, 18, 17)
+
+
+def test_the_visitor_address_is_read_only_from_the_header_the_edge_sets():
+    # given
+    from starlette.requests import Request
+
+    edge = Request({"type": "http", "headers": [(b"x-viewer-ip", b"203.0.113.7"), (b"x-forwarded-for", b"198.51.100.1"), (b"cloudfront-viewer-address", b"192.0.2.1:443")], "client": ("10.0.0.1", 443)})
+    local = Request({"type": "http", "headers": [(b"x-forwarded-for", b"198.51.100.1")], "client": ("127.0.0.1", 50000)})
+
+    # when
+    addresses = (server._address(edge), server._address(local))
+
+    # then
+    assert addresses == ("203.0.113.7", "127.0.0.1")

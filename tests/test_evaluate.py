@@ -1,6 +1,6 @@
 import pytest
 
-from synergy.api.accounts import LinkError, QuotaExceeded
+from synergy.api.accounts import LinkError, QuotaExceeded, RiotBusy
 from synergy.api.evaluate import EVAL, FAILED, NAMES, READY, Evaluations, shape
 
 START = 1_790_000_000.0
@@ -185,3 +185,71 @@ def test_a_refresh_waits_two_weeks_after_the_newest_game_we_hold_then_pulls_agai
     assert "from the last two weeks" in str(fresh.value) and "after October 2" in str(fresh.value)
     assert "newest games" in str(pulling.value) and launched == ["puuid-thiqums", "puuid-thiqums"]
     assert state["status"] == "requested" and state["started"] == int(START) and "still pulling" in str(busy.value)
+
+
+def test_visitors_have_their_own_daily_allowance_of_new_players_apart_from_accounts():
+    # given
+    launched = []
+    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, daily=1, per_user=1, per_visitor=1, visitors_daily=2, clock=lambda: START)
+
+    # when
+    with pytest.raises(LinkError):
+        evaluations.refuse("visitor#one", "a#na1")
+    with pytest.raises(QuotaExceeded) as personal:
+        evaluations.refuse("visitor#one", "b#na1")
+    with pytest.raises(LinkError):
+        evaluations.refuse("visitor#two", "b#na1")
+    with pytest.raises(LinkError) as everyone:
+        evaluations.refuse("visitor#three", "c#na1")
+    with pytest.raises(LinkError) as account:
+        evaluations.refuse("user-1", "c#na1")
+
+    # then
+    assert launched == ["puuid-a", "puuid-b", "puuid-c"]
+    assert "1 new players a day. Sign in for more." in str(personal.value)
+    assert "as many new players as we can today. Sign in for more." in str(everyone.value) and "pulling their last" in str(account.value)
+
+
+def test_a_visitor_spends_a_new_player_only_when_one_is_queued():
+    # given
+    launched = []
+    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, per_visitor=1, visitors_daily=5, clock=lambda: START)
+    with pytest.raises(LinkError):
+        evaluations.refuse("visitor#one", "thiqums#crocs")
+
+    def broken(puuid):
+        raise RuntimeError("no queue")
+
+    # when
+    with pytest.raises(LinkError) as pending:
+        evaluations.refuse("visitor#two", "thiqums#euw")
+    evaluations.launch = broken
+    with pytest.raises(LinkError) as failed:
+        evaluations.refuse("visitor#two", "other#na1")
+
+    # then
+    assert launched == ["puuid-thiqums"] and "still pulling thiqums#CROCS's games" in str(pending.value) and "couldn't start pulling" in str(failed.value)
+    assert evaluations.table.get("visitor#two", f"evals#{evaluations.day()}")["used"] == 0
+    assert evaluations.table.get(EVAL, f"visitors#{evaluations.day()}")["used"] == 1
+
+
+def test_a_visitor_asks_riot_through_the_visitor_budget_and_a_busy_one_gives_the_slots_back():
+    # given
+    launched, asked = [], []
+
+    def visitors(calls):
+        asked.append(calls)
+        raise RiotBusy("Busy, try again in a minute.")
+
+    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, visitor_budget=visitors, clock=lambda: START)
+
+    # when
+    with pytest.raises(RiotBusy):
+        evaluations.refuse("visitor#one", "a#na1")
+    with pytest.raises(LinkError):
+        evaluations.refuse("user-1", "a#na1")
+
+    # then
+    assert asked == [1] and launched == ["puuid-a"] and evaluations.riot.calls == 1
+    assert evaluations.table.get("visitor#one", f"evals#{evaluations.day()}")["used"] == 0
+    assert evaluations.table.get(EVAL, f"visitors#{evaluations.day()}")["used"] == 0

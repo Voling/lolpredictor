@@ -99,3 +99,32 @@ def test_the_public_list_drops_names_and_an_old_single_champion_is_not_shown():
     # then
     assert "left_name" not in shared and "right_name" not in shared and shared["left_champions"] == "Ezreal,Caitlyn,Sivir"
     assert legacy["left"] == {"champions": [], "tier": "MASTER", "division": None, "position": "BOTTOM"} and legacy["score"] == 51.4
+
+
+def _between(one, two):
+    return {"score": 50.0, "positions": {"left": "TOP", "right": "JUNGLE"}, "players": [{"riot_id": one}, {"riot_id": two}]}
+
+
+def test_a_check_keeps_whether_it_was_the_accounts_own_and_older_checks_are_matched_by_name():
+    # given
+    now = {"t": START}
+    history = History(_Table(), clock=lambda: now["t"])
+    saved = [
+        ("stored-yes", "pair", _between("X#NA1", "Y#NA1"), True),
+        ("stored-no", "pair", _between("Me#NA1", "B#NA1"), False),
+        ("old-pair", "pair", _between("X#NA1", "me#na1"), None),
+        ("old-friends", "friends", {"me": {"riot_id": "Me#NA1"}, "friends": [{"riot_id": "A#NA1", "score": 55.0}]}, None),
+        ("old-other", "friends", {"me": {"riot_id": "A#NA1"}, "friends": [{"riot_id": "Me#NA1", "score": 52.0}]}, None),
+    ]
+
+    # when
+    for request, kind, found, mine in saved:
+        now["t"] += 60
+        history.save("user-1", kind, request, found, mine=mine)
+    linked = history.list("user-1", linked="ME#na1")
+    unlinked = history.list("user-1")
+
+    # then
+    assert [row["id"].split("#")[1] for row in linked] == ["old-other", "old-friends", "old-pair", "stored-no", "stored-yes"]
+    assert [row["mine"] for row in linked] == [False, True, True, False, True]
+    assert [row["mine"] for row in unlinked] == [False, False, False, False, True]

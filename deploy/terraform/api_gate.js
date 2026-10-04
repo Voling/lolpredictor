@@ -1,17 +1,18 @@
-var OPEN = { "/api/recent": true };
-var OPEN_PREFIXES = ["/api/shared/"];
+var ACCOUNT = { "/api/me": true, "/api/history": true, "/api/link": true, "/api/link/verify": true, "/api/status": true };
+var ACCOUNT_PREFIXES = ["/api/history/"];
 
-function open(uri) {
-  if (OPEN[uri]) return true;
-  for (var i = 0; i < OPEN_PREFIXES.length; i++) {
-    if (uri.indexOf(OPEN_PREFIXES[i]) === 0 && uri.length > OPEN_PREFIXES[i].length) return true;
+function needsAccount(uri) {
+  if (ACCOUNT[uri]) return true;
+  for (var i = 0; i < ACCOUNT_PREFIXES.length; i++) {
+    if (uri.indexOf(ACCOUNT_PREFIXES[i]) === 0) return true;
   }
   return false;
 }
 
 function handler(event) {
   var request = event.request;
-  if (open(request.uri) && (request.method === "GET" || request.method === "HEAD")) {
+  request.headers["x-viewer-ip"] = { value: event.viewer.ip };
+  if (!needsAccount(request.uri)) {
     return request;
   }
   var token = request.headers["x-auth"];

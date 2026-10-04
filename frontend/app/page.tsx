@@ -21,18 +21,17 @@ export default function Home() {
   const canAsk = !authEnabled || account.signedIn;
   const { data: status, error } = useRemote(canAsk ? getStatus : null, `status|${canAsk}`);
   const { data: recent } = useRemote(getRecent, "recent");
-  const daily = account.me?.daily;
 
   return (
     <main>
       <h1>lolpredictor</h1>
       <p className="sub">Find out which friends you play best with in ranked.</p>
-      <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/pair/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}{authEnabled && <Link href="/history/">Past checks</Link>}</p>
+      <p className="nav"><Link href="/friends/">Rank friends</Link><Link href="/duo/">Check a duo</Link>{authEnabled && <Link href="/account/">Account</Link>}{authEnabled && account.signedIn && <Link href="/history/">Past checks</Link>}</p>
 
       <h3>How to use it</h3>
-      {authEnabled && <p>Sign in and link your Riot account first. Each account gets {daily ? `${daily} duo checks a day` : "a daily allowance of duo checks"}.</p>}
+      {authEnabled && <p>You don&apos;t need an account. Sign in to save your checks.</p>}
       <p><Link href="/friends/">Rank your friends</Link>. Enter your Riot ID and your friends&apos; Riot IDs. Each friend gets a score.</p>
-      <p><Link href="/pair/">Check one duo</Link>. Enter your Riot ID and one friend&apos;s Riot ID to get a score for the two of you.</p>
+      <p><Link href="/duo/">Check one duo</Link>. Enter your Riot ID and one friend&apos;s Riot ID to get a score for the two of you.</p>
 
       <h3>What the score means</h3>
       <p>50 is an average duo for your two positions. Higher is better.</p>
@@ -49,7 +48,7 @@ export default function Home() {
         </>
       )}
 
-      <h3>Top Challenger pairs</h3>
+      <h3>Top Challenger duos</h3>
       <DemoCarousel />
 
       <h3>How it works</h3>

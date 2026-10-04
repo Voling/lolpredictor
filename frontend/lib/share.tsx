@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 export function shareUrl(token: string): string {
-  return `${window.location.origin}/pair/?share=${encodeURIComponent(token)}`;
+  return `${window.location.origin}/duo/?share=${encodeURIComponent(token)}`;
 }
 
 export function ShareLink({ token }: { token: string }) {

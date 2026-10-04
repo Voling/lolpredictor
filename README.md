@@ -1,6 +1,8 @@
 # lolpredictor
 
-Ranks which friends a League of Legends player should queue with. Each friend gets one score for the two of you as a duo, built from how each of you plays in other games, how your styles fit, and how you did together at 20 minutes when you have played together, calibrated on matches the model never saw. Run everything from the repo root with the virtualenv active and `RIOT_API_KEY` in `.env`.
+Scores League of Legends duos. The score predicts how far ahead the duo's two positions will be in gold at 20 minutes, from each player's other games and any games they played together.
+
+Run everything from the repo root with the virtualenv active and `RIOT_API_KEY` in `.env`.
 
 | Command | What it does |
 |---|---|

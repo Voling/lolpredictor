@@ -4,7 +4,7 @@ const ME = "bblskibs#gotg";
 const DEEP = "Gryffinn#NA1";
 const THIN = "ethnvo#goat";
 const SAME_POSITION = "KFN Omelas#DAZE";
-const VERDICTS = /Good|Ok pairing|I've seen better|Definitely reconsider.../;
+const VERDICTS = /Good|Ok duo|I've seen better|Definitely reconsider.../;
 
 test("the api answers its health check and refuses an unknown player by name", async ({ request }) => {
   // given
@@ -61,9 +61,9 @@ test("friends are ranked by one duo score with a verdict and an unknown friend k
   await expect(rows.nth(2)).toContainText("Not in our data yet.");
 });
 
-test("a pair reads as one score with a verdict and a projected lead", async ({ page }) => {
+test("a duo reads as one score with a verdict and a projected lead", async ({ page }) => {
   // given
-  await page.goto("/pair/");
+  await page.goto("/duo/");
   await page.getByLabel("Your Riot ID").fill(ME);
   await page.getByLabel("Friend's Riot ID").fill(THIN);
 
@@ -81,7 +81,7 @@ test("two players who share a main position are refused with a plain reason", as
   const query = new URLSearchParams({ a: ME, b: SAME_POSITION });
 
   // when
-  await page.goto(`/pair/?${query}`);
+  await page.goto(`/duo/?${query}`);
 
   // then
   await expect(page.getByText("Can't score this duo.")).toBeVisible();
@@ -93,7 +93,7 @@ test("a duo score built on few games in a position says it is rough", async ({ p
   const query = new URLSearchParams({ a: ME, b: THIN, a_position: "mid", b_position: "jungle" });
 
   // when
-  await page.goto(`/pair/?${query}`);
+  await page.goto(`/duo/?${query}`);
 
   // then
   await expect(page.getByRole("heading", { level: 2 })).toContainText(/Your duo score: \d+/);

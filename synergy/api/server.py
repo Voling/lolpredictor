@@ -6,7 +6,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Path, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Path, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -18,11 +18,11 @@ from ..ml import score
 from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, epoch_of, get_service, reload_service, riot_id
 from ..ml.serving import champions_of, warm
 from ..pipeline import served_summary
-from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, cognito_verifier, request_key, ssm_key
+from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, RiotBusy, cognito_verifier, request_key, riot_id_of, ssm_key
 from .artifacts import bucket_of, current_run, fetch_run
 from .customs import SharedCustoms
-from .evaluate import EVAL, GIB, READY, REQUESTED, Evaluations, shape, store_size
-from .history import History, duo_view, public
+from .evaluate import EVAL, GIB, READY, REQUESTED, UNDER_WAY, Evaluations, shape, store_size
+from .history import History, duo_view, public, summary_of
 from .shares import Shares, code_version, pair_puuids, stamp
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ RUN_SECONDS = 60
 RECENT_CACHE = "public, max-age=30"
 _accounts: Accounts | None = None
 _customs: SharedCustoms | None = None
+_stored_customs: SharedCustoms | None = None
 _evaluations: Evaluations | None = None
 _history: History | None = None
 _shares: Shares | None = None
@@ -78,7 +79,16 @@ def get_accounts() -> Accounts:
         settings = get_settings()
         key = ssm_key(settings.riot_key_parameter) if settings.riot_key_parameter else (lambda: settings.riot_api_key)
         riot = RiotAccounts(key, settings.platform, settings.region)
-        _accounts = Accounts(DynamoTable(settings.accounts_table), riot, settings.daily_duos, settings.link_attempts, settings.riot_budget)
+        _accounts = Accounts(
+            DynamoTable(settings.accounts_table),
+            riot,
+            settings.daily_duos,
+            settings.link_attempts,
+            settings.riot_budget,
+            visitor_duos=settings.visitor_duos,
+            anonymous_duos=settings.anonymous_duos,
+            visitor_riot_budget=settings.visitor_riot_budget,
+        )
     return _accounts
 
 
@@ -91,9 +101,25 @@ def get_customs() -> SharedCustoms:
     return _customs
 
 
+def get_stored_customs() -> SharedCustoms:
+    global _stored_customs
+    if _stored_customs is None:
+        settings = get_settings()
+        _stored_customs = SharedCustoms(get_accounts().riot, DynamoTable(settings.accounts_table), lambda calls: False, settings.target_minute)
+    return _stored_customs
+
+
 def _customs_between(left: str, right: str) -> list[dict]:
+    return _games_between(get_customs, left, right)
+
+
+def _stored_customs_between(left: str, right: str) -> list[dict]:
+    return _games_between(get_stored_customs, left, right)
+
+
+def _games_between(customs, left: str, right: str) -> list[dict]:
     try:
-        games, complete = get_customs().between(left, right)
+        games, complete = customs().between(left, right)
         if not complete:
             logger.info("customs between %s and %s are incomplete this time", left[:8], right[:8])
         return games
@@ -125,6 +151,9 @@ def get_evaluations() -> Evaluations:
             cap_bytes=settings.evaluated_cap_gb * GIB,
             daily=settings.daily_evaluations,
             per_user=settings.user_evaluations,
+            per_visitor=settings.visitor_evaluations,
+            visitors_daily=settings.anonymous_evaluations,
+            visitor_budget=accounts.visitor_riot_calls,
         )
     return _evaluations
 
@@ -137,6 +166,8 @@ def _pending(user: str, name: str) -> dict | None:
         get_evaluations().refuse(user, name)
     except (LinkError, QuotaExceeded) as exc:
         message = str(exc)
+    except RiotBusy:
+        raise
     except Exception:
         logger.exception("could not request an evaluation")
         return None
@@ -206,23 +237,28 @@ def _viewer(x_auth: str | None, owner: str) -> str:
         return "anonymous"
 
 
-def _shared_pair(x_auth: str | None, query: tuple, check) -> dict:
+def _shared_pair(x_auth: str | None, query: tuple, check, name: str | None = None) -> dict:
     user = get_verifier().subject(x_auth)
-    query = (*query, get_accounts().linked_puuid(user))
+    linked = get_accounts().linked_puuid(user)
+    one = linked if linked and not name else riot_id_of(name or "")
+    return _saved_pair(user, (*query, one), check, _Member(user, linked).left)
+
+
+def _saved_pair(owner: str, query: tuple, check, left=dict) -> dict:
     shares = get_shares()
     try:
-        saved = shares.find(user, query)
+        saved = shares.find(owner, query)
         fresh = saved is not None and saved["version"] == _version(pair_puuids(saved["payload"]))
     except Exception:
         logger.exception("could not read the saved pair")
         saved, fresh = None, False
     if fresh:
         logger.info("share served share=%s viewer=owner pair=%s age=%ds", saved["token"], _pair_names(saved["payload"]), int(time.time()) - saved["at"])
-        return {**saved["payload"], "share": saved["token"], "remaining": get_accounts().status(user)["remaining"]}
+        return {**saved["payload"], "share": saved["token"], **left()}
     found = check()
     if found.get("interaction"):
         try:
-            found["share"] = shares.save(user, query, found, _version(pair_puuids(found)))
+            found["share"] = shares.save(owner, query, found, _version(pair_puuids(found)))
         except Exception:
             logger.exception("could not save the pair for sharing")
     return found
@@ -240,11 +276,17 @@ def _open_share(share: str, x_auth: str | None) -> dict:
     return {**payload, "shared_at": saved["at"]}
 
 
-def _save_check(user: str, kind: str, request: str, found: dict, duos: list[dict]) -> None:
+def _save_check(user: str, kind: str, request: str, found: dict, duos: list[dict], mine: bool | None = None) -> None:
     try:
-        get_history().save(user, kind, request, found, duos)
+        get_history().save(user, kind, request, found, duos, mine)
     except Exception:
         logger.exception("could not save the check")
+
+
+def _past_checks(user: str) -> dict:
+    link = get_accounts().link(user)
+    linked = link.get("riot_id") if link.get("verified") else None
+    return {"checks": get_history().list(user, linked=linked), "linked": bool(linked)}
 
 
 def _duos(remember, found: dict, me: str, service) -> list[dict]:
@@ -311,49 +353,153 @@ def _handle(call):
         raise HTTPException(400, str(exc)) from exc
 
 
-def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda found: 0, remember=lambda found, me, service: []) -> dict:
+class _Member:
+    def __init__(self, user: str, linked: str | None = None):
+        self.owner, self.linked = user, linked
+
+    def spend(self, count: int, request: str) -> tuple[int, bool]:
+        return get_accounts().spend(self.owner, count, request)
+
+    def refund(self, count: int, request: str | None = None) -> None:
+        get_accounts().refund(self.owner, count, request)
+
+    def keep(self, kind: str, request: str, found: dict, duos: list[dict], me: str) -> None:
+        _save_check(self.owner, kind, request, found, duos, None if self.linked is None else self.linked in {me, *pair_puuids(found)})
+
+    def left(self, remaining: int | None = None) -> dict:
+        return {"remaining": get_accounts().status(self.owner)["remaining"] if remaining is None else remaining}
+
+    def kept(self, pendings: list) -> int:
+        return 0
+
+
+class _Visitor:
+    def __init__(self, visitor: str):
+        self.owner = visitor
+
+    def spend(self, count: int, request: str) -> tuple[int, bool]:
+        return 0, get_accounts().visitor_spend(self.owner, count, request)
+
+    def refund(self, count: int, request: str | None = None) -> None:
+        get_accounts().visitor_refund(self.owner, count, request)
+
+    def keep(self, kind: str, request: str, found: dict, duos: list[dict], me: str) -> None:
+        logger.info("visitor check kind=%s players=%s", kind, " + ".join(str(name) for name in summary_of(kind, found)["names"]))
+
+    def left(self, remaining: int | None = None) -> dict:
+        return {}
+
+    def kept(self, pendings: list) -> int:
+        return sum(1 for pending in pendings if pending and pending["status"] not in UNDER_WAY)
+
+
+def _metered(token: str | None, query: tuple, count: int, call, unscored=lambda found: 0, remember=lambda found, me, service: [], name: str | None = None) -> dict:
     user = get_verifier().subject(token)
     accounts = get_accounts()
-    me = accounts.linked_puuid(user)
+    linked = accounts.linked_puuid(user)
+    member = _Member(user, linked)
     service = _ready()
-    if me not in service.profiles.index and service.adopt_puuid(me) is None:
-        pending = _pending(user, accounts.link(user).get("riot_id") or me)
+    if name or linked is None:
+        name = riot_id_of(name or "")
+        return _scored(member, _resolved(name), service, (*query, name), count, call, unscored, remember)
+    if linked not in service.profiles.index and service.adopt_puuid(linked) is None:
+        pending = _pending(user, accounts.link(user).get("riot_id") or linked)
         if pending:
             return {"score": None, "pending": pending, "remaining": accounts.status(user)["remaining"]}
         raise LinkError("Your Riot account isn't in our data yet.")
-    request = request_key(*query[:1], accounts.day(), *query[1:])
-    left, charged = accounts.spend(user, count, request)
+    return _scored(member, lambda service: linked, service, query, count, call, unscored, remember)
+
+
+def _visited(visitor: str, name: str | None, query: tuple, count: int, call, unscored=lambda found: 0, remember=lambda found, me, service: []) -> dict:
+    name = riot_id_of(name or "")
+    return _scored(_Visitor(visitor), _resolved(name), _ready(), query, count, call, unscored, remember)
+
+
+def _resolved(name: str):
+    return lambda service: service.resolve(name)["puuid"]
+
+
+def _pending_refunded(asker, name: str, charged: int, request: str) -> dict | None:
+    pending = None
     try:
+        pending = _pending(asker.owner, name)
+        return pending
+    finally:
+        if charged:
+            asker.refund(charged - asker.kept([pending]), request)
+
+
+def _scored(asker, anchor, service, query: tuple, count: int, call, unscored, remember) -> dict:
+    request = request_key(*query[:1], get_accounts().day(), *query[1:])
+    left, charged = asker.spend(count, request)
+    try:
+        me = anchor(service)
         found = call(me, service)
     except UnknownPlayer as exc:
-        if charged:
-            accounts.refund(user, count, request)
-        pending = _pending(user, str(exc))
+        pending = _pending_refunded(asker, str(exc), count if charged else 0, request)
         if pending:
-            return {"score": None, "pending": pending, "remaining": accounts.status(user)["remaining"]}
+            return {"score": None, "pending": pending, **asker.left()}
         raise
     except Exception:
         if charged:
-            accounts.refund(user, count, request)
+            asker.refund(count, request)
         raise
-    if get_settings().evaluate_queue:
-        for row in found.get("friends", []):
-            if row.get("note") == UNKNOWN_NOTE and row.get("riot_id"):
-                pending = _pending(user, row["riot_id"])
-                if pending:
-                    row["pending"] = pending
-                    row["note"] = pending.get("message") or row["note"]
+    pendings = []
+    try:
+        if get_settings().evaluate_queue:
+            for row in found.get("friends", []):
+                if row.get("note") == UNKNOWN_NOTE and row.get("riot_id"):
+                    pending = _pending(asker.owner, row["riot_id"])
+                    if pending:
+                        pendings.append(pending)
+                        row["pending"] = pending
+                        row["note"] = pending.get("message") or row["note"]
+    except Exception:
+        if charged:
+            asker.refund(count - asker.kept(pendings), request)
+        raise
     duos = _duos(remember, found, me, service)
-    _save_check(user, query[0], request, found, duos)
-    back = unscored(found) if charged else 0
+    asker.keep(query[0], request, found, duos, me)
+    back = unscored(found) - asker.kept(pendings) if charged else 0
     if back:
-        accounts.refund(user, back)
+        asker.refund(back)
     if charged and duos:
         try:
-            accounts.remember([public(duo) for duo in duos])
+            get_accounts().remember([public(duo) for duo in duos])
         except Exception:
             logger.exception("could not remember the duo")
-    return {**found, "remaining": left + back}
+    return {**found, **asker.left(left + back)}
+
+
+_unstamped = False
+
+
+def _address(request: Request) -> str:
+    global _unstamped
+    stamped = request.headers.get("x-viewer-ip")
+    if stamped:
+        return stamped
+    if not _unstamped:
+        _unstamped = True
+        logger.warning("no x-viewer-ip header, visitors are counted by the connection address")
+    return request.client.host if request.client else "unknown"
+
+
+def _visitor(request: Request) -> str:
+    return get_accounts().visitor(_address(request))
+
+
+def _visitor_pair(visitor: str, a: str | None, b: str, a_position: str | None, b_position: str | None) -> dict:
+    query = ("pair", a, b, a_position, b_position)
+
+    def check() -> dict:
+        return _visited(visitor, a, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_stored_customs_between), remember=_remember_pair)
+
+    return _saved_pair(visitor, query, check)
+
+
+def _unscored_friends(found: dict) -> int:
+    return sum(1 for row in found["friends"] if row.get("score") is None)
 
 
 def seat_memory(profile, position: str, prefix: str, settings) -> dict:
@@ -400,9 +546,8 @@ def _public_routes(app: FastAPI) -> None:
         return _handle(lambda: get_accounts().status(get_verifier().subject(x_auth)))
 
     @app.get("/api/evaluations")
-    def evaluations(names: str = Query("", max_length=LIMIT * 12), x_auth: str | None = Header(None)):
+    def evaluations(names: str = Query("", max_length=LIMIT * 12)):
         def read():
-            get_verifier().subject(x_auth)
             wanted = [name.strip() for name in names.split(",") if name.strip()][: get_settings().max_friends + 1]
             return {"players": [shape(get_evaluations().lookup(name), name) for name in wanted]}
 
@@ -410,7 +555,7 @@ def _public_routes(app: FastAPI) -> None:
 
     @app.get("/api/history")
     def history(x_auth: str | None = Header(None)):
-        return _handle(lambda: {"checks": get_history().list(get_verifier().subject(x_auth))})
+        return _handle(lambda: _past_checks(get_verifier().subject(x_auth)))
 
     @app.get("/api/history/{check_id}")
     def saved_check(check_id: str = Path(max_length=CHECK_ID), x_auth: str | None = Header(None)):
@@ -423,8 +568,8 @@ def _public_routes(app: FastAPI) -> None:
         return _handle(read)
 
     @app.post("/api/refresh")
-    def refresh(request: RefreshRequest, x_auth: str | None = Header(None)):
-        return _handle(lambda: _refresh(get_verifier().subject(x_auth), request.riot_id))
+    def refresh(body: RefreshRequest, request: Request, x_auth: str | None = Header(None)):
+        return _handle(lambda: _refresh(get_verifier().subject(x_auth) if x_auth else _visitor(request), body.riot_id))
 
     @app.get("/api/recent")
     def recent(response: Response):
@@ -441,17 +586,21 @@ def _public_routes(app: FastAPI) -> None:
 
     @app.get("/api/pair")
     def pair(
+        request: Request,
         b: str = Query(max_length=LIMIT),
+        a: str | None = Query(None, max_length=LIMIT),
         a_position: str | None = Query(None, max_length=POSITION),
         b_position: str | None = Query(None, max_length=POSITION),
         x_auth: str | None = Header(None),
     ):
+        if not x_auth:
+            return _handle(lambda: _visitor_pair(_visitor(request), a, b, a_position, b_position))
         query = ("pair", b, a_position, b_position)
 
         def check() -> dict:
-            return _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_customs_between), remember=_remember_pair)
+            return _metered(x_auth, query, 1, lambda me, service: service.pair_score(me, b, a_position, b_position, details=False, customs=_customs_between), remember=_remember_pair, name=a)
 
-        return _handle(lambda: _shared_pair(x_auth, query, check))
+        return _handle(lambda: _shared_pair(x_auth, query, check, a))
 
     @app.get("/api/shared/{share}")
     def shared(share: str = Path(max_length=SHARE_ID), x_auth: str | None = Header(None)):
@@ -459,22 +608,37 @@ def _public_routes(app: FastAPI) -> None:
 
     @app.get("/api/friends")
     def friends(
+        request: Request,
         friends: list[str] = Query(...),
+        me: str | None = Query(None, max_length=LIMIT),
         me_position: str | None = Query(None, max_length=POSITION),
         x_auth: str | None = Header(None),
     ):
         most = get_settings().max_friends
         if len(friends) > most or any(len(friend) > LIMIT for friend in friends):
             raise HTTPException(400, f"Rank up to {most} friends at a time.")
-        query = ("friends", me_position, *sorted(" ".join(friend.lower().split()) for friend in friends))
+        names = sorted(" ".join(friend.lower().split()) for friend in friends)
+        if not x_auth:
+            return _handle(
+                lambda: _visited(
+                    _visitor(request),
+                    me,
+                    ("friends", me, me_position, *names),
+                    len(friends),
+                    lambda anchor, service: service.friends(anchor, friends, me_position, details=False, customs=_stored_customs_between),
+                    _unscored_friends,
+                    remember=_remember_friends,
+                )
+            )
         return _handle(
             lambda: _metered(
                 x_auth,
-                query,
+                ("friends", me_position, *names),
                 len(friends),
-                lambda me, service: service.friends(me, friends, me_position, details=False, customs=_customs_between),
-                lambda found: sum(1 for row in found["friends"] if row.get("score") is None),
+                lambda anchor, service: service.friends(anchor, friends, me_position, details=False, customs=_customs_between),
+                _unscored_friends,
                 remember=_remember_friends,
+                name=me,
             )
         )
 
