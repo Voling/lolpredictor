@@ -1,36 +1,20 @@
 import pytest
 
-from synergy.api.accounts import LinkError, QuotaExceeded, RiotBusy
-from synergy.api.evaluate import EVAL, FAILED, NAMES, READY, Evaluations, shape
+from synergy.api.accounts import RIOT_DOWN, LinkError, LocalTable, QuotaExceeded, RateLimited, RiotBusy, RiotUnavailable
+from synergy.api.evaluate import EVAL, FAILED, NAMES, PLAYER, READY, REQUESTED, SYSTEM, SYSTEM_PROBLEM, Evaluations, Progress, fail_evaluation, shape
 
 START = 1_790_000_000.0
 
 
-class _Table:
-    def __init__(self):
-        self.items = {}
-
-    def get(self, pk, sk):
-        found = self.items.get((pk, sk))
-        return dict(found) if found else None
-
-    def put(self, pk, sk, values):
-        self.items[(pk, sk)] = dict(values)
-
-    def add(self, pk, sk, amount, limit, expires):
-        found = self.items.get((pk, sk))
-        if found is not None and found["used"] > limit - amount:
-            return None
-        used = (found or {"used": 0})["used"] + amount
-        self.items[(pk, sk)] = {"used": used, "expires": expires}
-        return used
-
-
 class _Riot:
-    def __init__(self):
-        self.calls = 0
+    def __init__(self, busy=False, down=False):
+        self.calls, self.busy, self.down = 0, busy, down
 
     def account(self, riot_id):
+        if self.down:
+            raise RiotUnavailable(420.0)
+        if self.busy:
+            raise RateLimited(30.0)
         self.calls += 1
         name, _, tag = riot_id.partition("#")
         if name == "ghost":
@@ -40,7 +24,7 @@ class _Riot:
 
 def _evaluations(launched=None, clock=lambda: START, size=0, daily=2, per_user=1):
     launched = [] if launched is None else launched
-    return Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, store_size=lambda: size, daily=daily, per_user=per_user, clock=clock)
+    return Evaluations(LocalTable(), _Riot(), launch=launched.append, store_size=lambda: size, daily=daily, per_user=per_user, clock=clock)
 
 
 def test_an_unknown_player_is_requested_once_and_the_task_is_started():
@@ -123,14 +107,16 @@ def test_a_launch_that_fails_marks_the_request_failed():
     def broken(puuid):
         raise RuntimeError("no cluster")
 
-    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=broken, clock=lambda: START)
+    evaluations = Evaluations(LocalTable(), _Riot(), launch=broken, clock=lambda: START)
 
     # when
     with pytest.raises(LinkError) as refused:
         evaluations.refuse("user-1", "a#na1")
 
     # then
-    assert "couldn't start pulling" in str(refused.value) and evaluations.status("puuid-a")["status"] == FAILED
+    state = evaluations.status("puuid-a")
+    assert "couldn't start pulling a#NA1's games" in str(refused.value) and (state["status"], state["kind"], state["refunded"]) == (FAILED, SYSTEM, 1)
+    assert evaluations.table.get("user#user-1", f"evals#{evaluations.day()}")["used"] == 0 and evaluations.table.get(EVAL, f"day#{evaluations.day()}")["used"] == 0
 
 
 def test_a_refused_request_without_a_state_is_shaped_as_not_started_with_the_reason():
@@ -190,7 +176,7 @@ def test_a_refresh_waits_two_weeks_after_the_newest_game_we_hold_then_pulls_agai
 def test_visitors_have_their_own_daily_allowance_of_new_players_apart_from_accounts():
     # given
     launched = []
-    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, daily=1, per_user=1, per_visitor=1, visitors_daily=2, clock=lambda: START)
+    evaluations = Evaluations(LocalTable(), _Riot(), launch=launched.append, daily=1, per_user=1, per_visitor=1, visitors_daily=2, clock=lambda: START)
 
     # when
     with pytest.raises(LinkError):
@@ -213,7 +199,7 @@ def test_visitors_have_their_own_daily_allowance_of_new_players_apart_from_accou
 def test_a_visitor_spends_a_new_player_only_when_one_is_queued():
     # given
     launched = []
-    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, per_visitor=1, visitors_daily=5, clock=lambda: START)
+    evaluations = Evaluations(LocalTable(), _Riot(), launch=launched.append, per_visitor=1, visitors_daily=5, clock=lambda: START)
     with pytest.raises(LinkError):
         evaluations.refuse("visitor#one", "thiqums#crocs")
 
@@ -241,7 +227,7 @@ def test_a_visitor_asks_riot_through_the_visitor_budget_and_a_busy_one_gives_the
         asked.append(calls)
         raise RiotBusy("Busy, try again in a minute.")
 
-    evaluations = Evaluations(_Table(), _Riot(), lambda calls: True, launch=launched.append, visitor_budget=visitors, clock=lambda: START)
+    evaluations = Evaluations(LocalTable(), _Riot(), launch=launched.append, visitor_budget=visitors, clock=lambda: START)
 
     # when
     with pytest.raises(RiotBusy):
@@ -253,3 +239,126 @@ def test_a_visitor_asks_riot_through_the_visitor_budget_and_a_busy_one_gives_the
     assert asked == [1] and launched == ["puuid-a"] and evaluations.riot.calls == 1
     assert evaluations.table.get("visitor#one", f"evals#{evaluations.day()}")["used"] == 0
     assert evaluations.table.get(EVAL, f"visitors#{evaluations.day()}")["used"] == 0
+
+
+def test_a_new_player_riot_refuses_answers_busy_and_gives_the_slots_back():
+    # given
+    launched = []
+    evaluations = Evaluations(LocalTable(), _Riot(busy=True), launch=launched.append, clock=lambda: START)
+
+    # when
+    with pytest.raises(LinkError) as member:
+        evaluations.refuse("user-1", "a#na1")
+    with pytest.raises(RiotBusy) as visitor:
+        evaluations.refuse("visitor#one", "a#na1")
+
+    # then
+    assert "Riot is busy" in str(member.value) and str(visitor.value) == "Busy, try again in a minute." and launched == []
+    assert evaluations.table.get("user#user-1", f"evals#{evaluations.day()}")["used"] == 0
+    assert evaluations.table.get("visitor#one", f"evals#{evaluations.day()}")["used"] == 0
+
+
+def test_a_dead_riot_key_answers_plainly_gives_the_slots_back_and_queues_nothing():
+    # given
+    launched = []
+    evaluations = Evaluations(LocalTable(), _Riot(down=True), launch=launched.append, clock=lambda: START)
+
+    # when
+    with pytest.raises(LinkError) as member:
+        evaluations.refuse("user-1", "a#na1")
+    with pytest.raises(LinkError) as visitor:
+        evaluations.refuse("visitor#one", "a#na1")
+    with pytest.raises(LinkError) as refreshed:
+        evaluations.refresh("user-1", "a#na1")
+
+    # then
+    assert str(member.value) == str(visitor.value) == str(refreshed.value) == RIOT_DOWN == "Riot isn't answering us right now. Try again later."
+    assert launched == [] and evaluations.status("puuid-a") is None
+    assert evaluations.table.get("user#user-1", f"evals#{evaluations.day()}")["used"] == 0 and evaluations.table.get(EVAL, f"day#{evaluations.day()}")["used"] == 0
+    assert evaluations.table.get("visitor#one", f"evals#{evaluations.day()}")["used"] == 0 and evaluations.table.get(EVAL, f"visitors#{evaluations.day()}")["used"] == 0
+
+
+def test_only_a_player_failure_holds_the_player_for_a_day_while_ours_can_be_tried_again_at_once():
+    # given
+    launched = []
+    now = {"t": START}
+    evaluations = _evaluations(launched, clock=lambda: now["t"], daily=10, per_user=10)
+    with pytest.raises(LinkError):
+        evaluations.refuse("user-1", "a#na1")
+    with pytest.raises(LinkError):
+        evaluations.refuse("user-1", "b#na1")
+    now["t"] += 600
+    fail_evaluation(evaluations.table, "puuid-a", "Riot returned no ranked games for this player.", PLAYER, clock=lambda: now["t"])
+    fail_evaluation(evaluations.table, "puuid-b", SYSTEM_PROBLEM, SYSTEM, clock=lambda: now["t"])
+
+    # when
+    with pytest.raises(LinkError) as held:
+        evaluations.refuse("user-1", "a#na1")
+    with pytest.raises(LinkError) as again:
+        evaluations.refuse("user-1", "b#na1")
+    now["t"] += 86400
+    with pytest.raises(LinkError) as tomorrow:
+        evaluations.refuse("user-1", "a#na1")
+
+    # then
+    assert "couldn't pull a#NA1's games. Try again tomorrow." in str(held.value) and "pulling their last" in str(again.value)
+    assert shape(evaluations.table.get(EVAL, "puuid-b"), "b#NA1")["status"] == REQUESTED and "pulling their last" in str(tomorrow.value)
+    assert launched == ["puuid-a", "puuid-b", "puuid-b", "puuid-a"]
+
+
+def test_a_request_is_still_pulling_while_its_heartbeat_is_fresh_however_old_it_started():
+    # given
+    now = {"t": START}
+    evaluations = _evaluations(clock=lambda: now["t"], daily=10, per_user=10)
+    with pytest.raises(LinkError):
+        evaluations.refuse("user-1", "a#na1")
+    now["t"] += 3600
+    Progress(evaluations.table, "puuid-a", clock=lambda: now["t"] - 60).step("embedding")
+
+    # when
+    with pytest.raises(LinkError) as busy:
+        evaluations.refuse("user-1", "a#na1")
+
+    # then
+    assert "still pulling a#NA1's games" in str(busy.value) and evaluations.status("puuid-a")["started"] == int(START)
+
+
+def test_our_failure_gives_the_requester_their_slot_back_exactly_once_on_the_pool_they_drew_from():
+    # given
+    evaluations = _evaluations(daily=10, per_user=10)
+    evaluations.per_visitor = 10
+    for user, name in (("user-1", "a#na1"), ("visitor#one", "b#na1"), ("user-1", "c#na1")):
+        with pytest.raises(LinkError):
+            evaluations.refuse(user, name)
+    day, table = evaluations.day(), evaluations.table
+
+    # when
+    for _ in range(2):
+        fail_evaluation(table, "puuid-a", SYSTEM_PROBLEM, SYSTEM, clock=lambda: START + 60)
+        fail_evaluation(table, "puuid-b", SYSTEM_PROBLEM, SYSTEM, clock=lambda: START + 60)
+    fail_evaluation(table, "puuid-c", "Riot returned no ranked games for this player.", PLAYER, clock=lambda: START + 60)
+
+    # then
+    assert table.get("user#user-1", f"evals#{day}")["used"] == 1 and table.get(EVAL, f"day#{day}")["used"] == 1
+    assert table.get("visitor#one", f"evals#{day}")["used"] == 0 and table.get(EVAL, f"visitors#{day}")["used"] == 0
+    assert table.get(EVAL, "puuid-a")["error"] == "We hit a problem pulling a#NA1's games. Try again." and "refunded" not in table.get(EVAL, "puuid-c")
+
+
+def test_progress_is_stored_as_counts_and_the_percent_is_worked_out_when_read():
+    # given
+    table = LocalTable()
+    table.put(EVAL, "me", {"status": "requested", "riot_id": "Me#NA1", "started": int(START)})
+    progress = Progress(table, "me", clock=lambda: START)
+
+    # when
+    progress.step("fetching", 25, 50)
+    middle = table.get(EVAL, "me")
+    progress.step("embedding")
+    late = shape(table.get(EVAL, "me"), "Me#NA1")
+    progress.write(status=READY, step="ready")
+    done = shape(table.get(EVAL, "me"), "Me#NA1")
+
+    # then
+    assert "percent" not in middle and shape(middle, "Me#NA1")["percent"] == 25 and middle["riot_id"] == "Me#NA1"
+    assert late["step"] == "embedding" and late["percent"] == 92 and done["percent"] == 100
+    assert table.get(EVAL, "me")["updated"] == int(START)

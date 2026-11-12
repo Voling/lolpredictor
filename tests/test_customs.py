@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from synergy.api.accounts import LinkError
+from synergy.api.accounts import LinkError, RateLimited
 from synergy.api.customs import IDS, MATCHES, SharedCustoms, seats_at, together
 from synergy.ml.serving import DUO_RECORDS, DUO_REPORT, custom_residuals, duo_between, record_between
 
@@ -42,26 +42,33 @@ def _timeline(frames=25, gold=None):
 
 
 class _Riot:
-    def __init__(self, ids, matches, timelines):
-        self.ids, self.matches, self.timelines, self.calls = ids, matches, timelines, []
+    def __init__(self, ids, matches, timelines, allowance=None):
+        self.ids, self.matches, self.timelines, self.calls, self.allowance = ids, matches, timelines, [], allowance
+
+    def _ask(self, call):
+        if self.allowance is not None:
+            if self.allowance <= 0:
+                raise RateLimited(30.0)
+            self.allowance -= 1
+        self.calls.append(call)
 
     def match_ids(self, puuid, kind, count=100):
-        self.calls.append(("ids", puuid, kind))
+        self._ask(("ids", puuid, kind))
         return list(self.ids.get(puuid, []))
 
     def match(self, match_id):
-        self.calls.append(("match", match_id))
+        self._ask(("match", match_id))
         if match_id not in self.matches:
             raise LinkError("Riot doesn't know that Riot ID. Check the name and tag.")
         return self.matches[match_id]
 
     def timeline(self, match_id):
-        self.calls.append(("timeline", match_id))
+        self._ask(("timeline", match_id))
         return self.timelines[match_id]
 
 
-def _customs(riot, table=None, budget=lambda calls: True, clock=lambda: START):
-    return SharedCustoms(riot, table or _Table(), budget, 20, clock)
+def _customs(riot, table=None, clock=lambda: START):
+    return SharedCustoms(riot, table or _Table(), 20, clock)
 
 
 def test_shared_customs_on_the_same_team_come_back_with_gold_at_the_minute_and_enemy_counterparts():
@@ -115,21 +122,30 @@ def test_an_id_list_is_refreshed_after_six_hours():
     assert riot.calls.count(("ids", ME, "tourney")) == 2 and riot.calls.count(("match", "NA1_2")) == 1
 
 
-def test_a_refused_riot_budget_returns_what_was_found_and_says_it_is_incomplete():
+def test_a_call_riot_refuses_returns_what_was_found_and_says_it_is_incomplete():
     # given
-    allowance = {"left": 3}
-
-    def budget(calls):
-        allowance["left"] -= calls
-        return allowance["left"] >= 0
-
-    riot = _Riot({ME: ["NA1_2", "NA1_1"], FRIEND: ["NA1_2", "NA1_1"]}, {"NA1_2": _match("NA1_2"), "NA1_1": _match("NA1_1")}, {"NA1_2": _timeline(), "NA1_1": _timeline()})
+    riot = _Riot({ME: ["NA1_2", "NA1_1"], FRIEND: ["NA1_2", "NA1_1"]}, {"NA1_2": _match("NA1_2"), "NA1_1": _match("NA1_1")}, {"NA1_2": _timeline(), "NA1_1": _timeline()}, allowance=3)
 
     # when
-    games, complete = _customs(riot, budget=budget).between(ME, FRIEND)
+    games, complete = _customs(riot).between(ME, FRIEND)
 
     # then
     assert games == [] and complete is False and ("timeline", "NA1_2") not in riot.calls
+
+
+def test_stored_customs_read_only_what_is_stored_and_never_ask_riot():
+    # given
+    table = _Table()
+    riot = _Riot({ME: ["NA1_2"], FRIEND: ["NA1_2"]}, {"NA1_2": _match("NA1_2")}, {"NA1_2": _timeline()})
+    _customs(riot, table).between(ME, FRIEND)
+
+    # when
+    stored, complete = SharedCustoms(None, table, 20, lambda: START).between(ME, FRIEND)
+    unknown, partial = SharedCustoms(None, _Table(), 20, lambda: START).between(ME, FRIEND)
+
+    # then
+    assert [game["match_id"] for game in stored] == ["NA1_2"] and complete is True
+    assert unknown == [] and partial is False
 
 
 def test_short_games_odd_positions_and_other_queues_are_left_out():

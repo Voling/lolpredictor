@@ -17,6 +17,9 @@ Run everything from the repo root with the virtualenv active and `RIOT_API_KEY` 
 | `python -m synergy fits` | Save the corpus fitted worlds, kappas and tendency models after a build; the pipeline saves them itself from now on |
 | `python -m synergy bundle` | Copy those fits and the encoders next to the served run for the evaluator, then publish |
 | `python -m synergy pack` | Pack the served run's style vectors; the pipeline does this on promote, older runs need it before publishing |
+| `python -m synergy dead` | Count what reached the dead letter queues with a few sample messages; after fixing the cause, `--redrive` asks for those players again without charging anyone |
+| `python -m synergy killswitch --status` | Show whether each part of the backend is running or paused; the backend pauses itself once its cost for the month reaches `killswitch_budget`, `--restore` brings it back and `--trip` pauses it by hand |
+| `python -m synergy history "Name#TAG" --workers 4` | Pull one player's last 50 ranked games through the site's orchestrator and download workers in one process, into `data/history_cache` and never the corpus |
 | `uvicorn synergy.api.server:app` | API on :8000 |
 | `cd frontend && npm run dev` | Site on :3000 |
 | `cd frontend && npm run e2e` | Browser tests against a running stack |

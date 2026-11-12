@@ -99,10 +99,15 @@ jobs:
           docker build --platform linux/amd64 --provenance=false -f deploy/lambda.Dockerfile -t "$image" .
           docker push "$image"
           echo "uri=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >> "$GITHUB_OUTPUT"
-      - name: Point the function at the image
+      - name: Point the API, history, download and sweep functions at the image
         run: |
-          aws lambda update-function-code --function-name "${{ vars.LAMBDA_FUNCTION }}" --image-uri "${{ steps.image.outputs.uri }}" > /dev/null
-          aws lambda wait function-updated --function-name "${{ vars.LAMBDA_FUNCTION }}"
+          functions=("${{ vars.LAMBDA_FUNCTION }}" "${{ vars.HISTORY_FUNCTION }}" "${{ vars.DOWNLOADS_FUNCTION }}" "${{ vars.SWEEP_FUNCTION }}")
+          for function in "${functions[@]}"; do
+            aws lambda update-function-code --function-name "$function" --image-uri "${{ steps.image.outputs.uri }}" > /dev/null
+          done
+          for function in "${functions[@]}"; do
+            aws lambda wait function-updated --function-name "$function"
+          done
       - name: Check the API answers and refuses a bad token
         run: |
           for attempt in 1 2 3 4; do

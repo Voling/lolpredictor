@@ -79,7 +79,7 @@ resource "aws_iam_role_policy" "api" {
         Sid      = "QueueEvaluations"
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
-        Resource = aws_sqs_queue.evaluate.arn
+        Resource = aws_sqs_queue.history.arn
       },
       {
         Sid      = "EvaluatedStoreSize"
@@ -149,7 +149,8 @@ resource "aws_lambda_function" "api" {
       EVALUATED_CAP_GB   = tostring(var.evaluated_cap_gb)
       DAILY_EVALUATIONS  = tostring(var.daily_evaluations)
       USER_EVALUATIONS   = tostring(var.user_evaluations)
-      EVALUATE_QUEUE     = aws_sqs_queue.evaluate.url
+      HISTORY_QUEUE      = aws_sqs_queue.history.url
+      RIOT_LIMITS        = var.riot_limits
     }
   }
 }

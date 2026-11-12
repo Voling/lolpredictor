@@ -24,7 +24,7 @@ resource "aws_sqs_queue" "evaluate" {
   message_retention_seconds  = 86400
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.evaluate_dead.arn
-    maxReceiveCount     = 3
+    maxReceiveCount     = 5
   })
 }
 
@@ -136,11 +136,11 @@ resource "aws_iam_role_policy" "evaluator" {
       {
         Sid      = "Progress"
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
         Resource = aws_dynamodb_table.accounts.arn
       },
       {
-        Sid      = "RequeueOnInterruption"
+        Sid      = "RetryEvaluations"
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = aws_sqs_queue.evaluate.arn
@@ -225,7 +225,7 @@ resource "aws_ecs_task_definition" "evaluator" {
         { name = "EVALUATED_CAP_GB", value = tostring(var.evaluated_cap_gb) },
         { name = "ACCOUNTS_TABLE", value = aws_dynamodb_table.accounts.name },
         { name = "RIOT_KEY_PARAMETER", value = local.riot_key_parameter },
-        { name = "RIOT_BUDGET", value = tostring(var.riot_budget) },
+        { name = "RIOT_LIMITS", value = var.riot_limits },
         { name = "EVALUATE_QUEUE", value = aws_sqs_queue.evaluate.url },
         { name = "AWS_DEFAULT_REGION", value = var.region },
       ]
@@ -270,6 +270,12 @@ resource "aws_iam_role_policy" "evaluate_pipe" {
         Action   = ["iam:PassRole"]
         Resource = [aws_iam_role.evaluator.arn, aws_iam_role.evaluator_execution.arn]
       },
+      {
+        Effect    = "Allow"
+        Action    = ["ecs:TagResource"]
+        Resource  = "arn:aws:ecs:${var.region}:${var.account_id}:task/${aws_ecs_cluster.jobs.name}/*"
+        Condition = { StringEquals = { "ecs:CreateAction" = "RunTask" } }
+      },
     ]
   })
 }
@@ -302,8 +308,10 @@ resource "aws_pipes_pipe" "evaluate" {
 
   target_parameters {
     ecs_task_parameters {
-      task_definition_arn = aws_ecs_task_definition.evaluator.arn_without_revision
-      task_count          = 1
+      task_definition_arn     = aws_ecs_task_definition.evaluator.arn_without_revision
+      task_count              = 1
+      propagate_tags          = "TASK_DEFINITION"
+      enable_ecs_managed_tags = true
 
       capacity_provider_strategy {
         capacity_provider = var.evaluator_spot ? "FARGATE_SPOT" : "FARGATE"

@@ -17,7 +17,9 @@ from synergy.api.accounts import (
     Busy,
     DynamoTable,
     LinkError,
+    LocalTable,
     QuotaExceeded,
+    RateLimited,
     RiotBusy,
     SigningKeys,
     TokenVerifier,
@@ -89,24 +91,31 @@ class MemoryTable:
 
 
 class FakeRiot:
-    def __init__(self):
+    def __init__(self, allowance=None):
         self.icons = {"puuid-a": 7, "puuid-b": 3}
-        self.calls = 0
+        self.calls, self.allowance = 0, allowance
+
+    def _call(self):
+        if self.allowance is not None:
+            if self.allowance <= 0:
+                raise RateLimited(30.0)
+            self.allowance -= 1
+        self.calls += 1
 
     def account(self, riot_id):
-        self.calls += 1
+        self._call()
         name, _, tag = riot_id.partition("#")
         if name == "ghost":
             raise LinkError("Riot doesn't know that Riot ID. Check the name and tag.")
         return {"puuid": f"puuid-{name}", "gameName": name, "tagLine": tag.upper()}
 
     def icon(self, puuid):
-        self.calls += 1
+        self._call()
         return self.icons[puuid]
 
 
-def _accounts(clock=lambda: START, attempts=3, riot_budget=1000, riot_per_second=1000):
-    return Accounts(MemoryTable(), FakeRiot(), daily=20, attempts=attempts, riot_budget=riot_budget, riot_per_second=riot_per_second, clock=clock, shuffle=lambda items: list(items))
+def _accounts(clock=lambda: START, attempts=3, riot=None, checks=1000):
+    return Accounts(MemoryTable(), riot or FakeRiot(), daily=20, attempts=attempts, clock=clock, shuffle=lambda items: list(items), checks_per_minute=checks)
 
 
 def _token(key, kid="key-1", **claims):
@@ -366,7 +375,7 @@ def test_the_daily_allowance_caps_new_links():
 
 def test_an_icon_check_waits_instead_of_failing_when_riot_is_busy():
     # given
-    accounts = _accounts(riot_budget=2)
+    accounts = _accounts(riot=FakeRiot(allowance=2))
     started = accounts.start_link("user-1", "a#na1")
     accounts.riot.icons["puuid-a"] = started["pending"]["icon"]
 
@@ -377,9 +386,9 @@ def test_an_icon_check_waits_instead_of_failing_when_riot_is_busy():
     assert waiting["verified"] is False and waiting["pending"] == started["pending"] and accounts.riot.calls == 2
 
 
-def test_riot_calls_stop_at_the_shared_budget_and_the_refused_attempt_is_given_back():
+def test_a_link_riot_refuses_says_riot_is_busy_and_the_attempt_is_given_back():
     # given
-    accounts = _accounts(attempts=10, riot_budget=4)
+    accounts = _accounts(attempts=10, riot=FakeRiot(allowance=4))
     accounts.start_link("user-1", "a#na1")
     accounts.start_link("user-2", "b#na1")
 
@@ -390,20 +399,6 @@ def test_riot_calls_stop_at_the_shared_budget_and_the_refused_attempt_is_given_b
     # then
     assert "Riot is busy" in str(busy.value) and accounts.riot.calls == 4
     assert accounts.table.get("user#user-3", f"links#{accounts.day()}")["used"] == 0
-
-
-def test_riot_calls_are_also_capped_within_each_second():
-    # given
-    accounts = _accounts(attempts=10, riot_budget=100, riot_per_second=10)
-    for index in range(5):
-        accounts.start_link(f"user-{index}", "a#na1")
-
-    # when
-    with pytest.raises(LinkError) as busy:
-        accounts.start_link("user-5", "a#na1")
-
-    # then
-    assert "Riot is busy" in str(busy.value) and accounts.riot.calls == 10
 
 
 def test_duo_checks_stop_at_the_daily_allowance_refund_on_failure_and_reset_the_next_day():
@@ -602,9 +597,153 @@ def test_write_conflicts_are_retried_then_reported_as_busy():
     assert charged == "charged" and len(brief.calls) == 3 and added == 4
 
 
-def test_icon_checks_use_at_most_half_the_riot_budget_so_new_links_still_start():
+def test_the_dynamo_table_collects_a_member_only_into_the_matching_item_and_returns_it_whole():
     # given
-    accounts = _accounts(attempts=10, riot_budget=8)
+    class _Sets(_Recorder):
+        def update_item(self, **request):
+            self.calls.append(request)
+            if self.fail:
+                raise _Failed()
+            return {"Attributes": {"done": {"SS": ["NA1_1", "NA1_2"]}, "expected": {"N": "2"}, "job": {"S": "job-1"}}}
+
+    recorder = _Sets()
+
+    # when
+    found = _table(recorder).collect("history", "me", ["done", "missing"], "NA1_2", {"job": "job-1"})
+    stale = _table(_Sets(fail=True)).collect("history", "me", ["done"], "NA1_2", {"job": "job-0"})
+
+    # then
+    request = recorder.calls[0]
+    assert found == {"done": ["NA1_1", "NA1_2"], "expected": 2, "job": "job-1"} and stale is None
+    assert request["UpdateExpression"] == "ADD #f0 :member, #f1 :member" and request["ConditionExpression"] == "#m0 = :m0" and request["ReturnValues"] == "ALL_NEW"
+    assert request["ExpressionAttributeNames"] == {"#m0": "job", "#f0": "done", "#f1": "missing"}
+    assert request["ExpressionAttributeValues"] == {":m0": {"S": "job-1"}, ":member": {"SS": ["NA1_2"]}}
+
+
+def test_the_dynamo_table_adds_only_to_the_window_it_read_and_starts_one_only_over_the_start_it_saw():
+    # given
+    class _Windows(_Recorder):
+        def put_item(self, **request):
+            self.calls.append(request)
+            if self.fail:
+                raise _Failed()
+
+    recorder = _Windows()
+    table = _table(recorder)
+
+    # when
+    added = table.add_to_window("riot#limits", "americas#120", 2, 90, 1790000040.5)
+    first = table.start_window("riot#limits", "americas#120", 2, 1790000160.5, None, 1790086560)
+    later = table.start_window("riot#limits", "americas#120", 2, 1790000300.25, 1790000160.5, 1790086700)
+    raced = _table(_Windows(fail=True)).start_window("riot#limits", "americas#120", 2, 1790000300.25, 1790000160.5, 1790086700)
+
+    # then
+    window, opened, replaced = recorder.calls
+    assert added and first and later and raced is False
+    assert window["UpdateExpression"] == "ADD used :amount" and window["ConditionExpression"] == "#start = :start AND used <= :room"
+    assert window["ExpressionAttributeValues"] == {":amount": {"N": "2"}, ":start": {"N": "1790000040.5"}, ":room": {"N": "88"}}
+    assert opened["ConditionExpression"] == "attribute_not_exists(#start)" and "ExpressionAttributeValues" not in opened
+    assert opened["Item"] == {"pk": {"S": "riot#limits"}, "sk": {"S": "americas#120"}, "used": {"N": "2"}, "start": {"N": "1790000160.5"}, "expires": {"N": "1790086560"}}
+    assert replaced["ConditionExpression"] == "#start = :old" and replaced["ExpressionAttributeValues"] == {":old": {"N": "1790000160.5"}}
+
+
+def test_the_dynamo_table_flags_an_owner_once_and_only_ever_raises_a_value():
+    # given
+    recorder = _Recorder()
+    table = _table(recorder)
+
+    # when
+    flagged = table.flag("history", "me", "launched", "m-1", unless="sent")
+    raised = table.raise_to("riot#limits", "americas#cooldown", "until", 1790000030.5, expires=1790086430)
+    matched = table.raise_to("eval", "me", "done", 3, {"step": "fetching"})
+    refused = _table(_Recorder(fail=True)).flag("history", "me", "launched", "m-2")
+
+    # then
+    flag, cooldown, progress = recorder.calls
+    assert flagged and raised and matched and refused is False
+    assert flag["ConditionExpression"] == "attribute_exists(pk) AND (attribute_not_exists(#f) OR #f = :v) AND attribute_not_exists(#u)"
+    assert flag["ExpressionAttributeNames"] == {"#f": "launched", "#u": "sent"} and flag["ExpressionAttributeValues"] == {":v": {"S": "m-1"}}
+    assert cooldown["UpdateExpression"] == "SET #f = :v, expires = :expires" and cooldown["ConditionExpression"] == "(attribute_not_exists(#f) OR #f < :v)"
+    assert cooldown["ExpressionAttributeValues"] == {":v": {"N": "1790000030.5"}, ":expires": {"N": "1790086430"}}
+    assert progress["ConditionExpression"] == "(attribute_not_exists(#f) OR #f < :v) AND #m0 = :m0" and progress["ExpressionAttributeValues"][":m0"] == {"S": "fetching"}
+
+
+def test_the_dynamo_table_swaps_an_item_only_while_it_is_unchanged_and_reads_a_whole_partition():
+    # given
+    class _Pages(_Recorder):
+        def put_item(self, **request):
+            self.calls.append(request)
+            if self.fail:
+                raise _Failed()
+
+        def query(self, **request):
+            self.calls.append(request)
+            if "ExclusiveStartKey" not in request:
+                return {"Items": [{"pk": {"S": "eval"}, "sk": {"S": "a"}, "updated": {"N": "5"}}], "LastEvaluatedKey": {"sk": {"S": "a"}}}
+            return {"Items": [{"pk": {"S": "eval"}, "sk": {"S": "b"}}]}
+
+    recorder = _Pages()
+    table = _table(recorder)
+
+    # when
+    swapped = table.put_if("eval", "me", {"status": "requested", "updated": 9}, {"status": "running", "updated": 5, "task": None})
+    refused = _table(_Pages(fail=True)).put_if("eval", "me", {"status": "requested"}, {"task": "task-a"})
+    items = table.every("eval")
+    beat = table.raise_to("eval", "me", "done", 3, {"step": "fetching"}, also={"updated": 9})
+
+    # then
+    put, first, second, update = recorder.calls
+    assert swapped and refused is False and items == [{"pk": "eval", "sk": "a", "updated": 5}, {"pk": "eval", "sk": "b"}] and beat
+    assert put["ConditionExpression"] == "attribute_exists(pk) AND #m0 = :m0 AND #m1 = :m1 AND attribute_not_exists(#m2)"
+    assert put["ExpressionAttributeNames"] == {"#m0": "status", "#m1": "updated", "#m2": "task"} and put["ExpressionAttributeValues"] == {":m0": {"S": "running"}, ":m1": {"N": "5"}}
+    assert put["Item"] == {"pk": {"S": "eval"}, "sk": {"S": "me"}, "status": {"S": "requested"}, "updated": {"N": "9"}}
+    assert first["KeyConditionExpression"] == "pk = :pk" and second["ExclusiveStartKey"] == {"sk": {"S": "a"}}
+    assert update["UpdateExpression"] == "SET #f = :v, #a0 = :a0" and update["ExpressionAttributeNames"]["#a0"] == "updated" and update["ExpressionAttributeValues"][":a0"] == {"N": "9"}
+
+
+def test_the_local_table_swaps_and_lists_like_dynamo():
+    # given
+    table = LocalTable()
+    table.put("eval", "me", {"status": "running", "updated": 5})
+    table.put("eval", "you", {"status": "ready"})
+    table.put("history", "me", {"job": "job-1"})
+
+    # when
+    swaps = [table.put_if("eval", "me", {"status": "requested", "updated": 9}, {"status": "running", "updated": 5, "task": None}), table.put_if("eval", "me", {"status": "failed"}, {"updated": 5}), table.put_if("eval", "nobody", {"status": "failed"}, {"task": None})]
+    beat = table.raise_to("eval", "me", "done", 1, also={"updated": 12})
+
+    # then
+    assert swaps == [True, False, False] and beat and table.get("eval", "nobody") is None
+    assert table.every("eval") == [{"pk": "eval", "sk": "me", "status": "requested", "updated": 12, "done": 1}, {"pk": "eval", "sk": "you", "status": "ready"}]
+
+
+def test_the_local_table_keeps_the_same_conditions_as_dynamo():
+    # given
+    table = LocalTable()
+    table.put("history", "me", {"job": "job-1", "gone": None})
+
+    # when
+    counted = [table.add("riot#limits", "w", 2, 3, 99), table.add("riot#limits", "w", 2, 3, 99)]
+    collected = [table.collect("history", "me", ["done"], "NA1_1", {"job": "job-1"}), table.collect("history", "me", ["done"], "NA1_1", {"job": "job-0"})]
+    flags = [table.flag("history", "me", "launched", "m-1", unless="sent"), table.flag("history", "me", "launched", "m-2"), table.flag("history", "nobody", "launched", "m-1")]
+    table.raise_to("history", "me", "sent", 5, {"job": "job-1"})
+    after_sent = table.flag("history", "me", "launched", "m-1", unless="sent")
+    raised = [table.raise_to("eval", "me", "done", 3, {"step": "fetching"}), table.raise_to("cool", "na1", "until", 10.0), table.raise_to("cool", "na1", "until", 4.0)]
+    windows = [table.start_window("riot#limits", "na1#1", 2, 5.0, None, 99), table.start_window("riot#limits", "na1#1", 1, 6.0, None, 99)]
+    adds = [table.add_to_window("riot#limits", "na1#1", 1, 3, 5.0), table.add_to_window("riot#limits", "na1#1", 1, 3, 5.0), table.add_to_window("riot#limits", "na1#1", 1, 9, 4.0)]
+    restarted = [table.start_window("riot#limits", "na1#1", 1, 7.0, 5.0, 99), table.start_window("riot#limits", "na1#1", 1, 7.5, 5.0, 99)]
+
+    # then
+    assert counted == [2, None] and collected == [{"job": "job-1", "done": ["NA1_1"]}, None]
+    assert flags == [True, False, False] and after_sent is False
+    assert raised == [False, True, False] and table.get("eval", "me") is None and table.get("cool", "na1")["until"] == 10.0
+    assert windows == [True, False] and adds == [True, False, False] and restarted == [True, False]
+    assert table.get("riot#limits", "na1#1") == {"used": 1, "start": 7.0, "expires": 99}
+
+
+def test_icon_checks_stop_at_their_own_share_each_minute_so_new_links_still_start():
+    # given
+    accounts = _accounts(attempts=10, checks=1)
     for index in range(2):
         accounts.start_link(f"user-{index}", "a#na1")
 
@@ -613,7 +752,7 @@ def test_icon_checks_use_at_most_half_the_riot_budget_so_new_links_still_start()
     started = accounts.start_link("user-9", "b#na1")
 
     # then
-    assert accounts.riot.calls == 8 and all(found["pending"] for found in waiting) and started["pending"] is not None
+    assert accounts.riot.calls == 7 and all(found["pending"] for found in waiting) and started["pending"] is not None
 
 
 def test_recent_duos_come_back_newest_first_capped_at_five_and_without_names():
@@ -687,14 +826,12 @@ def test_the_dynamo_table_can_read_only_some_fields_of_the_latest_rows():
     assert client.request["ExpressionAttributeNames"] == {"#f0": "at", "#f1": "kind", "#f2": "summary"}
 
 
-def _visitors(clock=lambda: START, duos=20, everyone=3000, riot=None, riot_budget=1000, visitor_riot=20):
+def _visitors(clock=lambda: START, duos=20, everyone=3000, riot=None, visitor_riot=20):
     return Accounts(
         MemoryTable(),
         riot or FakeRiot(),
         daily=20,
         attempts=3,
-        riot_budget=riot_budget,
-        riot_per_second=1000,
         clock=clock,
         visitor_duos=duos,
         anonymous_duos=everyone,
@@ -797,26 +934,12 @@ def test_visitors_together_use_at_most_their_slice_of_the_riot_budget_each_minut
     allowed = [accounts.visitor_riot_calls(1), accounts.visitor_riot_calls(1)]
     with pytest.raises(RiotBusy) as busy:
         accounts.visitor_riot_calls(1)
-    members = accounts.riot_calls(1)
     now["t"] += 60
     next_minute = accounts.visitor_riot_calls(1)
 
     # then
-    assert allowed == [True, True] and members is True and next_minute is True
+    assert allowed == [True, True] and next_minute is True
     assert str(busy.value) == "Busy, try again in a minute."
-
-
-def test_a_visitor_riot_call_is_refused_and_given_back_when_the_shared_budget_is_full():
-    # given
-    accounts = _visitors(riot_budget=1, visitor_riot=5)
-    accounts.riot_calls(1)
-
-    # when
-    with pytest.raises(RiotBusy):
-        accounts.visitor_riot_calls(1)
-
-    # then
-    assert accounts.table.get("riot#budget", f"visitors#{int(START) // 60}")["used"] == 0
 
 
 class _Players:
@@ -834,7 +957,7 @@ class _Players:
 
 
 class _Queue:
-    evaluate_queue = "queue"
+    history_queue = "queue"
     evaluated_store = ""
     accounts_table = ""
 
@@ -916,7 +1039,7 @@ def test_a_visitor_check_answers_busy_and_gives_everything_back_once_visitors_us
     # given
     real = server._pending
     accounts, visitor, _ = _visitor_setup(monkeypatch, {"me#na1": "puuid-me"}, visitor_riot=0)
-    evaluations = Evaluations(accounts.table, accounts.riot, accounts.riot_calls, launch=[].append, visitor_budget=accounts.visitor_riot_calls, clock=lambda: START)
+    evaluations = Evaluations(accounts.table, accounts.riot, launch=[].append, visitor_budget=accounts.visitor_riot_calls, clock=lambda: START)
     monkeypatch.setattr(server, "_pending", real)
     monkeypatch.setattr(server, "get_settings", lambda: _Queue())
     monkeypatch.setattr(server, "get_evaluations", lambda: evaluations)

@@ -53,3 +53,19 @@ output "github_frontend_role" {
 output "function_name" {
   value = "${var.name}-api"
 }
+
+output "history_function" {
+  value = "${var.name}-history"
+}
+
+output "downloads_function" {
+  value = "${var.name}-downloads"
+}
+
+output "sweep_function" {
+  value = "${var.name}-sweep"
+}
+
+output "alerts_topic" {
+  value = aws_sns_topic.alerts.arn
+}

@@ -91,6 +91,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     premades_cmd.add_argument("--least-shared", type=int, default=2, help="shared games within three hours to count as a duo")
     premades_cmd.add_argument("--limit", type=int, default=None, help="queue at most this many players")
+    history_cmd = sub.add_parser(
+        "history", help="download one player's last ranked games through the orchestrator and download workers, into data/history_cache and never the corpus"
+    )
+    history_cmd.add_argument("riot_id")
+    history_cmd.add_argument("--workers", type=int, default=4)
+    dead_cmd = sub.add_parser("dead", help="show what reached the dead letter queues, and with --redrive ask for those players again once the cause is fixed")
+    dead_cmd.add_argument("--redrive", action="store_true", help="ask again for every player in the dead letter queues, charging nobody, then delete their messages")
+    dead_cmd.add_argument("--name", default="lolpredictor", help="the name the Terraform stack gives its queues and table")
+    dead_cmd.add_argument("--region", default="us-west-2")
+    killswitch_cmd = sub.add_parser("killswitch", help="show whether the backend is paused, pause it by hand or bring it back")
+    killswitch_mode = killswitch_cmd.add_mutually_exclusive_group(required=True)
+    killswitch_mode.add_argument("--status", action="store_true", help="show whether each part of the backend is running or paused")
+    killswitch_mode.add_argument("--trip", action="store_true", help="pause the API, the job Lambdas, the evaluation pipe and the sweep, and stop running evaluations")
+    killswitch_mode.add_argument("--restore", action="store_true", help="bring back every part a trip paused")
+    killswitch_cmd.add_argument("--name", default="lolpredictor", help="the name the Terraform stack gives its resources")
+    killswitch_cmd.add_argument("--region", default="us-west-2")
 
     synth_cmd = sub.add_parser("synthetic", help="generate a synthetic match corpus")
     synth_cmd.add_argument("--matches", type=int, default=400)
@@ -258,6 +274,55 @@ def main(argv: list[str] | None = None) -> int:
 
         _report(enqueue(settings, needed=args.least_shared, limit=args.limit))
         return 0
+
+    if args.command == "history":
+        from .api.accounts import LinkError
+        from .api.downloads import pull_history
+
+        if not settings.riot_api_key:
+            print("RIOT_API_KEY is not set", file=sys.stderr)
+            return 2
+        try:
+            _report(pull_history(args.riot_id, args.workers, settings))
+        except LinkError as problem:
+            print(problem, file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command == "dead":
+        import boto3
+
+        from .api.accounts import DynamoTable
+        from .api.sweep import DEAD_QUEUES, dead_letters, redrive
+
+        sqs = boto3.client("sqs", region_name=args.region)
+        queues = {kind: sqs.get_queue_url(QueueName=f"{args.name}-{kind}-dead")["QueueUrl"] for kind in DEAD_QUEUES}
+        if not args.redrive:
+            _report(dead_letters(sqs, queues))
+            return 0
+        history = sqs.get_queue_url(QueueName=f"{args.name}-history")["QueueUrl"]
+        table = DynamoTable(settings.accounts_table or f"{args.name}-accounts", boto3.client("dynamodb", region_name=args.region))
+        _report(redrive(sqs, queues, table, lambda puuid: sqs.send_message(QueueUrl=history, MessageBody=json.dumps({"puuid": puuid}))))
+        return 0
+
+    if args.command == "killswitch":
+        import os
+
+        import boto3
+
+        from . import killswitch
+
+        clients = killswitch.connect(args.region)
+        account = boto3.client("sts", region_name=args.region).get_caller_identity()["Account"]
+        names = killswitch.local_targets(clients["lambda"], args.name, args.region, account, os.environ)
+        if args.trip:
+            results = killswitch.trip(clients, names)
+        elif args.restore:
+            results = killswitch.restore(clients, names)
+        else:
+            results = killswitch.status(clients, names)
+        _report(results)
+        return 0 if all(result["ok"] for result in results.values()) else 1
 
     if args.command == "pipeline":
         from .ingest.lock import CorpusBusy

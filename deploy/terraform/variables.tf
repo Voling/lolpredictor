@@ -94,6 +94,12 @@ variable "monthly_budget" {
   default = 25
 }
 
+variable "killswitch_budget" {
+  type        = number
+  default     = 30
+  description = "Backend cost in USD for the month at which the killswitch pauses the backend"
+}
+
 variable "signup_rate_limit" {
   type        = number
   default     = 10
@@ -157,13 +163,31 @@ variable "evaluator_memory" {
 variable "evaluator_spot" {
   type        = bool
   default     = true
-  description = "Run evaluations on Fargate Spot; an interrupted task queues itself again"
+  description = "Run evaluations on Fargate Spot; an interrupted task is tried again"
 }
 
-variable "riot_budget" {
+variable "riot_limits" {
+  type        = string
+  default     = "20/1,100/120"
+  description = "Riot API limits per routing value as calls/seconds pairs, shared by every caller and filled to 90 percent"
+}
+
+variable "job_concurrency" {
   type        = number
-  default     = 60
-  description = "Riot API calls a minute shared by the API and the evaluator"
+  default     = 2
+  description = "Most copies of each history and download Lambda a queue runs at once, at least 2"
+}
+
+variable "job_receives" {
+  type        = number
+  default     = 100
+  description = "Receives a history or download message gets before it goes to its dead letter queue, a backstop behind the retry counts in the code"
+}
+
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = "Email for dead letter, stuck queue and rejected Riot key alerts, empty for no email"
 }
 
 variable "github_repository" {

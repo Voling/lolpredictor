@@ -53,8 +53,8 @@ def seats_at(match: dict, timeline: dict, minute: int) -> list[list]:
 
 
 class SharedCustoms:
-    def __init__(self, riot, table, budget, minute: int, clock=time.time):
-        self.riot, self.table, self.budget, self.minute, self.clock = riot, table, budget, minute, clock
+    def __init__(self, riot, table, minute: int, clock=time.time):
+        self.riot, self.table, self.minute, self.clock = riot, table, minute, clock
 
     def between(self, left: str, right: str) -> tuple[list[dict], bool]:
         try:
@@ -79,7 +79,7 @@ class SharedCustoms:
         found = self.table.get(IDS, puuid)
         if found and int(found.get("expires", 0)) > now:
             return json.loads(found["ids"])
-        if not self.budget(1):
+        if self.riot is None:
             raise Unavailable()
         try:
             ids = [str(match_id) for match_id in self.riot.match_ids(puuid, KIND)]
@@ -92,13 +92,11 @@ class SharedCustoms:
         found = self.table.get(MATCHES, match_id)
         if found:
             return json.loads(found["seats"])
-        if not self.budget(1):
+        if self.riot is None:
             raise Unavailable()
         try:
             match = self.riot.match(match_id)
             usable = (match.get("info") or {}).get("gameType") == CUSTOM_GAME and len((match.get("info") or {}).get("participants") or []) == PLAYERS
-            if usable and not self.budget(1):
-                raise Unavailable()
             seats = seats_at(match, self.riot.timeline(match_id), self.minute) if usable else []
         except LinkError as exc:
             raise Unavailable() from exc

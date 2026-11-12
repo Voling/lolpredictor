@@ -29,8 +29,11 @@ docker push "$repository:$run"
 digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$repository:$run")"
 
 terraform -chdir="$tf" apply -input=false "${approve[@]}" -var "image_uri=$digest"
-aws lambda update-function-code --region "$region" --function-name "$(terraform -chdir="$tf" output -raw function_name)" --image-uri "$digest" > /dev/null
-aws lambda wait function-updated --region "$region" --function-name "$(terraform -chdir="$tf" output -raw function_name)"
+for output in function_name history_function downloads_function sweep_function; do
+  function="$(terraform -chdir="$tf" output -raw "$output")"
+  aws lambda update-function-code --region "$region" --function-name "$function" --image-uri "$digest" > /dev/null
+  aws lambda wait function-updated --region "$region" --function-name "$function"
+done
 bucket="$(terraform -chdir="$tf" output -raw bucket)"
 distribution="$(terraform -chdir="$tf" output -raw distribution_id)"
 cognito_client="$(terraform -chdir="$tf" output -raw cognito_client_id)"

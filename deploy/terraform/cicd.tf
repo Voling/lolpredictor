@@ -45,7 +45,7 @@ locals {
       }
     }]
   })
-  function_arn = "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.name}-api"
+  function_arns = [for role in ["api", "history", "downloads", "sweep"] : "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.name}-${role}"]
 }
 
 resource "aws_iam_role" "github_backend" {
@@ -84,7 +84,7 @@ resource "aws_iam_role_policy" "github_backend" {
         Sid      = "UpdateFunction"
         Effect   = "Allow"
         Action   = ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode"]
-        Resource = local.function_arn
+        Resource = local.function_arns
       },
       {
         Sid      = "ListModels"

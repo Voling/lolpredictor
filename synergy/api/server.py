@@ -18,11 +18,12 @@ from ..ml import score
 from ..ml.score import UNKNOWN_NOTE, UnknownPlayer, epoch_of, get_service, reload_service, riot_id
 from ..ml.serving import champions_of, warm
 from ..pipeline import served_summary
-from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotAccounts, RiotBusy, cognito_verifier, request_key, riot_id_of, ssm_key
+from .accounts import Accounts, AuthError, Busy, DynamoTable, LinkError, QuotaExceeded, RiotBusy, cognito_verifier, request_key, riot_id_of
 from .artifacts import bucket_of, current_run, fetch_run
 from .customs import SharedCustoms
-from .evaluate import EVAL, GIB, READY, REQUESTED, UNDER_WAY, Evaluations, shape, store_size
+from .evaluate import EVAL, GIB, READY, UNDER_WAY, Evaluations, queued_state, shape, store_size, unchanged
 from .history import History, duo_view, public, summary_of
+from .limiter import riot_client
 from .shares import Shares, code_version, pair_puuids, stamp
 
 logger = logging.getLogger(__name__)
@@ -77,14 +78,12 @@ def get_accounts() -> Accounts:
     global _accounts
     if _accounts is None:
         settings = get_settings()
-        key = ssm_key(settings.riot_key_parameter) if settings.riot_key_parameter else (lambda: settings.riot_api_key)
-        riot = RiotAccounts(key, settings.platform, settings.region)
+        table = DynamoTable(settings.accounts_table)
         _accounts = Accounts(
-            DynamoTable(settings.accounts_table),
-            riot,
+            table,
+            riot_client(settings, table),
             settings.daily_duos,
             settings.link_attempts,
-            settings.riot_budget,
             visitor_duos=settings.visitor_duos,
             anonymous_duos=settings.anonymous_duos,
             visitor_riot_budget=settings.visitor_riot_budget,
@@ -97,7 +96,7 @@ def get_customs() -> SharedCustoms:
     if _customs is None:
         settings = get_settings()
         accounts = get_accounts()
-        _customs = SharedCustoms(accounts.riot, DynamoTable(settings.accounts_table), accounts.riot_calls, settings.target_minute)
+        _customs = SharedCustoms(accounts.riot, DynamoTable(settings.accounts_table), settings.target_minute)
     return _customs
 
 
@@ -105,7 +104,7 @@ def get_stored_customs() -> SharedCustoms:
     global _stored_customs
     if _stored_customs is None:
         settings = get_settings()
-        _stored_customs = SharedCustoms(get_accounts().riot, DynamoTable(settings.accounts_table), lambda calls: False, settings.target_minute)
+        _stored_customs = SharedCustoms(None, DynamoTable(settings.accounts_table), settings.target_minute)
     return _stored_customs
 
 
@@ -133,7 +132,7 @@ def _queue_evaluation(puuid: str) -> None:
 
     import boto3
 
-    boto3.client("sqs").send_message(QueueUrl=get_settings().evaluate_queue, MessageBody=json.dumps({"puuid": puuid}))
+    boto3.client("sqs").send_message(QueueUrl=get_settings().history_queue, MessageBody=json.dumps({"puuid": puuid}))
 
 
 def get_evaluations() -> Evaluations:
@@ -145,8 +144,7 @@ def get_evaluations() -> Evaluations:
         _evaluations = Evaluations(
             table,
             accounts.riot,
-            accounts.riot_calls,
-            launch=_queue_evaluation if settings.evaluate_queue else None,
+            launch=_queue_evaluation if settings.history_queue else None,
             store_size=(lambda: store_size(settings, table)) if settings.evaluated_store else (lambda: 0),
             cap_bytes=settings.evaluated_cap_gb * GIB,
             daily=settings.daily_evaluations,
@@ -159,7 +157,7 @@ def get_evaluations() -> Evaluations:
 
 
 def _pending(user: str, name: str) -> dict | None:
-    if not get_settings().evaluate_queue:
+    if not get_settings().history_queue:
         return None
     message = None
     try:
@@ -299,15 +297,16 @@ def _duos(remember, found: dict, me: str, service) -> list[dict]:
 
 def _requeue_stale(puuid: str) -> None:
     settings = get_settings()
-    if not settings.evaluate_queue:
+    if not settings.history_queue:
         return
     table = DynamoTable(settings.accounts_table)
     state = table.get(EVAL, puuid) or {}
     if state.get("status") != READY:
         return
-    table.put(EVAL, puuid, {**state, "status": REQUESTED, "step": "queued", "percent": 0, "started": int(time.time())})
-    _queue_evaluation(puuid)
-    logger.info("queued %s again for the served model", puuid[:8])
+    now = int(time.time())
+    if table.put_if(EVAL, puuid, queued_state(state, now, ("by", "attempts", "refunded"), started=now), unchanged(state)):
+        _queue_evaluation(puuid)
+        logger.info("queued %s again for the served model", puuid[:8])
 
 
 def get_verifier():
@@ -446,7 +445,7 @@ def _scored(asker, anchor, service, query: tuple, count: int, call, unscored, re
         raise
     pendings = []
     try:
-        if get_settings().evaluate_queue:
+        if get_settings().history_queue:
             for row in found.get("friends", []):
                 if row.get("note") == UNKNOWN_NOTE and row.get("riot_id"):
                     pending = _pending(asker.owner, row["riot_id"])

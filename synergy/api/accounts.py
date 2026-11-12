@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import random
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -24,13 +25,16 @@ RECENT_LIMIT = 5
 RECENT_DAYS = 30
 CHECK_SECONDS = 10
 RIOT_BUDGET = "riot#budget"
-RIOT_PER_SECOND = 10
+CHECKS_PER_MINUTE = 30
 VISITOR = "visitor"
 VISITOR_LABEL = b"lolpredictor visitor v1"
 LOCAL_VISITOR_KEY = b"lolpredictor local visitor key"
 ANONYMOUS = "anonymous"
 EVERYONE_FULL = "Checks without an account are full for today. Sign in to keep checking."
 RIOT_BUSY = "Busy, try again in a minute."
+RIOT_DOWN = "Riot isn't answering us right now. Try again later."
+RIOT_REFUSED = "Riot refused that request. Check the name and tag."
+UNREACHABLE = "We couldn't reach Riot. Try again later."
 CONFLICT_TRIES = 3
 CHARGED, DUPLICATE, FULL = "charged", "duplicate", "full"
 
@@ -51,6 +55,20 @@ class RateLimited(LinkError):
     def __init__(self, retry_after: float):
         self.retry_after = retry_after
         super().__init__("Riot is busy right now. Try again in a few minutes.")
+
+
+class RiotUnavailable(RateLimited):
+    def __init__(self, retry_after: float):
+        LinkError.__init__(self, RIOT_DOWN)
+        self.retry_after = retry_after
+
+
+class RiotRefused(LinkError):
+    pass
+
+
+class NotFound(RiotRefused):
+    pass
 
 
 class Busy(Exception):
@@ -139,18 +157,16 @@ def _value(item: dict):
     return value
 
 
+def _typed(value) -> dict:
+    if isinstance(value, bool):
+        return {"BOOL": value}
+    if isinstance(value, (int, float)):
+        return {"N": str(value)}
+    return {"S": str(value)}
+
+
 def _item(values: dict) -> dict:
-    out = {}
-    for name, value in values.items():
-        if value is None:
-            continue
-        if isinstance(value, bool):
-            out[name] = {"BOOL": value}
-        elif isinstance(value, (int, float)):
-            out[name] = {"N": str(value)}
-        else:
-            out[name] = {"S": str(value)}
-    return out
+    return {name: _typed(value) for name, value in values.items() if value is not None}
 
 
 class DynamoTable:
@@ -194,6 +210,33 @@ class DynamoTable:
 
     def delete(self, pk: str, sk: str) -> None:
         self._retry(lambda: self.client.delete_item(TableName=self.name, Key=self._key(pk, sk)))
+
+    def put_if(self, pk: str, sk: str, values: dict, match: dict) -> bool:
+        names = {f"#m{index}": name for index, name in enumerate(match)}
+        checks = ["attribute_exists(pk)", *(f"attribute_not_exists(#m{index})" if value is None else f"#m{index} = :m{index}" for index, value in enumerate(match.values()))]
+        request = {"TableName": self.name, "Item": {**self._key(pk, sk), **_item(values)}, "ConditionExpression": " AND ".join(checks), "ExpressionAttributeNames": names}
+        typed = {f":m{index}": _typed(value) for index, value in enumerate(match.values()) if value is not None}
+        if typed:
+            request["ExpressionAttributeValues"] = typed
+
+        def call():
+            try:
+                self.client.put_item(**request)
+            except self.client.exceptions.ConditionalCheckFailedException:
+                return False
+            return True
+
+        return self._retry(call)
+
+    def every(self, pk: str) -> list[dict]:
+        request = {"TableName": self.name, "KeyConditionExpression": "pk = :pk", "ExpressionAttributeValues": {":pk": {"S": pk}}}
+        items = []
+        while True:
+            found = self.client.query(**request)
+            items += [{name: _value(value) for name, value in item.items()} for item in found.get("Items", [])]
+            if not found.get("LastEvaluatedKey"):
+                return items
+            request["ExclusiveStartKey"] = found["LastEvaluatedKey"]
 
     def latest(self, pk: str, limit: int, fields: tuple[str, ...] | None = None) -> list[dict]:
         request = {
@@ -257,6 +300,69 @@ class DynamoTable:
 
         return self._retry(call)
 
+    @staticmethod
+    def _matching(match: dict) -> tuple[str, dict, dict]:
+        names = {f"#m{index}": name for index, name in enumerate(match)}
+        values = {f":m{index}": _typed(value) for index, value in enumerate(match.values())}
+        return " AND ".join(f"#m{index} = :m{index}" for index in range(len(match))), names, values
+
+    def _update(self, pk: str, sk: str, expression: str, condition: str, names: dict, values: dict, returns: str = "NONE") -> dict | None:
+        request = {"TableName": self.name, "Key": self._key(pk, sk), "UpdateExpression": expression, "ExpressionAttributeNames": names, "ExpressionAttributeValues": values, "ReturnValues": returns}
+        if condition:
+            request["ConditionExpression"] = condition
+
+        def call():
+            try:
+                return self.client.update_item(**request)
+            except self.client.exceptions.ConditionalCheckFailedException:
+                return None
+
+        return self._retry(call)
+
+    def collect(self, pk: str, sk: str, fields: list[str], member: str, match: dict) -> dict | None:
+        condition, names, values = self._matching(match)
+        names = {**names, **{f"#f{index}": field for index, field in enumerate(fields)}}
+        expression = "ADD " + ", ".join(f"#f{index} :member" for index in range(len(fields)))
+        found = self._update(pk, sk, expression, condition, names, {**values, ":member": {"SS": [member]}}, "ALL_NEW")
+        return None if found is None else {name: _value(value) for name, value in found["Attributes"].items()}
+
+    def add_to_window(self, pk: str, sk: str, amount: int, limit: int, start: float) -> bool:
+        values = {":amount": _typed(amount), ":start": _typed(start), ":room": _typed(limit - amount)}
+        return self._update(pk, sk, "ADD used :amount", "#start = :start AND used <= :room", {"#start": "start"}, values) is not None
+
+    def start_window(self, pk: str, sk: str, amount: int, start: float, old: float | None, expires: int) -> bool:
+        request = {
+            "TableName": self.name,
+            "Item": {**self._key(pk, sk), **_item({"used": amount, "start": start, "expires": expires})},
+            "ConditionExpression": "attribute_not_exists(#start)" if old is None else "#start = :old",
+            "ExpressionAttributeNames": {"#start": "start"},
+        }
+        if old is not None:
+            request["ExpressionAttributeValues"] = {":old": _typed(old)}
+
+        def call():
+            try:
+                self.client.put_item(**request)
+            except self.client.exceptions.ConditionalCheckFailedException:
+                return False
+            return True
+
+        return self._retry(call)
+
+    def flag(self, pk: str, sk: str, field: str, value: str, unless: str | None = None) -> bool:
+        names = {"#f": field, **({"#u": unless} if unless else {})}
+        condition = "attribute_exists(pk) AND (attribute_not_exists(#f) OR #f = :v)" + (" AND attribute_not_exists(#u)" if unless else "")
+        return self._update(pk, sk, "SET #f = :v", condition, names, {":v": _typed(value)}) is not None
+
+    def raise_to(self, pk: str, sk: str, field: str, value, match: dict | None = None, expires: int | None = None, also: dict | None = None) -> bool:
+        matched, names, values = self._matching(match or {})
+        also = also or {}
+        expression = "SET #f = :v" + (", expires = :expires" if expires is not None else "") + "".join(f", #a{index} = :a{index}" for index in range(len(also)))
+        condition = "(attribute_not_exists(#f) OR #f < :v)" + (f" AND {matched}" if matched else "")
+        values = {**values, ":v": _typed(value), **({":expires": _typed(int(expires))} if expires is not None else {}), **{f":a{index}": _typed(extra) for index, extra in enumerate(also.values())}}
+        names = {**names, "#f": field, **{f"#a{index}": name for index, name in enumerate(also)}}
+        return self._update(pk, sk, expression, condition, names, values) is not None
+
     def charge(self, pk: str, counter: str, request: str, amount: int, limit: int, expires: int) -> str:
         for attempt in range(CONFLICT_TRIES):
             try:
@@ -286,46 +392,163 @@ class DynamoTable:
         raise Busy("Busy right now. Try again in a moment.")
 
 
+class LocalTable:
+    def __init__(self):
+        self.items: dict[tuple[str, str], dict] = {}
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _copy(found: dict) -> dict:
+        return {name: sorted(value) if isinstance(value, set) else value for name, value in found.items()}
+
+    @staticmethod
+    def _matches(found: dict | None, match: dict) -> bool:
+        return found is not None and all(found.get(name) == value for name, value in match.items())
+
+    def get(self, pk: str, sk: str) -> dict | None:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            return None if found is None else self._copy(found)
+
+    def put(self, pk: str, sk: str, values: dict) -> None:
+        with self.lock:
+            self.items[(pk, sk)] = {name: value for name, value in values.items() if value is not None}
+
+    def delete(self, pk: str, sk: str) -> None:
+        with self.lock:
+            self.items.pop((pk, sk), None)
+
+    def put_if(self, pk: str, sk: str, values: dict, match: dict) -> bool:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            if not self._matches(found, match):
+                return False
+            self.items[(pk, sk)] = {name: value for name, value in values.items() if value is not None}
+            return True
+
+    def every(self, pk: str) -> list[dict]:
+        with self.lock:
+            return [{"pk": pk, "sk": sk, **self._copy(found)} for (part, sk), found in sorted(self.items.items()) if part == pk]
+
+    def add(self, pk: str, sk: str, amount: int, limit: int, expires: int) -> int | None:
+        with self.lock:
+            found = self.items.get((pk, sk), {})
+            if "used" in found and found["used"] > limit - amount:
+                return None
+            self.items[(pk, sk)] = {**found, "used": found.get("used", 0) + amount, "expires": expires}
+            return self.items[(pk, sk)]["used"]
+
+    def collect(self, pk: str, sk: str, fields: list[str], member: str, match: dict) -> dict | None:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            if not self._matches(found, match):
+                return None
+            for field in fields:
+                found[field] = {*found.get(field, ()), member}
+            return self._copy(found)
+
+    def add_to_window(self, pk: str, sk: str, amount: int, limit: int, start: float) -> bool:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            if found is None or found.get("start") != start or found.get("used", 0) > limit - amount:
+                return False
+            found["used"] = found.get("used", 0) + amount
+            return True
+
+    def start_window(self, pk: str, sk: str, amount: int, start: float, old: float | None, expires: int) -> bool:
+        with self.lock:
+            found = self.items.get((pk, sk)) or {}
+            if found.get("start") != old:
+                return False
+            self.items[(pk, sk)] = {"used": amount, "start": start, "expires": expires}
+            return True
+
+    def flag(self, pk: str, sk: str, field: str, value: str, unless: str | None = None) -> bool:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            if found is None or found.get(field, value) != value or (unless and unless in found):
+                return False
+            found[field] = value
+            return True
+
+    def raise_to(self, pk: str, sk: str, field: str, value, match: dict | None = None, expires: int | None = None, also: dict | None = None) -> bool:
+        with self.lock:
+            found = self.items.get((pk, sk))
+            if match and not self._matches(found, match):
+                return False
+            if found is not None and field in found and found[field] >= value:
+                return False
+            self.items[(pk, sk)] = {**(found or {}), field: value, **({"expires": int(expires)} if expires is not None else {}), **(also or {})}
+            return True
+
+
 class RiotAccounts:
-    def __init__(self, key, platform: str, region: str, client: httpx.Client | None = None):
-        self.key, self.client = key, client or httpx.Client(timeout=TIMEOUT)
+    def __init__(self, key, platform: str, region: str, limiter, client: httpx.Client | None = None):
+        self.key, self.limiter, self.client = key, limiter, client or httpx.Client(timeout=TIMEOUT)
+        self.platform, self.region = platform, region
         self.account_host = f"https://{region}.api.riotgames.com"
         self.platform_host = f"https://{platform}.api.riotgames.com"
 
-    def _get(self, url: str) -> dict:
+    def _ask(self, route: str, *urls: str) -> list:
+        key = self.key()
+        held = self.limiter.held(key)
+        if held:
+            raise RiotUnavailable(held)
+        wait = self.limiter.take(route, len(urls))
+        if wait:
+            raise RateLimited(wait)
+        return [self._get(route, url, key) for url in urls]
+
+    def _get(self, route: str, url: str, key: str):
         try:
-            response = self.client.get(url, headers={"X-Riot-Token": self.key()})
+            response = self.client.get(url, headers={"X-Riot-Token": key})
         except httpx.HTTPError as exc:
-            raise LinkError("We couldn't reach Riot. Try again later.") from exc
-        if response.status_code == 404:
-            raise LinkError("Riot doesn't know that Riot ID. Check the name and tag.")
-        if response.status_code == 429:
-            raise RateLimited(float(response.headers.get("Retry-After") or 10.0))
-        if response.status_code != 200:
-            raise LinkError("We couldn't reach Riot. Try again later.")
+            raise LinkError(UNREACHABLE) from exc
+        status = response.status_code
+        if status in (401, 403):
+            held = self.limiter.trip(key, status)
+            getattr(self.key, "forget", lambda: None)()
+            raise RiotUnavailable(held)
+        if status == 404:
+            raise NotFound("Riot doesn't know that Riot ID. Check the name and tag.")
+        if status == 429:
+            retry_after = float(response.headers.get("Retry-After") or 10.0)
+            self.limiter.cool(route, retry_after)
+            raise RateLimited(retry_after)
+        if 400 <= status < 500:
+            raise RiotRefused(RIOT_REFUSED)
+        if status != 200:
+            raise LinkError(UNREACHABLE)
         return response.json()
+
+    def _match_url(self, match_id: str) -> str:
+        return f"{self.account_host}/lol/match/v5/matches/{quote(match_id, safe='')}"
 
     def account(self, riot_id: str) -> dict:
         name, _, tag = riot_id.partition("#")
-        return self._get(f"{self.account_host}/riot/account/v1/accounts/by-riot-id/{quote(name, safe='')}/{quote(tag, safe='')}")
+        return self._ask(self.region, f"{self.account_host}/riot/account/v1/accounts/by-riot-id/{quote(name, safe='')}/{quote(tag, safe='')}")[0]
 
     def account_by_puuid(self, puuid: str) -> dict:
-        return self._get(f"{self.account_host}/riot/account/v1/accounts/by-puuid/{quote(puuid, safe='')}")
+        return self._ask(self.region, f"{self.account_host}/riot/account/v1/accounts/by-puuid/{quote(puuid, safe='')}")[0]
 
     def league(self, puuid: str) -> list[dict]:
-        return list(self._get(f"{self.platform_host}/lol/league/v4/entries/by-puuid/{quote(puuid, safe='')}"))
+        return list(self._ask(self.platform, f"{self.platform_host}/lol/league/v4/entries/by-puuid/{quote(puuid, safe='')}")[0])
 
     def icon(self, puuid: str) -> int:
-        return int(self._get(f"{self.platform_host}/lol/summoner/v4/summoners/by-puuid/{quote(puuid, safe='')}")["profileIconId"])
+        return int(self._ask(self.platform, f"{self.platform_host}/lol/summoner/v4/summoners/by-puuid/{quote(puuid, safe='')}")[0]["profileIconId"])
 
     def match_ids(self, puuid: str, kind: str, count: int = 100) -> list[str]:
-        return list(self._get(f"{self.account_host}/lol/match/v5/matches/by-puuid/{quote(puuid, safe='')}/ids?type={kind}&count={count}"))
+        return list(self._ask(self.region, f"{self.account_host}/lol/match/v5/matches/by-puuid/{quote(puuid, safe='')}/ids?type={kind}&count={count}")[0])
 
     def match(self, match_id: str) -> dict:
-        return self._get(f"{self.account_host}/lol/match/v5/matches/{quote(match_id, safe='')}")
+        return self._ask(self.region, self._match_url(match_id))[0]
 
     def timeline(self, match_id: str) -> dict:
-        return self._get(f"{self.account_host}/lol/match/v5/matches/{quote(match_id, safe='')}/timeline")
+        return self._ask(self.region, f"{self._match_url(match_id)}/timeline")[0]
+
+    def game(self, match_id: str) -> tuple[dict, dict]:
+        match, timeline = self._ask(self.region, self._match_url(match_id), f"{self._match_url(match_id)}/timeline")
+        return match, timeline
 
 
 def ssm_key(name: str):
@@ -338,6 +561,7 @@ def ssm_key(name: str):
             found["value"] = boto3.client("ssm").get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
         return found["value"]
 
+    key.forget = found.clear
     return key
 
 
@@ -360,18 +584,16 @@ class Accounts:
         riot,
         daily: int,
         attempts: int,
-        riot_budget: int = 30,
-        riot_per_second: int = RIOT_PER_SECOND,
         clock=time.time,
         shuffle=_shuffled,
         visitor_duos: int = 20,
         anonymous_duos: int = 3000,
         visitor_riot_budget: int = 20,
+        checks_per_minute: int = CHECKS_PER_MINUTE,
     ):
         self.table, self.riot, self.daily, self.attempts = table, riot, daily, attempts
-        self.riot_budget, self.riot_per_second = riot_budget, riot_per_second
         self.visitor_duos, self.anonymous_duos, self.visitor_riot_budget = visitor_duos, anonymous_duos, visitor_riot_budget
-        self.clock, self.shuffle = clock, shuffle
+        self.clock, self.shuffle, self.checks_per_minute = clock, shuffle, checks_per_minute
 
     def _user(self, user: str) -> str:
         return f"user#{user}"
@@ -382,33 +604,20 @@ class Accounts:
     def _day(self, kind: str) -> tuple[str, int]:
         return f"{kind}#{self.day()}", int(self.clock()) + 2 * DAY
 
-    def riot_calls(self, calls: int) -> bool:
-        now = int(self.clock())
-        minute = f"minute#{now // 60}"
-        if self.table.add(RIOT_BUDGET, minute, calls, self.riot_budget, now + DAY) is None:
-            return False
-        if self.table.add(RIOT_BUDGET, f"second#{now}", calls, self.riot_per_second, now + DAY) is None:
-            self.table.add(RIOT_BUDGET, minute, -calls, self.riot_budget + calls, now + DAY)
-            return False
-        return True
-
     def visitor_riot_calls(self, calls: int) -> bool:
         now = int(self.clock())
-        minute = f"visitors#{now // 60}"
-        if calls > self.visitor_riot_budget or self.table.add(RIOT_BUDGET, minute, calls, self.visitor_riot_budget, now + DAY) is None:
-            raise RiotBusy(RIOT_BUSY)
-        if not self.riot_calls(calls):
-            self.table.add(RIOT_BUDGET, minute, -calls, self.visitor_riot_budget + calls, now + DAY)
+        if calls > self.visitor_riot_budget or self.table.add(RIOT_BUDGET, f"visitors#{now // 60}", calls, self.visitor_riot_budget, now + DAY) is None:
             raise RiotBusy(RIOT_BUSY)
         return True
 
-    def _attempt(self, user: str, riot_calls: int) -> None:
+    def _attempt(self, user: str) -> None:
         key, expires = self._day("links")
         if self.table.add(self._user(user), key, 1, self.attempts, expires) is None:
             raise QuotaExceeded(f"You can try linking {self.attempts} times a day. Try again tomorrow.")
-        if not self.riot_calls(riot_calls):
-            self.table.add(self._user(user), key, -1, self.attempts + 1, expires)
-            raise LinkError("Riot is busy right now. Try again in a few minutes.")
+
+    def _give_back_attempt(self, user: str) -> None:
+        key, expires = self._day("links")
+        self.table.add(self._user(user), key, -1, self.attempts + 1, expires)
 
     def link(self, user: str) -> dict:
         return self.table.get(self._user(user), LINK) or {}
@@ -440,10 +649,14 @@ class Accounts:
         pending = self._pending(link)
         if pending and pending["riot_id"].lower() == riot_id.lower():
             return self.status(user)
-        self._attempt(user, 2)
-        account = self.riot.account(riot_id)
+        self._attempt(user)
+        try:
+            account = self.riot.account(riot_id)
+            current = self.riot.icon(account["puuid"])
+        except RateLimited:
+            self._give_back_attempt(user)
+            raise
         puuid = account["puuid"]
-        current = self.riot.icon(puuid)
         now = int(self.clock())
         icon = next(
             (choice for choice in self.shuffle([c for c in ICONS if c != current]) if self.table.reserve(f"puuid#{puuid}", f"pending#{choice}", user, now, now + PENDING_SECONDS)),
@@ -473,9 +686,13 @@ class Accounts:
         now = int(self.clock())
         if self.table.add(self._user(user), f"check#{now // CHECK_SECONDS}", 1, 1, now + DAY) is None:
             return self.status(user)
-        if self.table.add(RIOT_BUDGET, f"checks#{now // 60}", 1, self.riot_budget // 2, now + DAY) is None or not self.riot_calls(1):
+        if self.table.add(RIOT_BUDGET, f"checks#{now // 60}", 1, self.checks_per_minute, now + DAY) is None:
             return self.status(user)
-        if self.riot.icon(pending["puuid"]) != pending["icon"]:
+        try:
+            icon = self.riot.icon(pending["puuid"])
+        except RateLimited:
+            return self.status(user)
+        if icon != pending["icon"]:
             return self.status(user)
         if not self.table.claim(f"puuid#{pending['puuid']}", "owner", user):
             raise LinkError("That Riot account is already linked to another lolpredictor account.")

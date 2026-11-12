@@ -127,6 +127,7 @@ export type Friends = {
 
 
 const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+const PAUSED = [429, 502, 503];
 
 async function failure(response: Response): Promise<ApiError> {
   const text = await response.text();
@@ -136,7 +137,11 @@ async function failure(response: Response): Promise<ApiError> {
   } catch {
     detail = null;
   }
-  return new ApiError(typeof detail === "string" ? detail : `The server answered ${response.status}. Try again in a few minutes.`, response.status);
+  if (typeof detail === "string") {
+    return new ApiError(detail, response.status);
+  }
+  const message = PAUSED.includes(response.status) ? "lolpredictor is paused right now. Check back later." : `The server answered ${response.status}. Try again in a few minutes.`;
+  return new ApiError(message, response.status);
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
