@@ -6,7 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
 import { getFriends, getSaved, type Friends } from "@/lib/api";
 import { positionName } from "@/lib/positions";
-import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
+import { FEW_GAMES, Score, Verdict, gameCount } from "@/lib/verdict";
 import { AccountNotice, SaveHint, accountReady, typesRiotId, useAccount, useRiotId, visiting } from "@/lib/account";
 import { POLL_MS, Progress } from "@/lib/progress";
 import { habitSentence, peer } from "@/lib/habits";
@@ -21,7 +21,7 @@ function Result({ found }: { found: Friends }) {
     <>
       <h2>Your duo scores{me.position ? ` as ${positionName(me.position)}` : ""}</h2>
       {me.games != null && me.games < FEW_GAMES && (
-        <p className="hint">You have only {gameCount(me.games)} as {positionName(me.position)} so your scores lean on the typical {peer(me.position ?? "")} until we see more.</p>
+        <p className="hint">You have only {gameCount(me.games)} as {positionName(me.position)} so your scores lean on the average {peer(me.position ?? "")} until we see more.</p>
       )}
       <table>
         <thead>
@@ -42,7 +42,7 @@ function Result({ found }: { found: Friends }) {
                   )}
                 </td>
                 <td>{positionName(row.position)}</td>
-                <td className="num">{row.score?.toFixed(0)}</td>
+                <td className="num">{row.score != null && <Score score={row.score} />}</td>
                 <td>
                   {row.score != null && <Verdict score={row.score} />}
                   {row.games != null && row.games < FEW_GAMES && <span className="few">few games</span>}
@@ -53,7 +53,7 @@ function Result({ found }: { found: Friends }) {
         </tbody>
       </table>
       <p className="sub">50 is an average duo. Higher is better but it doesn't equal winrate!</p>
-      <p className="sub">Few games means under {FEW_GAMES} games in that position. Lolpredictor fills the gaps with what a typical player might do: their score might hover near 50 until we see more.</p>
+      <p className="sub">Few games means under {FEW_GAMES} games in that position. Lolpredictor fills the gaps with what the average player might do: their score might hover near 50 until we see more.</p>
     </>
   );
 }

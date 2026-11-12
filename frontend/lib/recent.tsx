@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { RecentDuo, RecentSeat } from "./api";
 import { championIcon, rankName } from "./ddragon";
 import { positionName } from "./positions";
-import { Verdict } from "./verdict";
+import { Score, Verdict } from "./verdict";
 
 export type ShownDuo = RecentDuo & { href?: string };
 
@@ -33,7 +33,7 @@ function Duo({ duo }: { duo: ShownDuo }) {
     <>
       <div className="demo-names"><Seat seat={duo.left} /> with <Seat seat={duo.right} /></div>
       <div className="demo-result">
-        <strong>{Math.round(duo.score)}</strong> <Verdict score={duo.score} /> <span className="demo-gold">{gold(duo.gold, duo.minute)}</span>
+        <strong><Score score={duo.score} /></strong> <Verdict score={duo.score} /> <span className={`demo-gold${duo.gold > 0 ? " ahead" : duo.gold < 0 ? " behind" : ""}`}>{gold(duo.gold, duo.minute)}</span>
         {duo.href && <Link href={duo.href} className="demo-gold">Open</Link>}
       </div>
     </>

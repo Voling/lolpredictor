@@ -4,7 +4,7 @@ const ME = "bblskibs#gotg";
 const DEEP = "Gryffinn#NA1";
 const THIN = "ethnvo#goat";
 const SAME_POSITION = "KFN Omelas#DAZE";
-const VERDICTS = /Good|Ok duo|I've seen better|Definitely reconsider.../;
+const VERDICTS = /Great|Good|Ok|Bad/;
 
 test("the api answers its health check and refuses an unknown player by name", async ({ request }) => {
   // given
@@ -31,8 +31,8 @@ test("the home page explains the app, the score bands and names the model", asyn
   await expect(page.getByRole("link", { name: "Rank your friends" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Check one duo" })).toBeVisible();
   await expect(legend).toHaveCount(4);
-  await expect(legend.nth(0)).toContainText("Good");
-  await expect(legend.nth(3)).toContainText("Definitely reconsider...");
+  await expect(legend.nth(0)).toContainText("Great");
+  await expect(legend.nth(3)).toContainText("Bad");
   await expect(page.locator("p.footer")).toContainText(/Model \d{8}-\d{6}/);
   await expect(page.getByText("The server isn't reachable right now.")).toHaveCount(0);
 });
@@ -97,7 +97,7 @@ test("a duo score built on few games in a position says it is rough", async ({ p
 
   // then
   await expect(page.getByRole("heading", { level: 2 })).toContainText(/Your duo score: \d+/);
-  await expect(page.locator("p.hint")).toHaveText(`${ME} has 1 game as mid. Treat this score as rough.`);
+  await expect(page.locator("p.hint")).toHaveText(`${ME} has only 1 game as mid, so the score leans on the average mid laner.`);
 });
 
 test("friends with few games in a position are tagged and a missing position uses the spoken name", async ({ page }) => {
@@ -111,7 +111,7 @@ test("friends with few games in a position are tagged and a missing position use
   await page.getByRole("button", { name: "Rank" }).click();
 
   // then
-  await expect(page.getByText("You have 2 games as jungle. Your scores are rough until you play more.")).toBeVisible();
+  await expect(page.getByText("You have only 2 games as jungle so your scores lean on the average jungler until we see more.")).toBeVisible();
   await expect(page.locator("tbody tr").first().locator(".few")).toHaveText("few games");
   await expect(page.locator("tbody")).toContainText("has no games as support in our data.");
 });

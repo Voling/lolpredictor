@@ -1,5 +1,5 @@
 import { DEMO_DUOS, DEMO_MINUTE } from "./demo_data";
-import { Verdict } from "./verdict";
+import { Score, Verdict } from "./verdict";
 
 function gold(value: number): string {
   if (value === 0) return `even at ${DEMO_MINUTE} min`;
@@ -17,7 +17,7 @@ export function DemoCarousel() {
               {duo.left} <span className="demo-position">{duo.leftPosition}</span> with {duo.right} <span className="demo-position">{duo.rightPosition}</span>
             </div>
             <div className="demo-result">
-              <strong>{duo.score}</strong> <Verdict score={duo.score} /> <span className="demo-gold">{gold(duo.gold)}</span>
+              <strong><Score score={duo.score} /></strong> <Verdict score={duo.score} /> <span className={`demo-gold${duo.gold > 0 ? " ahead" : duo.gold < 0 ? " behind" : ""}`}>{gold(duo.gold)}</span>
             </div>
           </li>
         ))}

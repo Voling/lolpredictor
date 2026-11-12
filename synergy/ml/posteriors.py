@@ -239,9 +239,7 @@ def _clearness(entry: dict, draws: np.ndarray) -> tuple[float, float]:
 
 
 def _peer(situation: str, role: str) -> str:
-    if situation.startswith("rspg_"):
-        return f"a typical {role} who is {situation.split('_')[1]}"
-    return f"a typical {role} in the same spots"
+    return f"the average {role}"
 
 
 def _often(share: float) -> str:
@@ -264,12 +262,12 @@ def share_takeaway(situation: str, outcomes: list[str], mean: np.ndarray, prior:
 def ratio_takeaway(situation: str, mean: float, low: float, high: float, name: str, role: str) -> str:
     words = phrase(situation)
     if low > 1.0 and mean >= 2.0:
-        return f"{name} {words}, {mean:.1f} times as often as a typical {role} in the same spots."
+        return f"{name} {words}, {mean:.1f} times as often as the average {role}."
     if low > 1.0:
-        return f"{name} {words}, {round((mean - 1.0) * 100)}% more often than a typical {role} in the same spots."
+        return f"{name} {words}, {round((mean - 1.0) * 100)}% more often than the average {role}."
     if high < 1.0:
-        return f"{name} {words}, {round((1.0 - mean) * 100)}% less often than a typical {role} in the same spots."
-    return f"{name} {words} about as often as a typical {role} in the same spots."
+        return f"{name} {words}, {round((1.0 - mean) * 100)}% less often than the average {role}."
+    return f"{name} {words} about as often as the average {role}."
 
 
 def duo_takeaway(situation: str, outcomes: list[str], mean_a: np.ndarray, mean_b: np.ndarray, names: tuple[str, str]) -> str:

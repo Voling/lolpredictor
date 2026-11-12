@@ -255,9 +255,9 @@ def test_each_chart_says_what_the_player_usually_does_and_what_is_unusual():
     spread = duo_takeaway("obj_DRAGON_ours_far", outcomes, np.array([0.1, 0.25, 0.2, 0.45]), np.array([0.3, 0.05, 0.05, 0.6]), ("A", "B"))
 
     # then
-    assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than a typical jungler in the same spots: 4% against 19%."
-    assert typical == "At ally void grubs nearby, Weaver most often fights, 47%, like a typical jungler in the same spots."
-    assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as a typical top laner in the same spots."
+    assert usual == "At ally void grubs nearby, Weaver usually fights, 60%, and dies far less often than the average jungler: 4% against 19%."
+    assert typical == "At ally void grubs nearby, Weaver most often fights, 47%, like the average jungler."
+    assert ratio == "Gakgos dives with no lane holding priority, on the enemy half, 2.1 times as often as the average top laner."
     assert duo == "At an ally dragon from far away, expect Gryffinn to fight, 43%, and Gakgos to not join, 52%."
     assert shared == "At an ally dragon from far away, you both usually don't join, but B dies more often: 30% against 10%."
     assert spread == "At an ally dragon from far away, you both most often don't join, but A fights more often: 25% against 5%."
@@ -313,7 +313,7 @@ def test_a_gold_reading_draws_against_a_typical_player_in_the_same_gold_state_an
     assert np.allclose(entries["rspg_behind_plate_ours_far"]["prior"], [0.25, 0.75]) and np.allclose(entries["rspg_behind_plate_ours_far"]["alpha"], [31.5, 58.5])
     assert entries["rspg_behind_plate_ours_far"]["n"] == 80.0 and entries["rspg_behind_plate_ours_far"]["words"] == "when behind, after an ally takes a plate from far away"
     assert np.isclose(percentiles[2], 100.0 * stats.beta.cdf(0.35, 2.5, 7.5))
-    assert behind["takeaway"] == "When behind, after an ally takes a plate from far away, bblskibs usually does not follow, 65%, and moves in more often than a typical top laner who is behind: 35% against 25%."
+    assert behind["takeaway"] == "When behind, after an ally takes a plate from far away, bblskibs usually does not follow, 65%, and moves in more often than the average top laner: 35% against 25%."
 
 
 def test_one_situation_shows_once_whether_pooled_or_behind_or_ahead():
@@ -350,5 +350,5 @@ def test_a_top_reading_is_worded_from_the_same_draws_that_ranked_it():
 
     # then
     assert clear["takeaway"].startswith("After an ally takes a plate from far away, bblskibs usually does not follow, 68%, and moves in")
-    assert clear["takeaway"].endswith("more often than a typical top laner in the same spots: 32% against 25%.")
-    assert unclear["takeaway"] == "After an ally takes a plate from far away, bblskibs usually does not follow, 68%, like a typical top laner in the same spots."
+    assert clear["takeaway"].endswith("more often than the average top laner: 32% against 25%.")
+    assert unclear["takeaway"] == "After an ally takes a plate from far away, bblskibs usually does not follow, 68%, like the average top laner."

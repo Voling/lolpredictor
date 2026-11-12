@@ -30,15 +30,16 @@ button.link { border: 0; padding: 0; background: none; color: LinkText; text-dec
 h3 { font-size: 1rem; margin: 1.75rem 0 0.4rem; }
 ul.legend { list-style: none; padding: 0; margin: 0.5rem 0 1rem; display: grid; gap: 0.45rem; }
 .verdict { font-weight: 600; white-space: nowrap; }
-.verdict.good { color: #15803d; }
-.verdict.ok { color: #1d4ed8; }
-.verdict.meh { color: #a16207; }
-.verdict.bad { color: #b91c1c; }
+.verdict.great, .score.great, .ahead { color: #15803d; }
+.verdict.good, .score.good, .player.left { color: #1d4ed8; }
+.verdict.ok, .score.ok, .player.right { color: #a16207; }
+.verdict.bad, .score.bad, .behind { color: #b91c1c; }
+.score, .player, .ahead, .behind { font-weight: 600; }
 @media (prefers-color-scheme: dark) {
-  .verdict.good { color: #4ade80; }
-  .verdict.ok { color: #60a5fa; }
-  .verdict.meh { color: #facc15; }
-  .verdict.bad { color: #f87171; }
+  .verdict.great, .score.great, .ahead { color: #4ade80; }
+  .verdict.good, .score.good, .player.left { color: #60a5fa; }
+  .verdict.ok, .score.ok, .player.right { color: #facc15; }
+  .verdict.bad, .score.bad, .behind { color: #f87171; }
 }
 p.verdict-line { font-size: 1.25rem; margin: 0.25rem 0 1rem; }
 p.hint { font-size: 0.85rem; opacity: 0.7; margin: -0.75rem 0 1.5rem; }

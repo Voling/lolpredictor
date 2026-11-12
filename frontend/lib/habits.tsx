@@ -11,12 +11,20 @@ export function peer(position: string): string {
   return SINGULAR[position] ?? "player";
 }
 
-export function basisSentence(name: string, games: number, evidence: number | null | undefined, position: string, spoken: string): string {
-  const seen = `${name}: ${games} ${games === 1 ? "game" : "games"} as ${spoken}`;
-  if (evidence == null) return `${seen}.`;
-  if (evidence >= 0.6) return `${seen}, so this is mostly their own play.`;
-  if (evidence >= 0.35) return `${seen}, so this is part their own play and part the typical ${peer(position)}.`;
-  return `${seen}, so this leans on the typical ${peer(position)} until we see more.`;
+export type Side = "left" | "right";
+
+export function Player({ name, side }: { name: string; side: Side }) {
+  return <span className={`player ${side}`}>{name}</span>;
+}
+
+export function Lead({ gold, even, ahead, behind }: { gold: number; even: string; ahead: string; behind: string }) {
+  const shown = rounded(gold);
+  if (shown === 0) return <>{even}</>;
+  return <span className={gold > 0 ? "ahead" : "behind"}>{shown.toLocaleString("en-US")} gold {gold > 0 ? ahead : behind}</span>;
+}
+
+export function Basis({ name, side, games, spoken }: { name: string; side: Side; games: number; spoken: string }) {
+  return <p className="sub"><Player name={name} side={side} />: {games} {spoken} {games === 1 ? "game" : "games"} read</p>;
 }
 
 export function habitSentence(name: string, habit: Standout, position: string): string {
@@ -26,13 +34,13 @@ export function habitSentence(name: string, habit: Standout, position: string): 
   return `${name} ${habit.phrase}, ${more ? "more" : "less"} than ${extreme}.`;
 }
 
-export function Habits({ name, position, habits }: { name: string; position: string; habits: Standout[] }) {
+export function Habits({ name, side, position, habits }: { name: string; side: Side; position: string; habits: Standout[] }) {
   const shown = habits.filter((habit) => habit.percentile >= 80 || habit.percentile <= 20).slice(0, 3);
   if (shown.length === 0) return null;
   return (
     <ul className="habits">
       {shown.map((habit) => (
-        <li key={habit.cell}>{habitSentence(name, habit, position)}</li>
+        <li key={habit.cell}><Player name={name} side={side} />{habitSentence("", habit, position)}</li>
       ))}
     </ul>
   );
@@ -42,10 +50,13 @@ function rounded(value: number): number {
   return Math.round(Math.abs(value) / 10) * 10;
 }
 
-export function readingSentence(name: string, reading: Reading, minute: number, position: string): string {
-  const total = rounded(reading.gold);
-  if (total === 0) return `${name} is projected about even with their opponent at ${minute} minutes, like the typical ${peer(position)}.`;
-  return `${name} is projected ${total.toLocaleString("en-US")} gold ${reading.gold > 0 ? "ahead of" : "behind"} their opponent at ${minute} minutes.`;
+export function Projection({ name, side, reading, minute, position }: { name: string; side: Side; reading: Reading; minute: number; position: string }) {
+  const even = `about even with their opponent at ${minute} minutes, like the average ${peer(position)}`;
+  return (
+    <p>
+      <Player name={name} side={side} /> is projected <Lead gold={reading.gold} even={even} ahead="ahead of" behind="behind" />{rounded(reading.gold) === 0 ? "." : ` their opponent at ${minute} minutes.`}
+    </p>
+  );
 }
 
 export function togetherSentence(gold: number, games: number, customs: number): string {

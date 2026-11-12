@@ -43,7 +43,7 @@ function basis(posterior: Posterior, name: string, position: string): string {
   const seen = `${name.split("#")[0]}'s ${count} ${unit}`;
   const rest = posterior.own == null ? 0 : Math.round((1 - posterior.own) * 100);
   if (rest === 0) return `Based on ${seen}.`;
-  return `Based ${100 - rest}% on ${seen} and ${rest}% on the typical ${peer(position)}.`;
+  return `Based ${100 - rest}% on ${seen} and ${rest}% on the average ${peer(position)}.`;
 }
 
 export function SituationChart({ posterior, tone, name, position }: { posterior: Posterior; tone: Tone; name: string; position: string }) {

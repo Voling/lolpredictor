@@ -6,9 +6,9 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRemote } from "@/lib/remote";
 import { getPair, getSaved, getShared, type PairScore } from "@/lib/api";
 import { positionName } from "@/lib/positions";
-import { FEW_GAMES, Verdict, gameCount } from "@/lib/verdict";
+import { FEW_GAMES, Score, Verdict, gameCount } from "@/lib/verdict";
 import { POLL_MS, Progress } from "@/lib/progress";
-import { Habits, basisSentence, peer, readingSentence, togetherSentence } from "@/lib/habits";
+import { Basis, Habits, Lead, Player, Projection, peer, togetherSentence } from "@/lib/habits";
 import { AccountNotice, SaveHint, accountReady, typesRiotId, useAccount, useRiotId, visiting } from "@/lib/account";
 import { RefreshButton } from "@/lib/refresh";
 import { DifferenceChart, SituationChart } from "@/lib/posterior";
@@ -17,12 +17,6 @@ import { ShareLink } from "@/lib/share";
 const POSITIONS = ["", "top", "jungle", "mid", "bot", "support"];
 
 type Query = { a?: string; b?: string; a_position?: string; b_position?: string; saved?: string; share?: string };
-
-function lead(gold: number): string {
-  const rounded = Math.round(Math.abs(gold) / 50) * 50;
-  if (rounded === 0) return "about even with";
-  return `about ${rounded.toLocaleString()} gold ${gold > 0 ? "ahead of" : "behind"}`;
-}
 
 function Result({ pair, onRefreshed, shared = false, mine = true }: { pair: PairScore; onRefreshed: () => void; shared?: boolean; mine?: boolean }) {
   const found = pair.interaction;
@@ -51,43 +45,43 @@ function Result({ pair, onRefreshed, shared = false, mine = true }: { pair: Pair
   ].filter((player) => player.games < FEW_GAMES);
   return (
     <>
-      <h2>{shared || !mine ? "Duo score" : "Your duo score"}: {found.score.toFixed(0)}</h2>
+      <h2>{shared || !mine ? "Duo score" : "Your duo score"}: <Score score={found.score} /></h2>
       <p className="verdict-line"><Verdict score={found.score} /></p>
-      <p>{left.riot_id} as {positionName(found.positions.left)} with {right.riot_id} as {positionName(found.positions.right)}.</p>
-      <p>At {found.minute} minutes you two are projected to be {lead(found.edge.total)} the other team&apos;s {positions}.</p>
+      <p><Player name={left.riot_id} side="left" /> as {positionName(found.positions.left)} with <Player name={right.riot_id} side="right" /> as {positionName(found.positions.right)}.</p>
+      <p>At {found.minute} minutes you two are projected to be <Lead gold={found.edge.total} even="about even with" ahead="ahead of" behind="behind" /> the other team&apos;s {positions}.</p>
       {thin.map((player) => (
-        <p key={player.name} className="hint">{player.name} has only {gameCount(player.games)} as {positionName(player.position)}, so the score leans on the typical {peer(player.position)}.</p>
+        <p key={player.name} className="hint">{player.name} has only {gameCount(player.games)} as {positionName(player.position)}, so the score leans on the average {peer(player.position)}.</p>
       ))}
       <p className="sub">50 is an average duo for these positions. Higher is better.</p>
 
       <h3>What each of you brings</h3>
-      <p>{readingSentence(left.riot_id, found.edge.left, found.minute, found.positions.left)}</p>
-      <p>{readingSentence(right.riot_id, found.edge.right, found.minute, found.positions.right)}</p>
+      <Projection name={left.riot_id} side="left" reading={found.edge.left} minute={found.minute} position={found.positions.left} />
+      <Projection name={right.riot_id} side="right" reading={found.edge.right} minute={found.minute} position={found.positions.right} />
       {found.edge.record && <p>{togetherSentence(found.edge.record.gold, found.edge.record.games, found.edge.record.customs ?? 0)}</p>}
-      <p className="sub">{basisSentence(left.riot_id, found.left_games, found.left_evidence, found.positions.left, positionName(found.positions.left))}</p>
-      <p className="sub">{basisSentence(right.riot_id, found.right_games, found.right_evidence, found.positions.right, positionName(found.positions.right))}</p>
+      <Basis name={left.riot_id} side="left" games={found.left_games} spoken={positionName(found.positions.left)} />
+      <Basis name={right.riot_id} side="right" games={found.right_games} spoken={positionName(found.positions.right)} />
 
       <h3>What stands out</h3>
-      <Habits name={left.riot_id} position={found.positions.left} habits={found.reading.left.distinctive} />
-      <Habits name={right.riot_id} position={found.positions.right} habits={found.reading.right.distinctive} />
+      <Habits name={left.riot_id} side="left" position={found.positions.left} habits={found.reading.left.distinctive} />
+      <Habits name={right.riot_id} side="right" position={found.positions.right} habits={found.reading.right.distinctive} />
       <p className="sub">Compared with every {peer(found.positions.left)} and {peer(found.positions.right)} we have seen. Habits are only shown when there is enough proof.</p>
 
       {posteriors && (posteriors.measured ? posteriors.measured.left || posteriors.measured.right : posteriors.left.length > 0 || posteriors.right.length > 0) && (
         <>
-          <h3>Behavior in detail</h3>
-          <p className="sub">The three things each of you does most differently from others in your position. Each row is one thing a player can do in that spot. The dot shows how often this player does it, and the bar shows the range we&apos;re 80% sure of. The diamond shows how often the typical player in that position does it. A player with few games gets a wide bar and a dot close to the diamond, because we assume typical play until their games show otherwise.</p>
-          <h4>{left.riot_id}</h4>
-          {posteriors.left.length === 0 && <p className="sub">Nothing in {left.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.left)} yet. That&apos;s normal with few games.</p>}
+          <h3>Your behavior</h3>
+          <p className="sub">The three things each of you does most differently from others in your position. Each row is one thing a player can do in that spot. The dot shows how often this player does it, and the bar shows the range we&apos;re 80% sure of. The diamond shows how often the average player in that position does it. A player with few games gets a wide bar and a dot close to the diamond, because we assume average play until their games show otherwise.</p>
+          <h4><Player name={left.riot_id} side="left" /></h4>
+          {posteriors.left.length === 0 && <p className="sub">Nothing in {left.riot_id}&apos;s games differs clearly from the average {peer(found.positions.left)} yet. That&apos;s normal with few games.</p>}
           {posteriors.left.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="left" name={left.riot_id} position={found.positions.left} />)}
-          <h4>{right.riot_id}</h4>
-          {posteriors.right.length === 0 && <p className="sub">Nothing in {right.riot_id}&apos;s games differs clearly from the typical {peer(found.positions.right)} yet. That&apos;s normal with few games.</p>}
+          <h4><Player name={right.riot_id} side="right" /></h4>
+          {posteriors.right.length === 0 && <p className="sub">Nothing in {right.riot_id}&apos;s games differs clearly from the average {peer(found.positions.right)} yet. That&apos;s normal with few games.</p>}
           {posteriors.right.map((posterior) => <SituationChart key={posterior.situation} posterior={posterior} tone="right" name={right.riot_id} position={found.positions.right} />)}
         </>
       )}
       {posteriors && posteriors.differences.length > 0 && (
         <>
-          <h3>Where you two differ</h3>
-          <p className="sub">The three situations where you two act least alike. {left.riot_id} in blue, {right.riot_id} in amber.</p>
+          <h3>Your differences</h3>
+          <p className="sub">The three situations where you two act least alike. <Player name={left.riot_id} side="left" /> in blue, <Player name={right.riot_id} side="right" /> in amber.</p>
           {posteriors.differences.map((difference) => <DifferenceChart key={difference.situation} difference={difference} />)}
         </>
       )}

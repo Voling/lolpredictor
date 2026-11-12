@@ -6,7 +6,7 @@ import { AccountNotice, accountReady, useAccount } from "@/lib/account";
 import { positionName } from "@/lib/positions";
 import { RecentDuos } from "@/lib/recent";
 import { useRemote } from "@/lib/remote";
-import { Verdict } from "@/lib/verdict";
+import { Score, Verdict } from "@/lib/verdict";
 
 function title(check: SavedCheck): string {
   const names = check.names.map((name, index) => {
@@ -35,7 +35,7 @@ function Checks({ checks }: { checks: SavedCheck[] }) {
           <tr key={check.id}>
             <td>{new Date(check.at * 1000).toLocaleDateString()}</td>
             <td><Link href={href(check)}>{title(check)}</Link></td>
-            <td className="num">{check.score?.toFixed(0)}</td>
+            <td className="num">{check.score != null && <Score score={check.score} />}</td>
             <td>{check.score != null && <Verdict score={check.score} />}</td>
           </tr>
         ))}

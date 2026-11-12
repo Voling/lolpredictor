@@ -84,8 +84,6 @@ export type PairScore = {
     positions: { left: string; right: string };
     left_games: number;
     right_games: number;
-    left_evidence: number | null;
-    right_evidence: number | null;
     edge: { left: Reading; right: Reading; fit: Reading; record?: Together; total: number };
     drivers: { left: string; right: string; contribution: number }[];
     reading: Record<

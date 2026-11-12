@@ -26,7 +26,7 @@ export function ShareLink({ token }: { token: string }) {
         <input readOnly value={url} onFocus={(event) => event.currentTarget.select()} />
       </label>
       <button type="button" onClick={copy}>{copied ? "Copied" : "Copy link"}</button>
-      <p className="sub">Anyone with the link sees this result. It expires when either of you pulls new games.</p>
+      <p className="sub">Anyone with the link sees this result.</p>
     </div>
   );
 }

@@ -10,10 +10,10 @@ import { useRemote } from "@/lib/remote";
 import { Verdict } from "@/lib/verdict";
 
 const BANDS = [
-  { score: 65, range: "60 and up" },
-  { score: 55, range: "50 to 59" },
-  { score: 45, range: "40 to 49" },
-  { score: 35, range: "below 40" },
+  { score: 60, range: "55 and up" },
+  { score: 52, range: "50 to 54" },
+  { score: 48, range: "46 to 49" },
+  { score: 40, range: "45 and below" },
 ];
 
 export default function Home() {
@@ -57,7 +57,7 @@ export default function Home() {
         Where are you when you ward in the first 5 minutes? Where do you stand in lane against your opponent? We count what you did each time.
       </p>
       <p>
-        We don&apos;t need all your games. Every reading starts from what a typical player in your position does, learned from over 100,000
+        We don&apos;t need all your games. Every reading starts from what the average player in your position does, learned from over 100,000
         Master and higher games and each of your games further define your playstyle. League is a repetitive game so there's lots to learn about you.
       </p>
       <p>
