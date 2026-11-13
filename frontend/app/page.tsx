@@ -57,11 +57,11 @@ export default function Home() {
         Where are you when you ward in the first 5 minutes? Where do you stand in lane against your opponent? We count what you did each time.
       </p>
       <p>
-        We don&apos;t need all your games. Every reading starts from what the average player in your position does, learned from over 100,000
-        Master and higher games and each of your games further define your playstyle. League is a repetitive game so there's lots to learn about you.
+        We don&apos;t need all your games or even the ones together. Our evaluation starts from what the average player in your position does, learned from over 100,000
+        Master+ games. Each of your games further define your playstyle. League is a repetitive game so there's lots to learn about you.
       </p>
       <p>
-        From both playstyles, your champions and any games you two played together, your score predicts how far ahead your two
+        From both playstyles, your champions, and any games you two played together, your score predicts how far ahead your two
         positions will be in gold at 20 minutes. Teams that are ahead at 20 minutes win more often.
       </p>
       <p className="sub">A score is simply a prediction. Any one game can go either way but higher scores often result in a higher winrate.</p>

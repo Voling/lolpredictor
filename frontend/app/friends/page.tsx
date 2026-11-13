@@ -101,7 +101,7 @@ function FriendsQuery() {
           </select>
         </label>
         <label>
-          Friends, one per line
+          Friends (one per line)
           <textarea name="friends" defaultValue={query.friends ?? ""} rows={4} placeholder={"friend#tag\nother#tag:support"} required />
         </label>
         <button type="submit">Rank</button>

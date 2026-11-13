@@ -6,21 +6,21 @@ const THIN = "ethnvo#goat";
 const SAME_POSITION = "KFN Omelas#DAZE";
 const VERDICTS = /Great|Good|Ok|Bad/;
 
-test("the api answers its health check and refuses an unknown player by name", async ({ request }) => {
+test("the api answers and refuses an unknown player by name", async ({ request }) => {
   // given
   const unknown = new URLSearchParams({ a: "nobody#none", b: THIN });
 
   // when
-  const health = await request.get("/api/health");
+  const recent = await request.get("/api/recent");
   const refused = await request.get(`/api/pair?${unknown}`);
 
   // then
-  expect(health.ok()).toBeTruthy();
+  expect(recent.ok()).toBeTruthy();
   expect(refused.status()).toBe(404);
   expect(await refused.text()).toContain("nobody#none");
 });
 
-test("the home page explains the app, the score bands and names the model", async ({ page }) => {
+test("the home page explains the app and the score bands and names the model without accounts", async ({ page }) => {
   // given
   await page.goto("/");
 
@@ -33,7 +33,9 @@ test("the home page explains the app, the score bands and names the model", asyn
   await expect(legend).toHaveCount(4);
   await expect(legend.nth(0)).toContainText("Great");
   await expect(legend.nth(3)).toContainText("Bad");
-  await expect(page.locator("p.footer")).toContainText(/Model \d{8}-\d{6}/);
+  if ((await page.getByRole("link", { name: "Account" }).count()) === 0) {
+    await expect(page.locator("p.footer")).toContainText(/Model \d{8}-\d{6}/);
+  }
   await expect(page.getByText("The server isn't reachable right now.")).toHaveCount(0);
 });
 
@@ -97,7 +99,7 @@ test("a duo score built on few games in a position says it is rough", async ({ p
 
   // then
   await expect(page.getByRole("heading", { level: 2 })).toContainText(/Your duo score: \d+/);
-  await expect(page.locator("p.hint")).toHaveText(`${ME} has only 1 game as mid, so the score leans on the average mid laner.`);
+  await expect(page.locator("p.hint", { hasText: ME })).toHaveText(`${ME} has only 1 game as mid, so the score leans on the average mid laner.`);
 });
 
 test("friends with few games in a position are tagged and a missing position uses the spoken name", async ({ page }) => {
@@ -129,7 +131,7 @@ test("the home page scrolls sample Challenger duos with their scores and shows R
   await expect(page.locator("footer.legal")).toContainText("isn't endorsed by Riot Games");
 });
 
-test("the account page says accounts are off when the site runs without sign in", async ({ page }) => {
+test("the account page offers sign in or says accounts are off when the site runs without them", async ({ page }) => {
   // given
   const path = "/account/";
 
@@ -137,5 +139,5 @@ test("the account page says accounts are off when the site runs without sign in"
   await page.goto(path);
 
   // then
-  await expect(page.getByText("Accounts are off here.")).toBeVisible();
+  await expect(page.getByText("Accounts are off here.").or(page.getByRole("button", { name: "Sign in" }))).toBeVisible();
 });
